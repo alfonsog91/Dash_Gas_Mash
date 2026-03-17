@@ -1,0 +1,455 @@
+// ──────────────────────────────────────────────────────────────────
+// GOVERNANCE: This module implements the scalar cost field C(x,t)
+// (GOVERNANCE.md §1) and signal decomposition {I, M, R, D}
+// (GOVERNANCE.md §2). All outputs are descriptive only (§1 I-4,
+// §6 A-1..A-4). Temporal weighting follows §3. Thresholds in
+// scoring helpers are interpretive bands only (§5 TH-1..TH-4).
+// No element of this module constitutes decision authority.
+// See docs/GOVERNANCE.md and docs/CLASSIFICATION_REGISTRY.md.
+// ──────────────────────────────────────────────────────────────────
+
+function toRad(deg) {
+  return (deg * Math.PI) / 180;
+}
+
+// Haversine distance in meters.
+export function haversineMeters(aLat, aLon, bLat, bLon) {
+  const R = 6371000;
+  const dLat = toRad(bLat - aLat);
+  const dLon = toRad(bLon - aLon);
+  const lat1 = toRad(aLat);
+  const lat2 = toRad(bLat);
+
+  const sinDLat = Math.sin(dLat / 2);
+  const sinDLon = Math.sin(dLon / 2);
+  const h = sinDLat * sinDLat + Math.cos(lat1) * Math.cos(lat2) * sinDLon * sinDLon;
+  const c = 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+  return R * c;
+}
+
+function clamp01(x) {
+  return Math.max(0, Math.min(1, x));
+}
+
+function foodWeight(tags, hour) {
+  // Late night proxy: fast food tends to remain open later.
+  const amenity = (tags.amenity || "").toLowerCase();
+
+  const isLate = hour >= 22 || hour <= 4;
+
+  let base = 1.0;
+  if (amenity === "fast_food") base = 1.3;
+  if (amenity === "cafe") base = 0.8;
+  if (amenity === "food_court") base = 1.15;
+
+  if (isLate) {
+    if (amenity === "fast_food") base *= 1.25;
+    if (amenity === "restaurant") base *= 0.85;
+    if (amenity === "cafe") base *= 0.6;
+  }
+
+  return base;
+}
+
+function cuisineList(tags) {
+  const c = (tags?.cuisine ?? "").toLowerCase().trim();
+  if (!c) return [];
+  return c
+    .split(";")
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+function ticketIndex(tags) {
+  // Public-data proxy for “higher ticket size” (and thus potentially higher tips).
+  // This is heuristic and will be wrong sometimes; keep it transparent.
+  const amenity = (tags?.amenity ?? "").toLowerCase();
+  const name = (tags?.name ?? "").toLowerCase();
+  const cuisines = cuisineList(tags);
+
+  // Base assumptions by amenity type.
+  let idx = 0.9;
+  if (amenity === "restaurant") idx = 1.0;
+  if (amenity === "food_court") idx = 0.95;
+  if (amenity === "cafe") idx = 0.85;
+  if (amenity === "fast_food") idx = 0.75;
+
+  // Cuisine heuristics (rough correlation with higher ticket size).
+  const high = [
+    "sushi",
+    "steak_house",
+    "steak",
+    "seafood",
+    "korean",
+    "thai",
+    "indian",
+    "japanese",
+    "mediterranean",
+    "persian",
+    "vietnamese",
+    "ramen",
+  ];
+  const mid = ["mexican", "pizza", "burger", "bbq", "chicken", "chinese", "italian"];
+  const low = ["coffee_shop", "ice_cream", "donut", "sandwich", "bagel", "dessert"];
+
+  const has = (arr, key) => arr.includes(key) || name.includes(key.replaceAll("_", " "));
+
+  if (cuisines.some((c) => high.includes(c)) || high.some((k) => has(cuisines, k))) idx += 0.18;
+  else if (cuisines.some((c) => mid.includes(c)) || mid.some((k) => has(cuisines, k))) idx += 0.06;
+  else if (cuisines.some((c) => low.includes(c)) || low.some((k) => has(cuisines, k))) idx -= 0.08;
+
+  return Math.max(0.5, Math.min(1.3, idx));
+}
+
+export function scorePointAgainstRestaurants({ lat, lon }, restaurants, tauMeters, hour) {
+  return merchantIntensityAtPoint({ lat, lon }, restaurants, tauMeters, hour).total;
+}
+
+function amenityKey(tags) {
+  const a = (tags?.amenity ?? "").toLowerCase();
+  if (a === "restaurant") return "restaurant";
+  if (a === "fast_food") return "fast_food";
+  if (a === "cafe") return "cafe";
+  if (a === "food_court") return "food_court";
+  return "other";
+}
+
+function merchantIntensityAtPoint({ lat, lon }, restaurants, tauMeters, hour) {
+  // Intensity proxy: sum of distance-decayed merchant contributions.
+  // This is a *public-data heuristic*, not DoorDash’s model.
+  const tau = Math.max(1, tauMeters);
+
+  let total = 0;
+  let distWeighted = 0;
+  let ticketWeighted = 0;
+  let sumSquares = 0;
+  let nearbyCount = 0;
+  let nearestDist = 1e9;
+  const by = {
+    restaurant: 0,
+    fast_food: 0,
+    cafe: 0,
+    food_court: 0,
+    other: 0,
+  };
+
+  for (const r of restaurants) {
+    const w = foodWeight(r.tags ?? {}, hour);
+    const d = haversineMeters(lat, lon, r.lat, r.lon);
+    const k = Math.exp(-d / tau);
+    const t = ticketIndex(r.tags ?? {});
+    const c = w * k;
+    total += c;
+    distWeighted += c * d;
+    ticketWeighted += c * t;
+    sumSquares += c * c;
+    nearestDist = Math.min(nearestDist, d);
+    if (d <= tau * 1.25) nearbyCount += 1;
+
+    by[amenityKey(r.tags)] += c;
+  }
+
+  const expectedDist = total > 0 ? distWeighted / total : 1e9;
+  const ticketMean = total > 0 ? ticketWeighted / total : 0;
+  const effectiveMerchants = total > 0 && sumSquares > 0 ? (total * total) / sumSquares : 0;
+  return { total, by, expectedDist, ticketMean, effectiveMerchants, nearbyCount, nearestDist };
+}
+
+function parkingIntensityAtPoint({ lat, lon }, parkingCandidates, tauMeters) {
+  const tau = Math.max(1, tauMeters);
+  let sum = 0;
+  for (const p of parkingCandidates) {
+    const d = haversineMeters(lat, lon, p.lat, p.lon);
+    sum += Math.exp(-d / tau);
+  }
+  return sum;
+}
+
+// GOVERNANCE §3: Time partition {T_k} — disjoint buckets with
+// non-negative weights. Retrospective only (T-1); no extrapolation
+// (T-2); boundaries explicit (T-3). See CLASSIFICATION_REGISTRY 3.1–3.5.
+export function timeBucket(hour) {
+  const h = ((hour % 24) + 24) % 24;
+  if (h >= 6  && h < 11) return { name: 'morning',       label: 'Morning',       wI: 0.20, wM: 0.40, wR: 0.30, wD: 0.10 };
+  if (h >= 11 && h < 14) return { name: 'lunch',          label: 'Lunch rush',     wI: 0.25, wM: 0.35, wR: 0.25, wD: 0.15 };
+  if (h >= 14 && h < 17) return { name: 'afternoon',      label: 'Afternoon',      wI: 0.25, wM: 0.30, wR: 0.25, wD: 0.20 };
+  if (h >= 17 && h < 20) return { name: 'dinner',         label: 'Dinner rush',    wI: 0.30, wM: 0.30, wR: 0.20, wD: 0.20 };
+  if (h >= 20 && h < 22) return { name: 'late_dinner',    label: 'Late dinner',    wI: 0.30, wM: 0.25, wR: 0.25, wD: 0.20 };
+  if (h >= 22)           return { name: 'late_night',     label: 'Late night',     wI: 0.20, wM: 0.20, wR: 0.40, wD: 0.20 };
+  return                        { name: 'post_midnight',  label: 'Post-midnight',  wI: 0.15, wM: 0.15, wR: 0.50, wD: 0.20 };
+}
+
+function quantile(sorted, q) {
+  if (sorted.length === 0) return 0;
+  const idx = Math.max(0, Math.min(sorted.length - 1, Math.floor(q * (sorted.length - 1))));
+  return sorted[idx];
+}
+
+function softplus(x) {
+  // Stable softplus.
+  if (x > 30) return x;
+  if (x < -30) return Math.exp(x);
+  return Math.log1p(Math.exp(x));
+}
+
+function betaStabilityBand(p, effectiveSupport) {
+  const n = Math.max(2, Number(effectiveSupport ?? 0) * 2.5);
+  const alpha = 1 + clamp01(p) * n;
+  const beta = 1 + (1 - clamp01(p)) * n;
+  const total = alpha + beta;
+  const mean = alpha / total;
+  const variance = (alpha * beta) / ((total * total) * (total + 1));
+  const stdDev = Math.sqrt(Math.max(0, variance));
+  const z = 1.28;
+  return {
+    low: clamp01(mean - z * stdDev),
+    high: clamp01(mean + z * stdDev),
+  };
+}
+
+export function probabilityOfGoodOrder(
+  { lat, lon },
+  restaurants,
+  parkingCandidates,
+  {
+    tauMeters,
+    hour,
+    horizonMin,
+    competitionStrength,
+    competitionTauMeters,
+    lambdaRef,
+    tipEmphasis,
+    useML,
+    mlBeta,
+  }
+) {
+  // Interpretable probability model built from public proxies:
+  // - Merchant intensity ~ demand opportunity
+  // - Parking intensity ~ (very rough) competition proxy
+  // - Calibrate to the current view by mapping a reference intensity -> 50% in T_ref minutes
+  const m = merchantIntensityAtPoint({ lat, lon }, restaurants, tauMeters, hour);
+
+  const compTau = Math.max(
+    100,
+    competitionTauMeters ?? Math.max(250, Math.min(1200, Math.round(tauMeters * 0.8)))
+  );
+  const pIntensity = parkingCandidates?.length
+    ? parkingIntensityAtPoint({ lat, lon }, parkingCandidates, compTau)
+    : 0;
+
+  const comp = Math.max(0, competitionStrength ?? 0);
+  const lambdaEff = m.total / (1 + comp * pIntensity);
+
+  const ref = Math.max(1e-9, lambdaRef ?? lambdaEff ?? 1e-9);
+  const T = Math.max(1, horizonMin ?? 10);
+
+  // Calibrate so that when lambdaEff==ref and T==10 min, P(any order) ≈ 50%.
+  const Tref = 10;
+  const baseRateAtRef = Math.log(2) / Tref;
+
+  let pAny;
+  if (useML) {
+    // “ML-style” predictor: learnable-shaped rate function (positive via softplus).
+    // We keep the bias fixed so ref corresponds to baseRateAtRef.
+    const beta = Math.max(0, Number(mlBeta ?? 2.0));
+    const bias = Math.log(Math.exp(baseRateAtRef) - 1); // softplus^{-1}(baseRateAtRef)
+    const logRatio = Math.log(Math.max(1e-9, lambdaEff) / ref);
+    const rate = softplus(bias + beta * logRatio);
+    pAny = 1 - Math.exp(-rate * T);
+  } else {
+    // Simple proportional rate model.
+    pAny = 1 - Math.exp(-baseRateAtRef * (lambdaEff / ref) * T);
+  }
+
+  // “Good order” proxy for this project: short pickup distance + higher-tip proxy.
+  const total = m.total + 1e-9;
+  const closeness = Math.exp(-m.expectedDist / 900);
+  const isLate = hour >= 22 || hour <= 4;
+
+  // Normalize ticket index ~[0.5..1.3] to [0..1] with mid around 0.9-1.0.
+  const tipProxy = clamp01((m.ticketMean - 0.75) / 0.45);
+  const tipW = clamp01(tipEmphasis ?? 0.55);
+
+  // Late-night: tips tend to be lower on average; nudge tip proxy down a bit.
+  const tipAdj = isLate ? clamp01(tipProxy * 0.85) : tipProxy;
+  const quality = clamp01((1 - tipW) * closeness + tipW * tipAdj);
+
+  // Ensure “good” is always <= “any” and never collapses too low.
+  const pGood = clamp01(pAny * (0.25 + 0.75 * quality));
+  const band = betaStabilityBand(pGood, m.effectiveMerchants);
+  const supportScore = clamp01((m.effectiveMerchants - 1) / 7);
+
+  // --- Four-signal decomposition ---
+  // GOVERNANCE §2: Signals {I, M, R, D} are semantically independent
+  // (S-1), individually normalized to [0,1] (S-2), with no cross-signal
+  // inference (S-3). Aggregation A is monotone per component.
+  // S(p) = w_I·I + w_M·M + w_R·R − w_D·D
+  const bucket = timeBucket(hour);
+  const sigI = clamp01((m.ticketMean - 0.5) / 0.8);
+  const sigM = clamp01(m.total / (2 * ref));
+  const sigR = closeness;
+  const sigD = comp > 0 ? (comp * pIntensity) / (1 + comp * pIntensity) : 0;
+
+  const composite = clamp01(
+    bucket.wI * sigI + bucket.wM * sigM + bucket.wR * sigR - bucket.wD * sigD
+  );
+
+  // GOVERNANCE §5: advisory is an interpretive band label (TH-4),
+  // not a trigger (TH-1), alert (TH-2), or action (TH-3).
+  const advisory = composite >= 0.5 && m.effectiveMerchants >= 3 ? 'hold' : 'rotate';
+
+  return {
+    pGood,
+    pAny,
+    quality,
+    tipProxy: tipAdj,
+    lambdaEff,
+    lambdaRef: ref,
+    expectedDistMeters: Math.round(m.expectedDist),
+    merchantIntensity: m.total,
+    competitionIntensity: pIntensity,
+    ticketMean: m.ticketMean,
+    effectiveMerchants: m.effectiveMerchants,
+    nearbyMerchants: m.nearbyCount,
+    nearestMerchantMeters: Math.round(m.nearestDist),
+    supportScore,
+    stabilityLow: band.low,
+    stabilityHigh: band.high,
+    stabilityWidth: band.high - band.low,
+    useML: Boolean(useML),
+    mlBeta: Number(mlBeta ?? 2.0),
+    signals: { I: sigI, M: sigM, R: sigR, D: sigD },
+    composite,
+    timeBucketName: bucket.name,
+    timeBucketLabel: bucket.label,
+    advisory,
+  };
+}
+
+export function buildGridProbabilityHeat(bounds, restaurants, parkingCandidates, params, gridStepMeters) {
+  const south = bounds.getSouth();
+  const north = bounds.getNorth();
+  const west = bounds.getWest();
+  const east = bounds.getEast();
+
+  // Convert meter step to degree step. (Approx; ok for small-ish areas.)
+  const midLat = (south + north) / 2;
+  const metersPerDegLat = 111_320;
+  const metersPerDegLon = Math.cos((midLat * Math.PI) / 180) * 111_320;
+
+  const dLat = gridStepMeters / metersPerDegLat;
+  const dLon = gridStepMeters / Math.max(1e-6, metersPerDegLon);
+
+  const nodes = [];
+  const lambdas = [];
+
+  const hour = Number(params.hour);
+  const tauMeters = Number(params.tauMeters);
+  const horizonMin = Number(params.horizonMin);
+  const competitionStrength = Number(params.competitionStrength);
+  const tipEmphasis = Number(params.tipEmphasis ?? 0.55);
+  const useML = Boolean(params.useML);
+  const mlBeta = Number(params.mlBeta ?? 2.0);
+  const competitionTauMeters = Number(params.competitionTauMeters ?? Math.round(tauMeters * 0.8));
+
+  for (let lat = south; lat <= north; lat += dLat) {
+    for (let lon = west; lon <= east; lon += dLon) {
+      const m = merchantIntensityAtPoint({ lat, lon }, restaurants, tauMeters, hour);
+      const pIntensity = parkingCandidates?.length
+        ? parkingIntensityAtPoint({ lat, lon }, parkingCandidates, Math.max(250, competitionTauMeters))
+        : 0;
+      const lambdaEff = m.total / (1 + Math.max(0, competitionStrength) * pIntensity);
+
+      nodes.push({ lat, lon, m, pIntensity, lambdaEff });
+      lambdas.push(lambdaEff);
+    }
+  }
+
+  lambdas.sort((a, b) => a - b);
+  const lambdaRef = Math.max(1e-9, quantile(lambdas, 0.7));
+
+  const pts = [];
+  const pGoodValues = [];
+  const compositeValues = [];
+  for (const n of nodes) {
+    const r = probabilityOfGoodOrder(
+      { lat: n.lat, lon: n.lon },
+      restaurants,
+      parkingCandidates,
+      {
+        tauMeters,
+        hour,
+        horizonMin,
+        competitionStrength,
+        competitionTauMeters,
+        tipEmphasis,
+        lambdaRef,
+        useML,
+        mlBeta,
+      }
+    );
+    pts.push([n.lat, n.lon, r.pGood]);
+    pGoodValues.push(r.pGood);
+    compositeValues.push(r.composite);
+  }
+
+  pGoodValues.sort((a, b) => a - b);
+  compositeValues.sort((a, b) => a - b);
+
+  const bucket = timeBucket(hour);
+
+  return {
+    heatPoints: pts,
+    stats: {
+      lambdaRef,
+      scoreSamplesSorted: pGoodValues,
+      compositeSamplesSorted: compositeValues,
+      medianScore: quantile(pGoodValues, 0.5),
+      topDecileScore: quantile(pGoodValues, 0.9),
+      medianComposite: quantile(compositeValues, 0.5),
+      topDecileComposite: quantile(compositeValues, 0.9),
+      sampleCount: pGoodValues.length,
+      hour,
+      tauMeters,
+      horizonMin,
+      competitionStrength,
+      competitionTauMeters,
+      timeBucketName: bucket.name,
+      timeBucketLabel: bucket.label,
+    },
+  };
+}
+
+export function rankParking(parkingCandidates, restaurants, parkingAllCandidates, params, stats, limit = 12) {
+  const scored = parkingCandidates
+    .map((p) => {
+      const r = probabilityOfGoodOrder(p, restaurants, parkingAllCandidates, {
+        ...params,
+        lambdaRef: stats?.lambdaRef,
+      });
+      return { ...p, ...r };
+    })
+    .sort((a, b) => b.pGood - a.pGood);
+
+  return scored.slice(0, limit);
+}
+
+export function topLikelyMerchantsForParking(parkingPoint, restaurants, tauMeters, hour, limit = 6) {
+  const tau = Math.max(1, tauMeters);
+
+  const weighted = restaurants
+    .map((r) => {
+      const w = foodWeight(r.tags ?? {}, hour);
+      const d = haversineMeters(parkingPoint.lat, parkingPoint.lon, r.lat, r.lon);
+      const s = w * Math.exp(-d / tau);
+      return { r, s, d };
+    })
+    .sort((a, b) => b.s - a.s)
+    .slice(0, limit);
+
+  return weighted.map(({ r, d }) => ({
+    name: r.tags?.name ?? r.tags?.brand ?? "(unnamed)",
+    amenity: r.tags?.amenity ?? "food",
+    distMeters: Math.round(d),
+  }));
+}

@@ -1,0 +1,25 @@
+<!doctype html>
+
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DGM Preservation Tests</title>
+  <style>
+    body { background: #0b0f17; color: #e9eef7; font-family: ui-monospace, monospace; padding: 24px; }
+    h1 { font-size: 18px; margin-bottom: 12px; }
+    #log { white-space: pre-wrap; font-size: 13px; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <h1>DGM Governance Preservation Tests</h1>
+  <pre id="log"></pre>
+  <script type="module">
+    import { runPreservationTests } from "./preservation.test.js";
+    const result = runPreservationTests();
+    document.title = result.failed === 0
+      ? `\u2705 All ${result.total} tests passed`
+      : `\u274c ${result.failed}/${result.total} failed`;
+  </script>
+</body>
+</html>

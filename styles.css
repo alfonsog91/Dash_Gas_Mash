@@ -1,0 +1,362 @@
+:root {
+  --bg: #0b0f17;
+  --panel: #101a2b;
+  --panel2: #0f1624;
+  --text: #e9eef7;
+  --muted: #a9b5c7;
+  --border: rgba(255, 255, 255, 0.12);
+  --btn: #2d6cdf;
+  --btn2: #1f57ba;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans", "Liberation Sans", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+#app {
+  height: 100%;
+  display: grid;
+  grid-template-columns: 380px 1fr;
+}
+
+#panel {
+  border-right: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--panel), var(--panel2));
+  padding: 16px;
+  overflow: auto;
+}
+
+#panel h1 {
+  margin: 0 0 6px 0;
+  font-size: 18px;
+  letter-spacing: 0.2px;
+}
+
+.sub {
+  margin: 0 0 14px 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.controls .row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  margin: 12px 0;
+}
+
+.controls label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.hint {
+  color: rgba(169, 181, 199, 0.9);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+input[type="range"] {
+  width: 100%;
+}
+
+button {
+  appearance: none;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: linear-gradient(180deg, var(--btn), var(--btn2));
+  color: white;
+  padding: 10px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+button:hover {
+  filter: brightness(1.05);
+}
+
+.checkbox {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  color: var(--text);
+  font-size: 12px;
+}
+
+#main { height: 100%; }
+#map { height: 100%; width: 100%; }
+
+.list {
+  margin: 10px 0 0 18px;
+  padding: 0;
+}
+
+.list li {
+  margin: 8px 0;
+}
+
+.list button {
+  width: 100%;
+  text-align: left;
+  padding: 10px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  display: grid;
+  gap: 4px;
+}
+
+.list button:hover {
+  background: rgba(255, 255, 255, 0.10);
+}
+
+.list-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.list-meta {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.notes {
+  margin: 10px 0 0 18px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.help {
+  margin-top: 10px;
+  color: rgba(233, 238, 247, 0.88);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.help p {
+  margin: 8px 0;
+  color: var(--muted);
+}
+
+.help ul {
+  margin: 8px 0 0 18px;
+  padding: 0;
+}
+
+.help li {
+  margin: 6px 0;
+}
+
+.small {
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+details {
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(0,0,0,0.20);
+  margin: 12px 0;
+}
+
+summary {
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--text);
+}
+
+#diagram svg {
+  width: 100%;
+  height: auto;
+  margin-top: 10px;
+}
+
+/* Data-freshness status bar (C2 / m6) */
+#dataStatus { display: none; }
+#dataStatus.data-status {
+  display: block;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 11px;
+  margin: 6px 0;
+  line-height: 1.35;
+}
+#dataStatus.data-status--ok   { background: rgba(0, 200, 100, 0.12); color: #7fe8b0; border: 1px solid rgba(0,200,100,0.25); }
+#dataStatus.data-status--warn { background: rgba(245, 180, 0, 0.12); color: #f5c542; border: 1px solid rgba(245,180,0,0.30); }
+#dataStatus.data-status--info { background: rgba(0, 160, 240, 0.10); color: #7fd4f8; border: 1px solid rgba(0,160,240,0.25); }
+
+.summary {
+  margin: 14px 0 10px;
+}
+
+.summary-head h2 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.summary-head p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.summary-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.summary-card {
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(255,255,255,0.05);
+}
+
+.summary-card strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 18px;
+  line-height: 1.1;
+}
+
+.summary-card p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.summary-label {
+  color: #9ad3ff;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* Signal bars in Leaflet popups */
+.sig-bars {
+  margin-top: 8px;
+}
+
+.sig-header {
+  font-size: 11px;
+  font-weight: 700;
+  margin-bottom: 4px;
+  color: #c8d3e0;
+}
+
+.sig-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 3px 0;
+  font-size: 11px;
+}
+
+.sig-label {
+  width: 100px;
+  flex-shrink: 0;
+  color: #a9b5c7;
+}
+
+.sig-track {
+  flex: 1;
+  height: 8px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 4px;
+  overflow: hidden;
+  min-width: 60px;
+}
+
+.sig-fill {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.2s;
+}
+
+.sig-val {
+  width: 32px;
+  text-align: right;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  color: #e9eef7;
+}
+
+/* Help section headings and signal-color labels */
+.help-heading {
+  margin: 10px 0 6px;
+  font-size: 13px;
+}
+
+.help-heading:first-child {
+  margin-top: 0;
+}
+
+.clr-income { color: #7fe8b0; }
+.clr-density { color: #9ad3ff; }
+.clr-prox { color: #c4b5fd; }
+.clr-crowd { color: #f87171; }
+
+/* Popup friendly layout */
+.popup-friendly {
+  font-size: 12px;
+  line-height: 1.45;
+  max-width: 340px;
+}
+
+.popup-score {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 4px 0 2px;
+}
+
+.popup-score-label {
+  font-size: 11px;
+  font-weight: 400;
+  color: #a9b5c7;
+}
+
+.popup-explain {
+  font-size: 12px;
+  color: #b8c4d4;
+  margin-bottom: 2px;
+}
+
+.popup-rank {
+  font-size: 11px;
+  color: #9ad3ff;
+  margin-bottom: 4px;
+}
+
+.popup-detail {
+  font-size: 11px;
+  color: #a9b5c7;
+  margin: 2px 0;
+}
+
+.popup-advisory {
+  font-size: 12px;
+  font-weight: 600;
+  margin: 6px 0 2px;
+  color: #e9eef7;
+}

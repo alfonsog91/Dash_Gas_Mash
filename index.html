@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Dash Parking Estimate Map (OSM)</title>
+
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside id="panel">
+        <header>
+          <h1>Dash Parking Estimate Map</h1>
+          <p class="sub">
+            Public, heuristic model using OpenStreetMap + Overpass POIs. Not affiliated with DoorDash.
+          </p>
+        </header>
+
+        <section class="controls">
+          <div class="row">
+            <label for="hour">Local hour</label>
+            <input id="hour" type="range" min="0" max="23" step="1" />
+            <span id="hourVal" class="mono"></span>
+            <div class="hint">Adjusts late-night weighting (public heuristic). <b>Note:</b> OSM data does not filter by opening hours — late-night scores assume all fetched merchants exist; many may be closed.</div>
+          </div>
+
+          <div class="row">
+            <label for="tau">Distance decay $\tau$ (meters)</label>
+            <input id="tau" type="range" min="200" max="4000" step="50" value="1200" />
+            <span id="tauVal" class="mono"></span>
+            <div class="hint">Smaller = only very close merchants matter. Larger = broader influence.</div>
+          </div>
+
+          <div class="row">
+            <label for="grid">Grid step (meters)</label>
+            <input id="grid" type="range" min="150" max="900" step="50" value="350" />
+            <span id="gridVal" class="mono"></span>
+            <div class="hint">Heatmap detail vs speed. Larger = faster, less detail.</div>
+          </div>
+
+          <div class="row">
+            <label for="horizon">Probability horizon (minutes)</label>
+            <input id="horizon" type="range" min="2" max="30" step="1" value="10" />
+            <span id="horizonVal" class="mono"></span>
+            <div class="hint">Shown % means “chance within the next T minutes”. Bigger T ⇒ higher %.</div>
+          </div>
+
+          <div class="row">
+            <label for="competition">Competition strength (proxy)</label>
+            <input id="competition" type="range" min="0" max="1" step="0.05" value="0.35" />
+            <span id="competitionVal" class="mono"></span>
+            <div class="hint">Penalty using nearby parking density as a rough “other drivers” proxy. Set to 0 to disable. <b>Note:</b> in strip-mall areas, parking density correlates with merchant density — this can suppress spots that are actually strong. Treat non-zero values as experimental.</div>
+          </div>
+
+          <div class="row">
+            <label for="tipEmphasis">Tip emphasis (vs short pickup)</label>
+            <input id="tipEmphasis" type="range" min="0" max="1" step="0.05" value="0.55" />
+            <span id="tipEmphasisVal" class="mono"></span>
+            <div class="hint">0 = prioritize short pickup. 1 = prioritize higher-ticket “ticket proxy”.</div>
+          </div>
+
+          <div class="row">
+            <label class="checkbox">
+              <input id="useML" type="checkbox" />
+              Use ML-style predictor (rate via softplus)
+            </label>
+            <div class="hint">Changes how intensity maps to % (still public proxy; not trained on DoorDash data).</div>
+          </div>
+
+          <div class="row">
+            <label for="mlBeta">ML sensitivity (\u03b2)</label>
+            <input id="mlBeta" type="range" min="0" max="6" step="0.1" value="2.0" />
+            <span id="mlBetaVal" class="mono"></span>
+            <div class="hint">Higher \u03b2 boosts top clusters more aggressively. Values above 3 can create sharp visual cliffs that are artifacts of the slider, not real-world signals. Use with caution.</div>
+          </div>
+
+          <div class="row">
+            <label class="checkbox">
+              <input id="useMIP" type="checkbox" checked />
+              Use MIP optimizer for top parking set
+            </label>
+            <div class="hint">Picks a spread-out set of K lots (falls back if solver CDN is blocked).</div>
+          </div>
+
+          <div class="row">
+            <label for="kSpots">Suggested spots (K)</label>
+            <input id="kSpots" type="range" min="3" max="10" step="1" value="6" />
+            <span id="kSpotsVal" class="mono"></span>
+            <div class="hint">How many parking suggestions to output.</div>
+          </div>
+
+          <div class="row">
+            <label for="minSep">Min separation (meters)</label>
+            <input id="minSep" type="range" min="200" max="1800" step="50" value="650" />
+            <span id="minSepVal" class="mono"></span>
+            <div class="hint">Forces suggestions to be spread out (avoids all picks in one plaza).</div>
+          </div>
+
+          <div class="row">
+            <button id="load">Load / Refresh for current view</button>
+          </div>
+
+          <div id="dataStatus"></div>
+
+          <section id="summary" class="summary" aria-live="polite">
+            <div class="summary-head">
+              <h2>Quick read</h2>
+              <p>Friendly summaries for the current view. These stay view-relative and advisory.</p>
+            </div>
+            <div id="summaryCards" class="summary-grid"></div>
+          </section>
+
+          <div class="row">
+            <label class="checkbox">
+              <input id="showRestaurants" type="checkbox" checked />
+              Show restaurant points
+            </label>
+          </div>
+
+          <div class="row">
+            <label class="checkbox">
+              <input id="showParking" type="checkbox" checked />
+              Show parking candidates
+            </label>
+          </div>
+
+          <details open>
+            <summary>Best parking spots to wait at</summary>
+            <ol id="parkingList" class="list"></ol>
+          </details>
+
+          <details open>
+            <summary>Help: what everything means</summary>
+            <div class="help">
+              <h3 class="help-heading">What the percentages mean</h3>
+              <ul>
+                <li><b>"X% chance"</b> &mdash; Estimated probability of getting a worthwhile order if you wait at this spot for the time you set (the "horizon" slider). Higher = better spot. This is <em>not</em> a guarantee &mdash; it's a heuristic guess from public map data.</li>
+                <li><b>Confidence range</b> (e.g., 25%&ndash;45%) &mdash; How much the score could realistically swing. A narrow range means the estimate is stable; a wide range means few restaurants back it up, so take it with a grain of salt.</li>
+                <li><b>Chance of <em>any</em> order</b> &mdash; Likelihood of getting any order at all (including bad ones). The main score filters this down to <em>good</em> orders.</li>
+                <li><b>Avg ticket quality</b> &mdash; How pricey nearby restaurants tend to be. Higher-ticket restaurants tend to correlate with better tips.</li>
+                <li><b>Overall strength</b> (Composite) &mdash; Blends all four factors (ticket size, restaurant density, proximity, crowding) with weights that shift by time of day.</li>
+              </ul>
+
+              <h3 class="help-heading">The four signal bars</h3>
+              <ul>
+                <li><b class="clr-income">Avg ticket size</b> &mdash; Are nearby restaurants higher-priced? (Green bar)</li>
+                <li><b class="clr-density">Restaurant density</b> &mdash; How many restaurants are in range? (Blue bar)</li>
+                <li><b class="clr-prox">Proximity</b> &mdash; How close is the nearest restaurant? Closer = faster pickup. (Purple bar)</li>
+                <li><b class="clr-crowd">Crowding</b> &mdash; How many other parking lots are nearby? More parking = more likely other drivers are competing. (Red bar &mdash; higher is <em>worse</em>)</li>
+              </ul>
+
+              <h3 class="help-heading">Hold vs Rotate</h3>
+              <p>
+                <b>&#x2705; Hold</b> means the spot is strong enough to sit and wait.<br/>
+                <b>&#x21bb; Rotate</b> means you're probably better off driving to a different area.
+              </p>
+
+              <h3 class="help-heading">Sliders</h3>
+              <ul>
+                <li><b>Local hour</b>: What time of day to model. Late night boosts fast food weight.</li>
+                <li><b>Probability horizon</b>: "Chance within the next X minutes." Longer = higher %, but that doesn't mean the spot is <em>better</em> &mdash; you're just waiting longer.</li>
+                <li><b>Distance decay</b>: How far restaurants count. Smaller = only very close restaurants matter.</li>
+                <li><b>Competition strength</b>: Penalizes spots near many parking lots (rough proxy for other drivers). Set to 0 to ignore.</li>
+                <li><b>Tip emphasis</b>: Slide right to favor higher-ticket restaurants. Slide left to favor short pickup distance.</li>
+                <li><b>Grid step</b>: Heatmap detail. Smaller = prettier but slower.</li>
+                <li><b>K spots / Min separation</b>: How many parking suggestions and how far apart they must be.</li>
+              </ul>
+            </div>
+
+          </details>
+
+          <details>
+            <summary>Model diagram</summary>
+            <div id="diagram"></div>
+          </details>
+
+          <details>
+            <summary>Notes & limitations</summary>
+            <ul class="notes">
+              <li>This uses publicly available OSM POIs as a proxy for merchant density and late-night demand.</li>
+              <li>It does not use any proprietary DoorDash dispatch logic, merchant volume, customer demand, or courier supply data.</li>
+              <li>Use this for strategy exploration, not guarantees.</li>
+            </ul>
+          </details>
+        </section>
+
+        <footer>
+          <p class="small">
+            Map data © OpenStreetMap contributors. Tiles via openstreetmap.org.
+          </p>
+        </footer>
+      </aside>
+
+      <main id="main">
+        <div id="map"></div>
+      </main>
+    </div>
+
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+
+    <script
+      src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"
+      integrity="sha256-65UqrlgGoRAnKfKRuriH3eeDrOhZgZo1SCenduc+SGo="
+      crossorigin=""
+    ></script>
+
+    <script
+      src="https://unpkg.com/javascript-lp-solver@0.4.24/prod/solver.js"
+      integrity="sha256-imUMOwIXfy1QK+gn6/sXZ23ELFHqvM1e4dEtVwb3AUA="
+      crossorigin=""
+    ></script>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
