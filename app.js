@@ -612,4 +612,10 @@ map.whenReady(() => {
     console.error(err);
     alert(`Failed to load map data: ${err?.message ?? String(err)}`);
   });
+  const menuButton = document.getElementById("menuToggle");
+const controls = document.getElementById("controls");
+
+menuButton.addEventListener("click", () => {
+  controls.classList.toggle("open");
+});
 });

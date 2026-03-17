@@ -360,3 +360,55 @@ summary {
   margin: 6px 0 2px;
   color: #e9eef7;
 }
+@Media (max-width: 768px) {
+  #map {
+    height: 70vh;
+  }
+@Media (max-width: 768px) {
+  .controls {
+    gap: 0.5rem;
+  }
+}
+@media (max-width: 768px) {
+
+  /* Map dominates the screen */
+  #map {
+    height: 85vh;
+  }
+
+  /* Hamburger menu button */
+  .menu-toggle {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    z-index: 1001;
+    background: white;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 22px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+  }
+
+  /* Slide-out controls panel */
+  #controls {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 85%;
+    max-width: 340px;
+    height: 100vh;
+    background: white;
+    overflow-y: auto;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    z-index: 1000;
+    padding: 1rem;
+  }
+
+  /* When menu is open */
+  #controls.open {
+    transform: translateX(0);
+  }
+}
+}
