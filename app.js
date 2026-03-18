@@ -10,6 +10,7 @@
 import { fetchFoodPlaces, fetchParkingCandidates } from "./overpass.js";
 import {
   buildGridProbabilityHeat,
+  filterOpenRestaurants,
   probabilityOfGoodOrder,
   rankParking,
   topLikelyMerchantsForParking,
@@ -515,10 +516,13 @@ async function loadForView() {
     const bbox = map.getBounds();
     const queryBounds = clampQueryBounds(bbox);
 
-    const [restaurants, parking] = await Promise.all([
+    const [allRestaurants, parking] = await Promise.all([
       fetchFoodPlaces(queryBounds, activeAbort.signal),
       fetchParkingCandidates(queryBounds, activeAbort.signal),
     ]);
+
+    // Freeze local time once so hours-based eligibility stays consistent for this refresh.
+    const restaurants = filterOpenRestaurants(allRestaurants, new Date());
 
     lastRestaurants = restaurants;
     lastParkingCandidates = parking;

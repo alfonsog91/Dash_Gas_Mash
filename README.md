@@ -8,6 +8,7 @@ This is **not affiliated with DoorDash** and does **not** use proprietary DoorDa
 
 - Loads **food merchant proxies** from OpenStreetMap via Overpass (amenity: restaurant / fast_food / cafe / food_court)
 - Loads **parking candidate proxies** from OpenStreetMap (amenity=parking and parking=*)
+- Excludes restaurants with parseable OSM `opening_hours` tags when they are currently closed in the client’s local time
 - Builds a heat surface over the current map view using a calibrated probability proxy:
 
 First compute a merchant "intensity":
@@ -94,6 +95,7 @@ From the workspace folder:
 
 - **Load / Refresh for current view**: Fetches OSM POIs via Overpass for what’s currently on screen. If you’re zoomed way out, the app clamps the query area to avoid 504 timeouts.
 - **Local hour**: Adjusts time-of-night weighting. Late-night shifts weight toward fast food (public heuristic).
+- **Opening-hours eligibility**: Restaurants with parseable OSM `opening_hours` tags are filtered against the client’s current local time before they enter scoring, normalization, heatmap generation, or parking ranking.
 - **Probability horizon (minutes)** ($T$): The percent shown is “chance within the next $T$ minutes”. Increasing $T$ will generally increase the percent.
 - **Distance decay $\tau$ (meters)**: How quickly merchant influence drops with distance. Smaller $\tau$ means “only very close merchants matter”; bigger $\tau$ means “clusters can influence from farther away”.
 - **Grid step (meters)**: Heatmap resolution. Larger values are faster but less detailed.
@@ -127,6 +129,7 @@ Use the % to compare two parking choices under the same settings: higher % means
 ## Limitations
 
 - OSM POIs are incomplete in some areas.
+- Many OSM merchants do not publish `opening_hours`; those restaurants remain eligible because the dataset does not provide a reliable closed/open state.
 - “Lane-accurate” geometry depends on OSM tagging; many roads will not include lane-level detail.
 - This does **not** know real order volume, real-time supply, DoorDash acceptance, batching, zones, or anything private.
 - Treat the heatmap as *relative* signal, not a guarantee.

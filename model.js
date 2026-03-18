@@ -31,6 +31,138 @@ function clamp01(x) {
   return Math.max(0, Math.min(1, x));
 }
 
+const OSM_WEEKDAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+
+function jsDayToOsmDayIndex(jsDay) {
+  return (jsDay + 6) % 7;
+}
+
+function parseTimeToMinutes(value) {
+  const match = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(value.trim());
+  if (!match) return null;
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function expandDayToken(token) {
+  const trimmed = token.trim();
+  if (!trimmed) return [];
+
+  if (!trimmed.includes("-")) {
+    const idx = OSM_WEEKDAYS.indexOf(trimmed);
+    return idx === -1 ? null : [idx];
+  }
+
+  const [startDay, endDay] = trimmed.split("-").map((part) => part.trim());
+  const startIdx = OSM_WEEKDAYS.indexOf(startDay);
+  const endIdx = OSM_WEEKDAYS.indexOf(endDay);
+  if (startIdx === -1 || endIdx === -1) return null;
+
+  const expanded = [startIdx];
+  let cursor = startIdx;
+  while (cursor !== endIdx) {
+    cursor = (cursor + 1) % OSM_WEEKDAYS.length;
+    expanded.push(cursor);
+  }
+
+  return expanded;
+}
+
+function parseRuleDays(dayPart) {
+  if (!dayPart) return [...OSM_WEEKDAYS.keys()];
+
+  const days = [];
+  for (const token of dayPart.split(",")) {
+    const expanded = expandDayToken(token);
+    if (expanded === null) return null;
+    days.push(...expanded);
+  }
+
+  return [...new Set(days)];
+}
+
+function parseOpeningHoursRule(rule) {
+  const trimmed = rule.trim();
+  if (!trimmed) return null;
+
+  const firstDigitIdx = trimmed.search(/\d/);
+  const hasDigits = firstDigitIdx !== -1;
+  const dayPart = hasDigits ? trimmed.slice(0, firstDigitIdx).trim() : trimmed;
+  const timePart = hasDigits ? trimmed.slice(firstDigitIdx).trim() : "";
+
+  if (/\b(off|closed)\b/i.test(trimmed) && !timePart) {
+    const days = parseRuleDays(dayPart);
+    return days ? { days, closed: true, ranges: [] } : null;
+  }
+
+  const days = parseRuleDays(dayPart);
+  if (days === null || !timePart) return null;
+
+  const ranges = [];
+  for (const token of timePart.split(",")) {
+    const match = /^([01]?\d|2[0-3]):([0-5]\d)-([01]?\d|2[0-3]):([0-5]\d)$/.exec(token.trim());
+    if (!match) return null;
+    const start = parseTimeToMinutes(`${match[1]}:${match[2]}`);
+    const end = parseTimeToMinutes(`${match[3]}:${match[4]}`);
+    if (start === null || end === null) return null;
+    ranges.push({ start, end });
+  }
+
+  if (!ranges.length) return null;
+  return { days, closed: false, ranges };
+}
+
+function ruleCouldApplyNow(rule, currentDay, previousDay) {
+  if (rule.days.includes(currentDay)) return true;
+  if (!rule.closed && rule.ranges.some((range) => range.start > range.end) && rule.days.includes(previousDay)) {
+    return true;
+  }
+  return false;
+}
+
+function rangeMatchesNow(range, currentDay, previousDay, currentMinutes, ruleDays) {
+  if (range.start === range.end) return ruleDays.includes(currentDay);
+  if (range.start < range.end) {
+    return ruleDays.includes(currentDay) && currentMinutes >= range.start && currentMinutes < range.end;
+  }
+
+  return (
+    (ruleDays.includes(currentDay) && currentMinutes >= range.start) ||
+    (ruleDays.includes(previousDay) && currentMinutes < range.end)
+  );
+}
+
+export function isOpenNow(restaurant, currentTime = new Date()) {
+  const openingHours = restaurant?.tags?.opening_hours;
+  if (typeof openingHours !== "string" || !openingHours.trim()) return true;
+
+  const normalized = openingHours.trim();
+  if (normalized === "24/7") return true;
+
+  const currentDay = jsDayToOsmDayIndex(currentTime.getDay());
+  const previousDay = (currentDay + OSM_WEEKDAYS.length - 1) % OSM_WEEKDAYS.length;
+  const currentMinutes = currentTime.getHours() * 60 + currentTime.getMinutes();
+
+  let sawRelevantRule = false;
+
+  for (const rawRule of normalized.split(";")) {
+    const rule = parseOpeningHoursRule(rawRule);
+    if (!rule || !ruleCouldApplyNow(rule, currentDay, previousDay)) continue;
+
+    sawRelevantRule = true;
+    if (rule.closed) continue;
+
+    if (rule.ranges.some((range) => rangeMatchesNow(range, currentDay, previousDay, currentMinutes, rule.days))) {
+      return true;
+    }
+  }
+
+  return sawRelevantRule ? false : true;
+}
+
+export function filterOpenRestaurants(restaurants, currentTime = new Date()) {
+  return restaurants.filter((restaurant) => isOpenNow(restaurant, currentTime));
+}
+
 function foodWeight(tags, hour) {
   // Late night proxy: fast food tends to remain open later.
   const amenity = (tags.amenity || "").toLowerCase();

@@ -31,7 +31,7 @@
             <label for="hour">Local hour</label>
             <input id="hour" type="range" min="0" max="23" step="1" />
             <span id="hourVal" class="mono"></span>
-            <div class="hint">Adjusts late-night weighting (public heuristic). <b>Note:</b> OSM data does not filter by opening hours — late-night scores assume all fetched merchants exist; many may be closed.</div>
+            <div class="hint">Adjusts late-night weighting (public heuristic). <b>Note:</b> restaurants with parseable OSM <span class="mono">opening_hours</span> tags are filtered by the client’s current local time before they can affect scores.</div>
           </div>
 
           <div class="row">

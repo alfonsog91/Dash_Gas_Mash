@@ -3,6 +3,8 @@ import {
   scorePointAgainstRestaurants,
   probabilityOfGoodOrder,
   buildGridProbabilityHeat,
+  filterOpenRestaurants,
+  isOpenNow,
   timeBucket,
   rankParking,
   topLikelyMerchantsForParking,
@@ -215,6 +217,74 @@ function testTopMerchantsDeterminism() {
   }
 }
 
+function testOpeningHoursHelper() {
+  log("\n--- Opening-hours eligibility ---");
+  const lunchSpot = {
+    lat: 34.1060,
+    lon: -117.5930,
+    tags: { amenity: "restaurant", name: "Lunch Only", opening_hours: "Mo-Su 10:00-22:00" },
+  };
+  const lateSpot = {
+    lat: 34.1070,
+    lon: -117.5920,
+    tags: { amenity: "restaurant", name: "Late Spot", opening_hours: "Mo-Su 18:00-02:00" },
+  };
+
+  assert(isOpenNow(lunchSpot, new Date("2026-03-18T12:00:00")), "same-day hours open during service window");
+  assert(!isOpenNow(lunchSpot, new Date("2026-03-18T23:00:00")), "same-day hours close after end time");
+  assert(isOpenNow(lateSpot, new Date("2026-03-18T23:30:00")), "overnight hours open before midnight");
+  assert(isOpenNow(lateSpot, new Date("2026-03-19T01:30:00")), "overnight hours stay open after midnight");
+  assert(!isOpenNow(lateSpot, new Date("2026-03-19T03:00:00")), "overnight hours close after cutoff");
+}
+
+function testClosedRestaurantsExcludedFromPipeline() {
+  log("\n--- Opening-hours pipeline exclusion ---");
+
+  const openRestaurant = {
+    lat: 34.1060,
+    lon: -117.5930,
+    tags: { amenity: "restaurant", cuisine: "sushi", name: "Open Sushi", opening_hours: "Mo-Su 10:00-22:00" },
+  };
+  const closedRestaurant = {
+    lat: 34.1061,
+    lon: -117.5931,
+    tags: { amenity: "restaurant", cuisine: "steak", name: "Closed Steak", opening_hours: "Mo-Su 06:00-12:00" },
+  };
+  const currentTime = new Date("2026-03-18T19:30:00");
+  const eligibleRestaurants = filterOpenRestaurants([openRestaurant, closedRestaurant], currentTime);
+
+  assert(eligibleRestaurants.length === 1, "filter keeps only currently open restaurants");
+  assert(eligibleRestaurants[0].tags.name === "Open Sushi", "closed restaurant removed from candidate set");
+
+  const point = { lat: 34.1062, lon: -117.5932 };
+  const stats = { lambdaRef: 1.0 };
+  const mixedScore = probabilityOfGoodOrder(point, eligibleRestaurants, fixtureParking, { ...baseParams, lambdaRef: 1.0 });
+  const openOnlyScore = probabilityOfGoodOrder(point, [openRestaurant], fixtureParking, { ...baseParams, lambdaRef: 1.0 });
+  assert(approx(mixedScore.pGood, openOnlyScore.pGood), "filtered scoring matches open-only scoring exactly");
+
+  const bounds = {
+    getSouth: () => 34.1055,
+    getNorth: () => 34.1065,
+    getWest: () => -117.5935,
+    getEast: () => -117.5925,
+  };
+  const mixedHeat = buildGridProbabilityHeat(bounds, eligibleRestaurants, fixtureParking, baseParams, 100);
+  const openOnlyHeat = buildGridProbabilityHeat(bounds, [openRestaurant], fixtureParking, baseParams, 100);
+  assert(mixedHeat.heatPoints.length === openOnlyHeat.heatPoints.length, "heat grid size unchanged after filtering");
+  assert(
+    mixedHeat.heatPoints.every((pointValue, index) => approx(pointValue[2], openOnlyHeat.heatPoints[index][2])),
+    "heatmap inputs exclude closed restaurants"
+  );
+
+  const mixedRank = rankParking(fixtureParking, eligibleRestaurants, fixtureParking, baseParams, stats, 5);
+  const openOnlyRank = rankParking(fixtureParking, [openRestaurant], fixtureParking, baseParams, stats, 5);
+  assert(mixedRank.length === openOnlyRank.length, "ranked parking count preserved after filtering");
+  assert(
+    mixedRank.every((parkingSpot, index) => approx(parkingSpot.pGood, openOnlyRank[index].pGood)),
+    "assignment ranking uses only open restaurants"
+  );
+}
+
 // ─── Run ──────────────────────────────────────────────────────
 
 export function runPreservationTests() {
@@ -232,6 +302,8 @@ export function runPreservationTests() {
   testGridHeatBaseline();
   testRankParkingDeterminism();
   testTopMerchantsDeterminism();
+  testOpeningHoursHelper();
+  testClosedRestaurantsExcludedFromPipeline();
 
   log(`\n════════════════════════════════════════`);
   log(`Results: ${passed}/${total} passed`);
