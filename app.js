@@ -608,14 +608,25 @@ elLoad.addEventListener("click", () => {
 
 // Helpful default: pre-load once the first tiles render.
 map.whenReady(() => {
-  loadForView().catch((err) => {
-    console.error(err);
-    alert(`Failed to load map data: ${err?.message ?? String(err)}`);
-  });
   const menuButton = document.getElementById("menuToggle");
-const controls = document.getElementById("controls");
+  const panel = document.getElementById("panel");
 
-menuButton.addEventListener("click", () => {
-  controls.classList.toggle("open");
-});
+  if (menuButton && panel) {
+    menuButton.addEventListener("click", () => {
+      const isOpen = panel.classList.toggle("open");
+      menuButton.setAttribute("aria-expanded", String(isOpen));
+      setTimeout(() => { if (map) map.invalidateSize(); }, 250);
+    });
+  }
+
+  // Force size recalculation before first data load so the canvas
+  // never encounters a zero-height container (Leaflet #3575).
+  if (map) map.invalidateSize();
+  setTimeout(() => {
+    if (map) map.invalidateSize();
+    loadForView().catch((err) => {
+      console.error(err);
+      alert(`Failed to load map data: ${err?.message ?? String(err)}`);
+    });
+  }, 250);
 });
