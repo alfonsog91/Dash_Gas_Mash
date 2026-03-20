@@ -85,9 +85,11 @@ const menuButton = document.getElementById("menuToggle");
 const panel = document.getElementById("panel");
 const elLocateMe = document.getElementById("locateMe");
 
-const LOCATION_TARGET_ZOOM = 17;
+const LOCATION_TARGET_ZOOM = 16;
 const LOCATION_ANIMATION_MIN_START_ZOOM = 14;
 const LOCATION_ANIMATION_MAX_DISTANCE_METERS = 5000;
+const LOCATION_PAN_DURATION_SECONDS = 0.9;
+const LOCATION_ZOOM_STEP = 3;
 const MAX_VISIBLE_ACCURACY_RADIUS_METERS = 45;
 
 const diagramContainer = document.getElementById("diagram");
@@ -264,6 +266,21 @@ function shouldAnimateLocate(latlng) {
     && map.distance(map.getCenter(), latlng) <= LOCATION_ANIMATION_MAX_DISTANCE_METERS;
 }
 
+function animateZoomToTarget(targetZoom, onComplete) {
+  const currentZoom = map.getZoom();
+
+  if (currentZoom >= targetZoom) {
+    onComplete();
+    return;
+  }
+
+  const nextZoom = Math.min(targetZoom, currentZoom + LOCATION_ZOOM_STEP);
+  map.once("zoomend", () => {
+    animateZoomToTarget(targetZoom, onComplete);
+  });
+  map.setZoom(nextZoom, { animate: true });
+}
+
 function locateUser() {
   if (isLocating) return;
 
@@ -289,8 +306,16 @@ function locateUser() {
           duration: 0.85,
         });
       } else {
-        map.setView(latlng, LOCATION_TARGET_ZOOM, { animate: false });
-        showCurrentLocation(latlng, position.coords.accuracy);
+        map.once("moveend", () => {
+          animateZoomToTarget(LOCATION_TARGET_ZOOM, () => {
+            showCurrentLocation(latlng, position.coords.accuracy);
+          });
+        });
+        map.panTo(latlng, {
+          animate: true,
+          duration: LOCATION_PAN_DURATION_SECONDS,
+          easeLinearity: 0.2,
+        });
       }
 
       setLocateButtonState(false);
