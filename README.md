@@ -4,6 +4,43 @@ Local, **public-data** map tool that renders a real OpenStreetMap basemap and ov
 
 This is **not affiliated with DoorDash** and does **not** use proprietary DoorDash data. It’s a strategic, tunable proxy model inspired by public DoorDash engineering writeups.
 
+## Map Philosophy
+
+Dash Gas Mash uses an efficiency-first map philosophy.
+
+Most platform heat maps are best understood as coverage maps. They are designed to answer a system question: where are drivers needed right now to keep delivery coverage stable? In that model, visible heat reflects perceived scarcity, coverage gaps, and reposition pressure. A glowing zone does not necessarily mean that a driver entering it will improve their personal outcome. It means the platform may want more supply there.
+
+DGM asks a different question:
+
+Where should I stay so the system comes to me at the lowest cost?
+
+This app treats the map as a cost field shaped by merchant density, travel friction, pickup distance, and local competition. The goal is not to chase every short-term spike. The goal is to identify structurally favorable hold positions where movement is expensive, stability matters, and assignment likelihood can remain strong without constant repositioning.
+
+This distinction matters because the two map logics optimize different invariants:
+
+- Coverage-first maps optimize global coverage stability
+- DGM optimizes local execution efficiency
+
+In practical terms, DoorDash-style heat is interpreted as a platform-facing signal, while DGM is a driver-facing structural model. Platform heat asks where supply is needed. DGM asks where waiting is justified.
+
+That creates predictable divergences:
+
+- Heat does not equal opportunity
+- Movement does not equal improvement
+- Coverage gaps do not necessarily indicate profitable waiting zones
+- A reactive system map can disagree with an anticipatory hold strategy
+
+That is why this app does not treat “hot” areas as automatically better. Instead, it scores locations by public, interpretable proxies such as nearby merchant concentration, distance-decay effects, pickup cost, and a rough competition penalty. The result is a descriptive map of local positional quality, not a claim about DoorDash’s internal dispatch state.
+
+The governing idea is simple:
+
+DoorDash’s map treats drivers as fluid units to be redistributed.  
+DGM treats the driver as a fixed observer inside a changing field.
+
+Once that distinction is clear, the mismatch many drivers feel becomes easier to explain. A map can glow brightly and still be a poor place to wait. Chasing heat can feel wrong because the platform may be solving for coverage restoration while the driver is solving for efficient, low-friction execution.
+
+DGM does not attempt to predict individual assignments or override platform behavior; it provides a stable lens for interpreting public signals under uncertainty.
+
 ## What it does
 
 - Loads **food merchant proxies** from OpenStreetMap via Overpass (amenity: restaurant / fast_food / cafe / food_court)
@@ -77,8 +114,9 @@ This is a static site. You just need Python.
 
 From the workspace folder:
 
-- `C:/Users/GameC/Documents/Dash_Gas_Mash/.venv/Scripts/python.exe -m http.server 5173`
-- Open `http://localhost:5173/` in your browser
+- PowerShell on Windows: `.\start.ps1`
+- Manual fallback in PowerShell: `& .\.venv\Scripts\python.exe -m http.server 5173`
+- Then open `http://localhost:5173/` in your browser
 
 ## How to use
 

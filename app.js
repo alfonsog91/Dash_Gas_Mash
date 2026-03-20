@@ -81,9 +81,19 @@ const elShowRestaurants = document.getElementById("showRestaurants");
 const elShowParking = document.getElementById("showParking");
 const elParkingList = document.getElementById("parkingList");
 const elSummaryCards = document.getElementById("summaryCards");
+const menuButton = document.getElementById("menuToggle");
+const panel = document.getElementById("panel");
+const elLocateMe = document.getElementById("locateMe");
+
+const LOCATION_VIEW_WIDTH_METERS = 200;
+const LOCATION_VIEW_HEIGHT_METERS = 305;
+const MAX_VISIBLE_ACCURACY_RADIUS_METERS = 45;
 
 const diagramContainer = document.getElementById("diagram");
 renderModelDiagram(diagramContainer);
+
+let currentLocationLayer = L.layerGroup().addTo(map);
+let isLocating = false;
 
 function setHourDefaults() {
   const now = new Date();
@@ -184,6 +194,116 @@ function clearLayers() {
   }
   lastLoadedBounds = null;
   setDataStatus("", "");
+}
+
+function syncPanelState(isOpen) {
+  if (!panel) return;
+  panel.classList.toggle("open", isOpen);
+  if (menuButton) {
+    menuButton.setAttribute("aria-expanded", String(isOpen));
+  }
+  setTimeout(() => {
+    if (map) map.invalidateSize();
+  }, 250);
+}
+
+function closePanelIfOpen() {
+  if (!panel?.classList.contains("open")) return false;
+  syncPanelState(false);
+  map.closePopup();
+  if (spotMarker) spotMarker.closePopup();
+  return true;
+}
+
+function setLocateButtonState(isLoading) {
+  if (!elLocateMe) return;
+  isLocating = isLoading;
+  elLocateMe.disabled = isLoading;
+  elLocateMe.setAttribute("aria-busy", String(isLoading));
+  elLocateMe.textContent = isLoading ? "..." : "ME";
+}
+
+function describeGeolocationError(error) {
+  if (!error) return "Unable to determine your location.";
+  if (error.code === error.PERMISSION_DENIED) return "Location access was denied. Enable location permission and try again.";
+  if (error.code === error.POSITION_UNAVAILABLE) return "Your current position is unavailable right now. Try again in a moment.";
+  if (error.code === error.TIMEOUT) return "Location lookup timed out. Try again with a stronger signal.";
+  return error.message || "Unable to determine your location.";
+}
+
+function boundsAroundLatLng(latlng, widthMeters, heightMeters) {
+  const halfWidthMeters = widthMeters / 2;
+  const halfHeightMeters = heightMeters / 2;
+  const latDelta = halfHeightMeters / 111320;
+  const lngMetersPerDegree = 111320 * Math.cos((latlng.lat * Math.PI) / 180);
+  const safeLngMetersPerDegree = Math.max(Math.abs(lngMetersPerDegree), 1e-6);
+  const lngDelta = halfWidthMeters / safeLngMetersPerDegree;
+
+  return L.latLngBounds(
+    [latlng.lat - latDelta, latlng.lng - lngDelta],
+    [latlng.lat + latDelta, latlng.lng + lngDelta]
+  );
+}
+
+function showCurrentLocation(latlng, accuracyMeters) {
+  currentLocationLayer.clearLayers();
+
+  const accuracyRadius = Math.max(Number(accuracyMeters) || 0, 12);
+
+  if (accuracyRadius <= MAX_VISIBLE_ACCURACY_RADIUS_METERS) {
+    L.circle([latlng.lat, latlng.lng], {
+      radius: accuracyRadius,
+      weight: 1,
+      color: "#a7e3ff",
+      fillColor: "#2d6cdf",
+      fillOpacity: 0.1,
+    }).addTo(currentLocationLayer);
+  }
+
+  L.circleMarker([latlng.lat, latlng.lng], {
+    radius: 8,
+    weight: 3,
+    color: "#f4fbff",
+    fillColor: "#2d6cdf",
+    fillOpacity: 0.95,
+  })
+    .bindPopup(`You are here<br/><span class="mono">Accuracy ±${Math.round(accuracyRadius)} m</span>`)
+    .addTo(currentLocationLayer)
+    .openPopup();
+}
+
+function locateUser() {
+  if (isLocating) return;
+
+  if (!navigator.geolocation) {
+    alert("Geolocation is not supported in this browser.");
+    return;
+  }
+
+  setLocateButtonState(true);
+
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      const latlng = L.latLng(position.coords.latitude, position.coords.longitude);
+      closePanelIfOpen();
+      showCurrentLocation(latlng, position.coords.accuracy);
+      map.flyToBounds(boundsAroundLatLng(latlng, LOCATION_VIEW_WIDTH_METERS, LOCATION_VIEW_HEIGHT_METERS), {
+        padding: [8, 8],
+        duration: 0.85,
+        maxZoom: 18,
+      });
+      setLocateButtonState(false);
+    },
+    (error) => {
+      setLocateButtonState(false);
+      alert(describeGeolocationError(error));
+    },
+    {
+      enableHighAccuracy: true,
+      timeout: 12000,
+      maximumAge: 60000,
+    }
+  );
 }
 
 function clamp01(x) {
@@ -590,6 +710,10 @@ async function loadForView() {
 map.on("moveend", checkDataFreshness);
 
 map.on("click", (e) => {
+  if (closePanelIfOpen()) {
+    return;
+  }
+
   if (!lastRestaurants || lastRestaurants.length === 0) {
     L.popup()
       .setLatLng(e.latlng)
@@ -610,18 +734,25 @@ elLoad.addEventListener("click", () => {
   });
 });
 
+if (elLocateMe) {
+  elLocateMe.addEventListener("click", locateUser);
+}
+
 // Helpful default: pre-load once the first tiles render.
 map.whenReady(() => {
-  const menuButton = document.getElementById("menuToggle");
-  const panel = document.getElementById("panel");
-
   if (menuButton && panel) {
     menuButton.addEventListener("click", () => {
-      const isOpen = panel.classList.toggle("open");
-      menuButton.setAttribute("aria-expanded", String(isOpen));
-      setTimeout(() => { if (map) map.invalidateSize(); }, 250);
+      syncPanelState(!panel.classList.contains("open"));
     });
   }
+
+  // Prevent clicks inside the panel from closing it
+  if (panel) {
+    panel.addEventListener("click", (e) => {
+      e.stopPropagation();
+    });
+  }
+
 
   // Force size recalculation before first data load so the canvas
   // never encounters a zero-height container (Leaflet #3575).
