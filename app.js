@@ -85,8 +85,9 @@ const menuButton = document.getElementById("menuToggle");
 const panel = document.getElementById("panel");
 const elLocateMe = document.getElementById("locateMe");
 
-const LOCATION_VIEW_WIDTH_METERS = 200;
-const LOCATION_VIEW_HEIGHT_METERS = 305;
+const LOCATION_TARGET_ZOOM = 17;
+const LOCATION_ANIMATION_MIN_START_ZOOM = 14;
+const LOCATION_ANIMATION_MAX_DISTANCE_METERS = 5000;
 const MAX_VISIBLE_ACCURACY_RADIUS_METERS = 45;
 
 const diagramContainer = document.getElementById("diagram");
@@ -231,20 +232,6 @@ function describeGeolocationError(error) {
   return error.message || "Unable to determine your location.";
 }
 
-function boundsAroundLatLng(latlng, widthMeters, heightMeters) {
-  const halfWidthMeters = widthMeters / 2;
-  const halfHeightMeters = heightMeters / 2;
-  const latDelta = halfHeightMeters / 111320;
-  const lngMetersPerDegree = 111320 * Math.cos((latlng.lat * Math.PI) / 180);
-  const safeLngMetersPerDegree = Math.max(Math.abs(lngMetersPerDegree), 1e-6);
-  const lngDelta = halfWidthMeters / safeLngMetersPerDegree;
-
-  return L.latLngBounds(
-    [latlng.lat - latDelta, latlng.lng - lngDelta],
-    [latlng.lat + latDelta, latlng.lng + lngDelta]
-  );
-}
-
 function showCurrentLocation(latlng, accuracyMeters) {
   currentLocationLayer.clearLayers();
 
@@ -272,6 +259,11 @@ function showCurrentLocation(latlng, accuracyMeters) {
     .openPopup();
 }
 
+function shouldAnimateLocate(latlng) {
+  return map.getZoom() >= LOCATION_ANIMATION_MIN_START_ZOOM
+    && map.distance(map.getCenter(), latlng) <= LOCATION_ANIMATION_MAX_DISTANCE_METERS;
+}
+
 function locateUser() {
   if (isLocating) return;
 
@@ -285,13 +277,22 @@ function locateUser() {
   navigator.geolocation.getCurrentPosition(
     (position) => {
       const latlng = L.latLng(position.coords.latitude, position.coords.longitude);
+      const animateLocate = shouldAnimateLocate(latlng);
       closePanelIfOpen();
-      showCurrentLocation(latlng, position.coords.accuracy);
-      map.flyToBounds(boundsAroundLatLng(latlng, LOCATION_VIEW_WIDTH_METERS, LOCATION_VIEW_HEIGHT_METERS), {
-        padding: [8, 8],
-        duration: 0.85,
-        maxZoom: 18,
-      });
+      currentLocationLayer.clearLayers();
+
+      if (animateLocate) {
+        map.once("moveend", () => {
+          showCurrentLocation(latlng, position.coords.accuracy);
+        });
+        map.flyTo(latlng, LOCATION_TARGET_ZOOM, {
+          duration: 0.85,
+        });
+      } else {
+        map.setView(latlng, LOCATION_TARGET_ZOOM, { animate: false });
+        showCurrentLocation(latlng, position.coords.accuracy);
+      }
+
       setLocateButtonState(false);
     },
     (error) => {
