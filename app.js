@@ -91,12 +91,35 @@ const LOCATION_ANIMATION_MAX_DISTANCE_METERS = 5000;
 const LOCATION_PAN_DURATION_SECONDS = 0.9;
 const LOCATION_ZOOM_STEP = 3;
 const MAX_VISIBLE_ACCURACY_RADIUS_METERS = 45;
+const INITIAL_LOCATION_ZOOM = 14;
+const INITIAL_LOCATION_TIMEOUT_MS = 8000;
+const DOUBLE_TAP_MAX_DELAY_MS = 300;
+const DOUBLE_TAP_MAX_DISTANCE_PX = 28;
+const DOUBLE_TAP_HOLD_DELAY_MS = 120;
+const DOUBLE_TAP_HOLD_TOLERANCE_PX = 12;
+const DOUBLE_TAP_ZOOM_PIXELS_PER_LEVEL = 140;
+const DOUBLE_TAP_DBLCLICK_SUPPRESSION_MS = 250;
 
 const diagramContainer = document.getElementById("diagram");
 renderModelDiagram(diagramContainer);
 
 let currentLocationLayer = L.layerGroup().addTo(map);
 let isLocating = false;
+let hasRequestedInitialLocation = false;
+
+const touchGestureState = {
+  active: false,
+  pending: false,
+  holdTimer: null,
+  activeTouchId: null,
+  startPoint: null,
+  startZoom: DEFAULT_ZOOM,
+  currentTouch: null,
+  lastTap: null,
+  dragWasEnabled: false,
+  doubleClickZoomWasEnabled: false,
+  previousZoomSnap: null,
+};
 
 function setHourDefaults() {
   const now = new Date();
@@ -281,7 +304,48 @@ function animateZoomToTarget(targetZoom, onComplete) {
   map.setZoom(nextZoom, { animate: true });
 }
 
-function locateUser() {
+function getCurrentPosition(options = {}) {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(new Error("Geolocation is not supported in this browser."));
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(resolve, reject, {
+      enableHighAccuracy: true,
+      timeout: 12000,
+      maximumAge: 60000,
+      ...options,
+    });
+  });
+}
+
+function clampMapZoom(zoom) {
+  const minZoom = Number.isFinite(map.getMinZoom()) ? map.getMinZoom() : 0;
+  const maxZoom = Number.isFinite(map.getMaxZoom()) ? map.getMaxZoom() : zoom;
+  return Math.max(minZoom, Math.min(maxZoom, zoom));
+}
+
+async function centerMapOnInitialLocationOnce() {
+  if (hasRequestedInitialLocation) return;
+  hasRequestedInitialLocation = true;
+
+  if (!navigator.geolocation) return;
+
+  try {
+    const position = await getCurrentPosition({
+      enableHighAccuracy: false,
+      timeout: INITIAL_LOCATION_TIMEOUT_MS,
+      maximumAge: 300000,
+    });
+    const latlng = L.latLng(position.coords.latitude, position.coords.longitude);
+    map.setView(latlng, clampMapZoom(INITIAL_LOCATION_ZOOM), { animate: false });
+  } catch (error) {
+    console.info("Initial geolocation unavailable.", error);
+  }
+}
+
+async function locateUser() {
   if (isLocating) return;
 
   if (!navigator.geolocation) {
@@ -291,45 +355,233 @@ function locateUser() {
 
   setLocateButtonState(true);
 
-  navigator.geolocation.getCurrentPosition(
-    (position) => {
-      const latlng = L.latLng(position.coords.latitude, position.coords.longitude);
-      const animateLocate = shouldAnimateLocate(latlng);
-      closePanelIfOpen();
-      currentLocationLayer.clearLayers();
+  try {
+    const position = await getCurrentPosition();
+    const latlng = L.latLng(position.coords.latitude, position.coords.longitude);
+    const animateLocate = shouldAnimateLocate(latlng);
+    const targetZoom = clampMapZoom(LOCATION_TARGET_ZOOM);
 
-      if (animateLocate) {
-        map.once("moveend", () => {
+    closePanelIfOpen();
+    currentLocationLayer.clearLayers();
+
+    if (animateLocate) {
+      map.once("moveend", () => {
+        showCurrentLocation(latlng, position.coords.accuracy);
+      });
+      map.flyTo(latlng, targetZoom, {
+        duration: 0.85,
+      });
+    } else {
+      map.once("moveend", () => {
+        animateZoomToTarget(targetZoom, () => {
           showCurrentLocation(latlng, position.coords.accuracy);
         });
-        map.flyTo(latlng, LOCATION_TARGET_ZOOM, {
-          duration: 0.85,
-        });
-      } else {
-        map.once("moveend", () => {
-          animateZoomToTarget(LOCATION_TARGET_ZOOM, () => {
-            showCurrentLocation(latlng, position.coords.accuracy);
-          });
-        });
-        map.panTo(latlng, {
-          animate: true,
-          duration: LOCATION_PAN_DURATION_SECONDS,
-          easeLinearity: 0.2,
-        });
-      }
-
-      setLocateButtonState(false);
-    },
-    (error) => {
-      setLocateButtonState(false);
-      alert(describeGeolocationError(error));
-    },
-    {
-      enableHighAccuracy: true,
-      timeout: 12000,
-      maximumAge: 60000,
+      });
+      map.panTo(latlng, {
+        animate: true,
+        duration: LOCATION_PAN_DURATION_SECONDS,
+        easeLinearity: 0.2,
+      });
     }
+  } catch (error) {
+    alert(describeGeolocationError(error));
+  } finally {
+    setLocateButtonState(false);
+  }
+}
+
+function clearDoubleTapHoldTimer() {
+  if (touchGestureState.holdTimer !== null) {
+    window.clearTimeout(touchGestureState.holdTimer);
+    touchGestureState.holdTimer = null;
+  }
+}
+
+function resetDoubleTapHoldZoomState() {
+  clearDoubleTapHoldTimer();
+
+  if (touchGestureState.active) {
+    if (touchGestureState.dragWasEnabled && map.dragging) {
+      map.dragging.enable();
+    }
+
+    if (touchGestureState.doubleClickZoomWasEnabled && map.doubleClickZoom) {
+      window.setTimeout(() => {
+        map.doubleClickZoom.enable();
+      }, DOUBLE_TAP_DBLCLICK_SUPPRESSION_MS);
+    }
+
+    if (touchGestureState.previousZoomSnap !== null) {
+      map.options.zoomSnap = touchGestureState.previousZoomSnap;
+    }
+  }
+
+  touchGestureState.active = false;
+  touchGestureState.pending = false;
+  touchGestureState.holdTimer = null;
+  touchGestureState.activeTouchId = null;
+  touchGestureState.startPoint = null;
+  touchGestureState.startZoom = map.getZoom();
+  touchGestureState.dragWasEnabled = false;
+  touchGestureState.doubleClickZoomWasEnabled = false;
+  touchGestureState.previousZoomSnap = null;
+}
+
+function findTouchById(touchList, touchId) {
+  if (!touchList) return null;
+
+  for (const touch of touchList) {
+    if (touch.identifier === touchId) return touch;
+  }
+
+  return null;
+}
+
+function handleMapTouchStart(event) {
+  const originalEvent = event.originalEvent;
+  if (!originalEvent) return;
+
+  if (originalEvent.touches.length !== 1) {
+    touchGestureState.currentTouch = null;
+    resetDoubleTapHoldZoomState();
+    return;
+  }
+
+  const touch = originalEvent.touches[0];
+  const point = L.point(touch.clientX, touch.clientY);
+  const now = performance.now();
+
+  touchGestureState.currentTouch = {
+    id: touch.identifier,
+    startPoint: point,
+    startTime: now,
+    moved: false,
+  };
+
+  const lastTap = touchGestureState.lastTap;
+  const isDoubleTap = lastTap
+    && now - lastTap.time <= DOUBLE_TAP_MAX_DELAY_MS
+    && point.distanceTo(lastTap.point) <= DOUBLE_TAP_MAX_DISTANCE_PX;
+
+  if (!isDoubleTap) return;
+
+  // Wait briefly on the second tap so normal taps and pans still pass through untouched.
+  touchGestureState.pending = true;
+  touchGestureState.activeTouchId = touch.identifier;
+  touchGestureState.startPoint = point;
+  touchGestureState.startZoom = map.getZoom();
+  clearDoubleTapHoldTimer();
+  touchGestureState.holdTimer = window.setTimeout(() => {
+    if (!touchGestureState.pending || !touchGestureState.startPoint) return;
+
+    // Once the hold is confirmed, convert vertical drag distance into fractional zoom.
+    touchGestureState.pending = false;
+    touchGestureState.active = true;
+    touchGestureState.lastTap = null;
+    touchGestureState.dragWasEnabled = Boolean(map.dragging?.enabled());
+    touchGestureState.doubleClickZoomWasEnabled = Boolean(map.doubleClickZoom?.enabled());
+    touchGestureState.previousZoomSnap = map.options.zoomSnap;
+
+    if (touchGestureState.dragWasEnabled) {
+      map.dragging.disable();
+    }
+
+    if (touchGestureState.doubleClickZoomWasEnabled) {
+      map.doubleClickZoom.disable();
+    }
+
+    map.options.zoomSnap = 0;
+  }, DOUBLE_TAP_HOLD_DELAY_MS);
+}
+
+function handleMapTouchMove(event) {
+  const originalEvent = event.originalEvent;
+  if (!originalEvent) return;
+
+  if (originalEvent.touches.length !== 1) {
+    resetDoubleTapHoldZoomState();
+    return;
+  }
+
+  const trackedTouchId = touchGestureState.active
+    ? touchGestureState.activeTouchId
+    : touchGestureState.currentTouch?.id;
+  const touch = findTouchById(originalEvent.touches, trackedTouchId);
+  if (!touch) return;
+
+  const point = L.point(touch.clientX, touch.clientY);
+  if (touchGestureState.currentTouch?.startPoint) {
+    const movedDistance = point.distanceTo(touchGestureState.currentTouch.startPoint);
+    if (movedDistance > DOUBLE_TAP_HOLD_TOLERANCE_PX) {
+      touchGestureState.currentTouch.moved = true;
+    }
+  }
+
+  if (touchGestureState.pending && touch.identifier === touchGestureState.activeTouchId) {
+    if (touchGestureState.startPoint && point.distanceTo(touchGestureState.startPoint) > DOUBLE_TAP_HOLD_TOLERANCE_PX) {
+      resetDoubleTapHoldZoomState();
+    }
+    return;
+  }
+
+  if (!touchGestureState.active || touch.identifier !== touchGestureState.activeTouchId || !touchGestureState.startPoint) {
+    return;
+  }
+
+  originalEvent.preventDefault();
+
+  const nextZoom = clampMapZoom(
+    touchGestureState.startZoom + (touch.clientY - touchGestureState.startPoint.y) / DOUBLE_TAP_ZOOM_PIXELS_PER_LEVEL
   );
+  if (Math.abs(nextZoom - map.getZoom()) < 0.01) return;
+
+  map.setZoomAround(
+    map.containerPointToLatLng(touchGestureState.startPoint),
+    nextZoom,
+    { animate: false }
+  );
+}
+
+function handleMapTouchEnd(event) {
+  const originalEvent = event.originalEvent;
+  const currentTouch = touchGestureState.currentTouch;
+  const finishedTouch = currentTouch
+    ? findTouchById(originalEvent?.changedTouches, currentTouch.id)
+    : null;
+  const endPoint = finishedTouch
+    ? L.point(finishedTouch.clientX, finishedTouch.clientY)
+    : currentTouch?.startPoint;
+  const now = performance.now();
+
+  if (touchGestureState.active && currentTouch?.id === touchGestureState.activeTouchId) {
+    resetDoubleTapHoldZoomState();
+    touchGestureState.currentTouch = null;
+    return;
+  }
+
+  if (touchGestureState.pending && currentTouch?.id === touchGestureState.activeTouchId) {
+    clearDoubleTapHoldTimer();
+    touchGestureState.pending = false;
+    touchGestureState.activeTouchId = null;
+    touchGestureState.startPoint = null;
+  }
+
+  if (currentTouch && endPoint && !currentTouch.moved && now - currentTouch.startTime <= DOUBLE_TAP_MAX_DELAY_MS) {
+    touchGestureState.lastTap = {
+      point: endPoint,
+      time: now,
+    };
+  } else if (!touchGestureState.active) {
+    touchGestureState.lastTap = null;
+  }
+
+  touchGestureState.currentTouch = null;
+}
+
+function handleMapTouchCancel() {
+  touchGestureState.currentTouch = null;
+  touchGestureState.lastTap = null;
+  resetDoubleTapHoldZoomState();
 }
 
 function clamp01(x) {
@@ -734,6 +986,10 @@ async function loadForView() {
 }
 
 map.on("moveend", checkDataFreshness);
+map.on("touchstart", handleMapTouchStart);
+map.on("touchmove", handleMapTouchMove);
+map.on("touchend", handleMapTouchEnd);
+map.on("touchcancel", handleMapTouchCancel);
 
 map.on("click", (e) => {
   if (closePanelIfOpen()) {
@@ -783,8 +1039,9 @@ map.whenReady(() => {
   // Force size recalculation before first data load so the canvas
   // never encounters a zero-height container (Leaflet #3575).
   if (map) map.invalidateSize();
-  setTimeout(() => {
+  setTimeout(async () => {
     if (map) map.invalidateSize();
+    await centerMapOnInitialLocationOnce();
     loadForView().catch((err) => {
       console.error(err);
       alert(`Failed to load map data: ${err?.message ?? String(err)}`);
