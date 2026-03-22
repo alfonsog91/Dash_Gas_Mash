@@ -1,10 +1,12 @@
 // ──────────────────────────────────────────────────────────────────
+//
 // GOVERNANCE: This UI module renders descriptive, annotation-only
 // outputs (§6 A-1..A-4). All advisory text is non-prescriptive
 // and many-to-one (§6.6). Threshold-based descriptions (§5) carry
 // no triggers, alerts, or implied actions. No element of this
 // module constitutes decision authority (§1 I-4).
 // See docs/GOVERNANCE.md and docs/CLASSIFICATION_REGISTRY.md.
+//
 // ──────────────────────────────────────────────────────────────────
 
 import { fetchFoodPlaces, fetchParkingCandidates } from "./overpass.js";
@@ -48,6 +50,7 @@ let lastRestaurants = [];
 let lastParkingCandidates = [];
 let lastStats = null;
 let lastLoadedBounds = null; // tracks the bounds used for the last successful load
+
 let lastParams = {
   hour: 0,
   tauMeters: 1200,
@@ -91,14 +94,19 @@ const LOCATION_ANIMATION_MAX_DISTANCE_METERS = 5000;
 const LOCATION_PAN_DURATION_SECONDS = 0.9;
 const LOCATION_ZOOM_STEP = 3;
 const MAX_VISIBLE_ACCURACY_RADIUS_METERS = 45;
+
 const INITIAL_LOCATION_ZOOM = 14;
 const INITIAL_LOCATION_TIMEOUT_MS = 8000;
+
 const DOUBLE_TAP_MAX_DELAY_MS = 300;
 const DOUBLE_TAP_MAX_DISTANCE_PX = 28;
 const DOUBLE_TAP_HOLD_DELAY_MS = 120;
 const DOUBLE_TAP_HOLD_TOLERANCE_PX = 12;
 const DOUBLE_TAP_ZOOM_PIXELS_PER_LEVEL = 140;
 const DOUBLE_TAP_DBLCLICK_SUPPRESSION_MS = 250;
+
+let suppressStatsPopupUntil = 0;
+const SUPPRESS_AFTER_GESTURE_MS = L.Browser.mobile ? 450 : 0;
 
 const diagramContainer = document.getElementById("diagram");
 renderModelDiagram(diagramContainer);
@@ -129,6 +137,7 @@ function setHourDefaults() {
 function updateLabels() {
   const hour = Number(elHour.value);
   const bucket = timeBucket(hour);
+
   elHourVal.textContent = `${hour}:00 · ${bucket.label}`;
   elTauVal.textContent = `${elTau.value} m`;
   elGridVal.textContent = `${elGrid.value} m`;
@@ -172,7 +181,6 @@ function clampQueryBounds(originalBounds) {
   // Clamp to a square around the center to keep queries light.
   const diagMeters = map.distance(originalBounds.getSouthWest(), originalBounds.getNorthEast());
   const maxDiagMeters = 12000; // ~12 km diagonal
-
   if (diagMeters <= maxDiagMeters) return originalBounds;
 
   // Show a persistent badge instead of a one-shot alert (m6).
@@ -188,6 +196,7 @@ function clampQueryBounds(originalBounds) {
 function setDataStatus(msg, level) {
   const el = document.getElementById("dataStatus");
   if (!el) return;
+
   el.textContent = msg;
   el.className = msg ? `data-status data-status--${level}` : "";
 }
@@ -197,11 +206,13 @@ function checkDataFreshness() {
     setDataStatus("", "");
     return;
   }
+
   const current = map.getBounds();
+
   if (!lastLoadedBounds.intersects(current)) {
-    setDataStatus("Data stale \u2014 reload for this area", "warn");
+    setDataStatus("Data stale — reload for this area", "warn");
   } else if (!lastLoadedBounds.contains(current)) {
-    setDataStatus("View extends beyond loaded data \u2014 reload to refresh edges", "info");
+    setDataStatus("View extends beyond loaded data — reload to refresh edges", "info");
   } else {
     setDataStatus("OSM data loaded for this view", "ok");
   }
@@ -212,22 +223,28 @@ function clearLayers() {
   parkingLayer.clearLayers();
   spotLayer.clearLayers();
   spotMarker = null;
+
   elParkingList.innerHTML = "";
   if (elSummaryCards) elSummaryCards.innerHTML = "";
+
   if (heatLayer) {
     map.removeLayer(heatLayer);
     heatLayer = null;
   }
+
   lastLoadedBounds = null;
   setDataStatus("", "");
 }
 
 function syncPanelState(isOpen) {
   if (!panel) return;
+
   panel.classList.toggle("open", isOpen);
+
   if (menuButton) {
     menuButton.setAttribute("aria-expanded", String(isOpen));
   }
+
   setTimeout(() => {
     if (map) map.invalidateSize();
   }, 250);
@@ -235,6 +252,7 @@ function syncPanelState(isOpen) {
 
 function closePanelIfOpen() {
   if (!panel?.classList.contains("open")) return false;
+
   syncPanelState(false);
   map.closePopup();
   if (spotMarker) spotMarker.closePopup();
@@ -243,6 +261,7 @@ function closePanelIfOpen() {
 
 function setLocateButtonState(isLoading) {
   if (!elLocateMe) return;
+
   isLocating = isLoading;
   elLocateMe.disabled = isLoading;
   elLocateMe.setAttribute("aria-busy", String(isLoading));
@@ -298,9 +317,11 @@ function animateZoomToTarget(targetZoom, onComplete) {
   }
 
   const nextZoom = Math.min(targetZoom, currentZoom + LOCATION_ZOOM_STEP);
+
   map.once("zoomend", () => {
     animateZoomToTarget(targetZoom, onComplete);
   });
+
   map.setZoom(nextZoom, { animate: true });
 }
 
@@ -338,6 +359,7 @@ async function centerMapOnInitialLocationOnce() {
       timeout: INITIAL_LOCATION_TIMEOUT_MS,
       maximumAge: 300000,
     });
+
     const latlng = L.latLng(position.coords.latitude, position.coords.longitude);
     map.setView(latlng, clampMapZoom(INITIAL_LOCATION_ZOOM), { animate: false });
   } catch (error) {
@@ -358,6 +380,7 @@ async function locateUser() {
   try {
     const position = await getCurrentPosition();
     const latlng = L.latLng(position.coords.latitude, position.coords.longitude);
+
     const animateLocate = shouldAnimateLocate(latlng);
     const targetZoom = clampMapZoom(LOCATION_TARGET_ZOOM);
 
@@ -368,6 +391,7 @@ async function locateUser() {
       map.once("moveend", () => {
         showCurrentLocation(latlng, position.coords.accuracy);
       });
+
       map.flyTo(latlng, targetZoom, {
         duration: 0.85,
       });
@@ -377,6 +401,7 @@ async function locateUser() {
           showCurrentLocation(latlng, position.coords.accuracy);
         });
       });
+
       map.panTo(latlng, {
         animate: true,
         duration: LOCATION_PAN_DURATION_SECONDS,
@@ -459,24 +484,32 @@ function handleMapTouchStart(event) {
   };
 
   const lastTap = touchGestureState.lastTap;
+
   const isDoubleTap = lastTap
     && now - lastTap.time <= DOUBLE_TAP_MAX_DELAY_MS
     && point.distanceTo(lastTap.point) <= DOUBLE_TAP_MAX_DISTANCE_PX;
 
   if (!isDoubleTap) return;
 
+  suppressStatsPopupUntil = now + SUPPRESS_AFTER_GESTURE_MS;
+
   // Wait briefly on the second tap so normal taps and pans still pass through untouched.
   touchGestureState.pending = true;
   touchGestureState.activeTouchId = touch.identifier;
   touchGestureState.startPoint = point;
   touchGestureState.startZoom = map.getZoom();
+
   clearDoubleTapHoldTimer();
+
   touchGestureState.holdTimer = window.setTimeout(() => {
     if (!touchGestureState.pending || !touchGestureState.startPoint) return;
 
     // Once the hold is confirmed, convert vertical drag distance into fractional zoom.
     touchGestureState.pending = false;
     touchGestureState.active = true;
+
+    suppressStatsPopupUntil = performance.now() + SUPPRESS_AFTER_GESTURE_MS;
+
     touchGestureState.lastTap = null;
     touchGestureState.dragWasEnabled = Boolean(map.dragging?.enabled());
     touchGestureState.doubleClickZoomWasEnabled = Boolean(map.doubleClickZoom?.enabled());
@@ -506,10 +539,12 @@ function handleMapTouchMove(event) {
   const trackedTouchId = touchGestureState.active
     ? touchGestureState.activeTouchId
     : touchGestureState.currentTouch?.id;
+
   const touch = findTouchById(originalEvent.touches, trackedTouchId);
   if (!touch) return;
 
   const point = L.point(touch.clientX, touch.clientY);
+
   if (touchGestureState.currentTouch?.startPoint) {
     const movedDistance = point.distanceTo(touchGestureState.currentTouch.startPoint);
     if (movedDistance > DOUBLE_TAP_HOLD_TOLERANCE_PX) {
@@ -529,10 +564,12 @@ function handleMapTouchMove(event) {
   }
 
   originalEvent.preventDefault();
+  suppressStatsPopupUntil = performance.now() + SUPPRESS_AFTER_GESTURE_MS;
 
   const nextZoom = clampMapZoom(
     touchGestureState.startZoom + (touch.clientY - touchGestureState.startPoint.y) / DOUBLE_TAP_ZOOM_PIXELS_PER_LEVEL
   );
+
   if (Math.abs(nextZoom - map.getZoom()) < 0.01) return;
 
   map.setZoomAround(
@@ -545,13 +582,21 @@ function handleMapTouchMove(event) {
 function handleMapTouchEnd(event) {
   const originalEvent = event.originalEvent;
   const currentTouch = touchGestureState.currentTouch;
+
   const finishedTouch = currentTouch
     ? findTouchById(originalEvent?.changedTouches, currentTouch.id)
     : null;
+
   const endPoint = finishedTouch
     ? L.point(finishedTouch.clientX, finishedTouch.clientY)
     : currentTouch?.startPoint;
+
   const now = performance.now();
+
+  if (touchGestureState.active || touchGestureState.pending) {
+    if (originalEvent) L.DomEvent.preventDefault(originalEvent);
+    suppressStatsPopupUntil = now + SUPPRESS_AFTER_GESTURE_MS;
+  }
 
   if (touchGestureState.active && currentTouch?.id === touchGestureState.activeTouchId) {
     resetDoubleTapHoldZoomState();
@@ -628,15 +673,19 @@ function describePickup(distanceMeters) {
 
 function describeStability(score) {
   const n = Math.round(score.effectiveMerchants ?? 0);
+
   if (n < 1.5 || (score.stabilityWidth ?? 1) > 0.34) {
     return `Shaky — only ~${n} merchant(s) contributing, score could swing a lot`;
   }
+
   if (n < 3 || (score.stabilityWidth ?? 1) > 0.24) {
     return `Somewhat reliable — ~${n} merchants, but still limited`;
   }
+
   if (n < 6 || (score.stabilityWidth ?? 1) > 0.16) {
     return `Fairly stable — ~${n} merchants backing this score`;
   }
+
   return `Very stable — ~${n} merchants, score is well-supported`;
 }
 
@@ -650,26 +699,29 @@ function formatRelativeRank(score) {
 }
 
 function describeAdvisory(advisory) {
-  return advisory === 'hold'
-    ? '\u2705 Hold — worth waiting here'
-    : '\u21bb Rotate — try a different spot';
+  return advisory === "hold"
+    ? "✅ Hold — worth waiting here"
+    : "↻ Rotate — try a different spot";
 }
 
 function renderSignalBarsHtml(signals, bucketLabel) {
   const bars = [
-    { key: 'I', label: 'Avg ticket size', tip: 'How expensive nearby restaurants tend to be (correlates with tips)', value: signals.I, color: '#7fe8b0' },
-    { key: 'M', label: 'Restaurant density', tip: 'How many restaurants are within range', value: signals.M, color: '#9ad3ff' },
-    { key: 'R', label: 'Proximity', tip: 'How close the nearest merchants are', value: signals.R, color: '#c4b5fd' },
-    { key: 'D', label: 'Crowding (bad)', tip: 'How many other parking spots are nearby (more = more competition)', value: signals.D, color: '#f87171' },
+    { key: "I", label: "Avg ticket size", tip: "How expensive nearby restaurants tend to be (correlates with tips)", value: signals.I, color: "#7fe8b0" },
+    { key: "M", label: "Restaurant density", tip: "How many restaurants are within range", value: signals.M, color: "#9ad3ff" },
+    { key: "R", label: "Proximity", tip: "How close the nearest merchants are", value: signals.R, color: "#c4b5fd" },
+    { key: "D", label: "Crowding (bad)", tip: "How many other parking spots are nearby (more = more competition)", value: signals.D, color: "#f87171" },
   ];
+
   const rows = bars.map(b =>
     `<div class="sig-row" title="${escapeHtml(b.tip)}"><span class="sig-label">${b.label}</span><span class="sig-track"><span class="sig-fill" style="width:${Math.round(b.value * 100)}%;background:${b.color}"></span></span><span class="sig-val">${Math.round(b.value * 100)}%</span></div>`
-  ).join('');
+  ).join("");
+
   return `<div class="sig-bars"><div class="sig-header">What makes this spot score the way it does (${escapeHtml(bucketLabel)})</div>${rows}</div>`;
 }
 
 function renderSummaryCards(rankedParking, restaurants, parking) {
   if (!elSummaryCards) return;
+
   if (!rankedParking.length) {
     elSummaryCards.innerHTML = "";
     return;
@@ -679,30 +731,33 @@ function renderSummaryCards(rankedParking, restaurants, parking) {
   const medianScore = lastStats?.medianScore ?? 0;
   const topDecileScore = lastStats?.topDecileScore ?? 0;
   const bucketLabel = lastStats?.timeBucketLabel ?? timeBucket(lastParams.hour).label;
-  const holdCount = rankedParking.filter(p => p.advisory === 'hold').length;
+  const holdCount = rankedParking.filter(p => p.advisory === "hold").length;
 
   elSummaryCards.innerHTML = `
-    <article class="summary-card">
-      <span class="summary-label">Best spot found</span>
-      <strong>${formatPercent(best.pGood)} chance</strong>
-      <p>The top-ranked parking spot has a <b>${formatPercent(best.pGood)}</b> estimated chance of getting a good order within ${lastParams.horizonMin} minutes. ${describeSignal(best.pGood)}.</p>
-    </article>
-    <article class="summary-card">
-      <span class="summary-label">How this area compares</span>
-      <strong>${formatPercent(medianScore)} typical · ${formatPercent(topDecileScore)} best zones</strong>
-      <p>A typical spot on this map scores ${formatPercent(medianScore)}. The hottest 10% of the map scores ${formatPercent(topDecileScore)} or higher. Bigger gap = more variation to exploit.</p>
-    </article>
-    <article class="summary-card">
-      <span class="summary-label">Time of day: ${escapeHtml(bucketLabel)}</span>
-      <strong>${holdCount} of ${rankedParking.length} spots worth holding</strong>
-      <p>The model shifts what matters by time of day. Right now (${escapeHtml(bucketLabel)}), ${holdCount > 0 ? holdCount + ' spot(s) are strong enough to wait at' : 'no spots are strong enough to just wait — consider moving between areas'}.</p>
-    </article>
-    <article class="summary-card">
-      <span class="summary-label">Data loaded</span>
-      <strong>${restaurants.length} restaurants · ${parking.length} parking lots</strong>
-      <p>Scores are based on ${restaurants.length} restaurants and ${parking.length} parking lots visible on the map. Zoom in for more accurate results.</p>
-    </article>
-  `;
+<article class="summary-card">
+  <span class="summary-label">Best spot found</span>
+  <strong>${formatPercent(best.pGood)} chance</strong>
+  <p>The top-ranked parking spot has a <b>${formatPercent(best.pGood)}</b> estimated chance of getting a good order within ${lastParams.horizonMin} minutes. ${describeSignal(best.pGood)}.</p>
+</article>
+
+<article class="summary-card">
+  <span class="summary-label">How this area compares</span>
+  <strong>${formatPercent(medianScore)} typical · ${formatPercent(topDecileScore)} best zones</strong>
+  <p>A typical spot on this map scores ${formatPercent(medianScore)}. The hottest 10% of the map scores ${formatPercent(topDecileScore)} or higher. Bigger gap = more variation to exploit.</p>
+</article>
+
+<article class="summary-card">
+  <span class="summary-label">Time of day: ${escapeHtml(bucketLabel)}</span>
+  <strong>${holdCount} of ${rankedParking.length} spots worth holding</strong>
+  <p>The model shifts what matters by time of day. Right now (${escapeHtml(bucketLabel)}), ${holdCount > 0 ? holdCount + " spot(s) are strong enough to wait at" : "no spots are strong enough to just wait — consider moving between areas"}.</p>
+</article>
+
+<article class="summary-card">
+  <span class="summary-label">Data loaded</span>
+  <strong>${restaurants.length} restaurants · ${parking.length} parking lots</strong>
+  <p>Scores are based on ${restaurants.length} restaurants and ${parking.length} parking lots visible on the map. Zoom in for more accurate results.</p>
+</article>
+`;
 }
 
 function addRestaurantMarkers(restaurants) {
@@ -744,29 +799,30 @@ function addParkingMarkers(rankedParking, restaurants, tauMeters, hour) {
 
 function renderParkingPopupHtml(p, name, restaurants, tauMeters, hour) {
   const likely = topLikelyMerchantsForParking(p, restaurants, tauMeters, hour, 6);
+
   const rows = likely
-    .map(
-      (x) =>
-        `<li>${escapeHtml(x.name)} <span class="mono">(${escapeHtml(x.amenity)}, ${x.distMeters}m)</span></li>`
-    )
+    .map((x) => `<li>${escapeHtml(x.name)} <span class="mono">(${escapeHtml(x.amenity)}, ${x.distMeters}m)</span></li>`)
     .join("");
 
   return `
-    <div class="popup-friendly">
-      <b>${escapeHtml(name)}</b>
-      <div class="popup-score">${formatPercent(p.pGood)}<span class="popup-score-label"> chance of a good order in ${lastParams.horizonMin} min</span></div>
-      <div class="popup-explain">${escapeHtml(describeSignal(p.pGood))}</div>
-      <div class="popup-rank">${escapeHtml(formatRelativeRank(p))}</div>
-      <div class="popup-detail" title="We're ${formatPercent(p.stabilityLow)}–${formatPercent(p.stabilityHigh)} confident in this score">Confidence range: ${formatPercent(p.stabilityLow)} – ${formatPercent(p.stabilityHigh)} · ${escapeHtml(describeStability(p))}</div>
-      <div class="popup-detail">${escapeHtml(describePickup(p.expectedDistMeters))}</div>
-      <div class="popup-detail">Chance of <i>any</i> order: ${formatPercent(p.pAny)} · Avg ticket quality: ${formatPercent(p.tipProxy)}</div>
-      <div class="popup-advisory">Overall strength: ${formatPercent(p.composite)} · ${describeAdvisory(p.advisory)}</div>
-      ${renderSignalBarsHtml(p.signals, p.timeBucketLabel)}
-      <hr/>
-      <div><b>Closest restaurants</b></div>
-      <ol style="margin:6px 0 0 18px; padding:0;">${rows}</ol>
-    </div>
-  `;
+<div class="popup-friendly">
+  <b>${escapeHtml(name)}</b>
+  <div class="popup-score">${formatPercent(p.pGood)}<span class="popup-score-label"> chance of a good order in ${lastParams.horizonMin} min</span></div>
+  <div class="popup-explain">${escapeHtml(describeSignal(p.pGood))}</div>
+  <div class="popup-rank">${escapeHtml(formatRelativeRank(p))}</div>
+  <div class="popup-detail" title="We're ${formatPercent(p.stabilityLow)}–${formatPercent(p.stabilityHigh)} confident in this score">Confidence range: ${formatPercent(p.stabilityLow)} – ${formatPercent(p.stabilityHigh)} · ${escapeHtml(describeStability(p))}</div>
+  <div class="popup-detail">${escapeHtml(describePickup(p.expectedDistMeters))}</div>
+  <div class="popup-detail">Chance of <i>any</i> order: ${formatPercent(p.pAny)} · Avg ticket quality: ${formatPercent(p.tipProxy)}</div>
+  <div class="popup-advisory">Overall strength: ${formatPercent(p.composite)} · ${describeAdvisory(p.advisory)}</div>
+
+  ${renderSignalBarsHtml(p.signals, p.timeBucketLabel)}
+
+  <hr/>
+
+  <div><b>Closest restaurants</b></div>
+  <ol style="margin:6px 0 0 18px; padding:0;">${rows}</ol>
+</div>
+`;
 }
 
 function renderSpotPopupHtml(latlng, restaurants, tauMeters, hour) {
@@ -797,32 +853,34 @@ function renderSpotPopupHtml(latlng, restaurants, tauMeters, hour) {
   );
 
   const rows = likely
-    .map(
-      (x) =>
-        `<li>${escapeHtml(x.name)} <span class="mono">(${escapeHtml(x.amenity)}, ${x.distMeters}m)</span></li>`
-    )
+    .map((x) => `<li>${escapeHtml(x.name)} <span class="mono">(${escapeHtml(x.amenity)}, ${x.distMeters}m)</span></li>`)
     .join("");
 
   return `
-    <div class="popup-friendly">
-      <b>Spot you clicked</b>${lastStats === null ? ' <span style="color:#f5c542">(load data first for accurate scores)</span>' : ""}
-      <div class="popup-score">${formatPercent(r.pGood)}<span class="popup-score-label"> chance of a good order in ${lastParams.horizonMin} min</span></div>
-      <div class="popup-explain">${escapeHtml(describeSignal(r.pGood))}</div>
-      <div class="popup-rank">${escapeHtml(formatRelativeRank(r))}</div>
-      <div class="popup-detail" title="We're ${formatPercent(r.stabilityLow)}–${formatPercent(r.stabilityHigh)} confident in this score">Confidence range: ${formatPercent(r.stabilityLow)} – ${formatPercent(r.stabilityHigh)} · ${escapeHtml(describeStability(r))}</div>
-      <div class="popup-detail">${escapeHtml(describePickup(r.expectedDistMeters))}</div>
-      <div class="popup-detail">Chance of <i>any</i> order: ${formatPercent(r.pAny)} · Avg ticket quality: ${formatPercent(r.tipProxy)}</div>
-      <div class="popup-advisory">Overall strength: ${formatPercent(r.composite)} · ${describeAdvisory(r.advisory)}</div>
-      ${renderSignalBarsHtml(r.signals, r.timeBucketLabel)}
-      <hr/>
-      <div><b>Closest restaurants</b></div>
-      <ol style="margin:6px 0 0 18px; padding:0;">${rows}</ol>
-    </div>
-  `;
+<div class="popup-friendly">
+  <b>Spot you clicked</b>${lastStats === null ? ' <span style="color:#f5c542">(load data first for accurate scores)</span>' : ""}
+
+  <div class="popup-score">${formatPercent(r.pGood)}<span class="popup-score-label"> chance of a good order in ${lastParams.horizonMin} min</span></div>
+  <div class="popup-explain">${escapeHtml(describeSignal(r.pGood))}</div>
+  <div class="popup-rank">${escapeHtml(formatRelativeRank(r))}</div>
+  <div class="popup-detail" title="We're ${formatPercent(r.stabilityLow)}–${formatPercent(r.stabilityHigh)} confident in this score">Confidence range: ${formatPercent(r.stabilityLow)} – ${formatPercent(r.stabilityHigh)} · ${escapeHtml(describeStability(r))}</div>
+  <div class="popup-detail">${escapeHtml(describePickup(r.expectedDistMeters))}</div>
+  <div class="popup-detail">Chance of <i>any</i> order: ${formatPercent(r.pAny)} · Avg ticket quality: ${formatPercent(r.tipProxy)}</div>
+  <div class="popup-advisory">Overall strength: ${formatPercent(r.composite)} · ${describeAdvisory(r.advisory)}</div>
+
+  ${renderSignalBarsHtml(r.signals, r.timeBucketLabel)}
+
+  <hr/>
+
+  <div><b>Closest restaurants</b></div>
+  <ol style="margin:6px 0 0 18px; padding:0;">${rows}</ol>
+</div>
+`;
 }
 
 function setSpotMarker(latlng) {
   spotLayer.clearLayers();
+
   spotMarker = L.circleMarker([latlng.lat, latlng.lng], {
     radius: 9,
     weight: 2,
@@ -839,16 +897,18 @@ function renderParkingList(rankedParking) {
 
   for (const p of rankedParking) {
     const name = p.tags?.name || p.tags?.operator || "Parking";
+
     const li = document.createElement("li");
     const btn = document.createElement("button");
 
     btn.innerHTML = `
-      <span class="list-title">${escapeHtml(name)} — ${formatPercent(p.pGood)} chance</span>
-      <span class="list-meta">${escapeHtml(describeSignal(p.pGood))}</span>
-      <span class="list-meta">${escapeHtml(formatRelativeRank(p))}</span>
-      <span class="list-meta">${escapeHtml(describePickup(p.expectedDistMeters))}</span>
-      <span class="list-meta">Strength: ${formatPercent(p.composite)} · ${describeAdvisory(p.advisory)}</span>
-    `;
+<span class="list-title">${escapeHtml(name)} — ${formatPercent(p.pGood)} chance</span>
+<span class="list-meta">${escapeHtml(describeSignal(p.pGood))}</span>
+<span class="list-meta">${escapeHtml(formatRelativeRank(p))}</span>
+<span class="list-meta">${escapeHtml(describePickup(p.expectedDistMeters))}</span>
+<span class="list-meta">Strength: ${formatPercent(p.composite)} · ${describeAdvisory(p.advisory)}</span>
+`;
+
     btn.addEventListener("click", () => {
       map.setView([p.lat, p.lon], Math.max(map.getZoom(), 15));
     });
@@ -869,6 +929,7 @@ function escapeHtml(s) {
 
 async function loadForView() {
   if (activeAbort) activeAbort.abort();
+
   activeAbort = new AbortController();
 
   elLoad.disabled = true;
@@ -892,7 +953,9 @@ async function loadForView() {
     if (useMIP && !isMipAvailable()) {
       useMIP = false;
       elUseMIP.checked = false;
+
       console.warn("MIP solver not available; falling back to non-MIP ranking.");
+
       alert(
         "MIP solver couldn’t load (CDN blocked/offline). Falling back to non-MIP ranking.\n\nIf you want MIP, allow loading: https://unpkg.com/javascript-lp-solver@0.4.24/prod/solver.js"
       );
@@ -942,8 +1005,10 @@ async function loadForView() {
       },
       gridStepMeters
     );
+
     lastStats = heatResult.stats;
     lastLoadedBounds = queryBounds;
+
     checkDataFreshness();
 
     heatLayer = L.heatLayer(heatResult.heatPoints, {
@@ -986,12 +1051,18 @@ async function loadForView() {
 }
 
 map.on("moveend", checkDataFreshness);
+
 map.on("touchstart", handleMapTouchStart);
 map.on("touchmove", handleMapTouchMove);
 map.on("touchend", handleMapTouchEnd);
 map.on("touchcancel", handleMapTouchCancel);
 
 map.on("click", (e) => {
+  if (performance.now() < suppressStatsPopupUntil) {
+    suppressStatsPopupUntil = 0;
+    return;
+  }
+
   if (closePanelIfOpen()) {
     return;
   }
@@ -1005,6 +1076,7 @@ map.on("click", (e) => {
   }
 
   const { hour, tauMeters } = lastParams;
+
   const marker = setSpotMarker(e.latlng);
   marker.bindPopup(renderSpotPopupHtml(e.latlng, lastRestaurants, tauMeters, hour)).openPopup();
 });
@@ -1035,13 +1107,15 @@ map.whenReady(() => {
     });
   }
 
-
   // Force size recalculation before first data load so the canvas
   // never encounters a zero-height container (Leaflet #3575).
   if (map) map.invalidateSize();
+
   setTimeout(async () => {
     if (map) map.invalidateSize();
+
     await centerMapOnInitialLocationOnce();
+
     loadForView().catch((err) => {
       console.error(err);
       alert(`Failed to load map data: ${err?.message ?? String(err)}`);
