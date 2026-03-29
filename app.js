@@ -103,8 +103,8 @@ const DOUBLE_TAP_MAX_DELAY_MS = 400;
 const DOUBLE_TAP_MAX_DISTANCE_PX = 28;
 const DOUBLE_TAP_HOLD_DELAY_MS = 120;
 const DOUBLE_TAP_HOLD_TOLERANCE_PX = 12;
-const DOUBLE_TAP_ZOOM_PIXELS_PER_LEVEL = 140;
-const DOUBLE_TAP_ZOOM_STEP = 0.25;
+const DOUBLE_TAP_ZOOM_PIXELS_PER_LEVEL = 125;
+const DOUBLE_TAP_ZOOM_THROTTLE_MS = 16;
 const DOUBLE_TAP_DBLCLICK_SUPPRESSION_MS = 250;
 const TOUCH_CLICK_SUPPRESSION_MS = 700;
 
@@ -135,8 +135,10 @@ const touchGestureState = {
   lastTap: null,
   dragWasEnabled: false,
   doubleClickZoomWasEnabled: false,
-
+  previousZoomSnap: null,
 };
+
+let lastZoomUpdate = 0;
 
 function setHourDefaults() {
   const now = new Date();
@@ -480,8 +482,14 @@ function resetDoubleTapHoldZoomState() {
   clearDoubleTapHoldTimer();
 
   if (touchGestureState.active) {
-    // Snap to the nearest integer zoom so Leaflet loads crisp tiles.
-    map.setZoom(Math.round(map.getZoom()), { animate: false });
+    const currentZoom = map.getZoom();
+    const snappedZoom = Math.round(currentZoom);
+
+    if (Math.abs(snappedZoom - currentZoom) > 0.02) {
+      map.setZoom(snappedZoom, { animate: true, duration: 0.12 });
+    } else {
+      map.setZoom(snappedZoom, { animate: false });
+    }
 
     if (touchGestureState.previousZoomSnap !== null) {
       map.options.zoomSnap = touchGestureState.previousZoomSnap;
@@ -681,17 +689,18 @@ function handleMapTouchMove(event) {
   originalEvent.preventDefault();
   suppressStatsPopupUntil = performance.now() + SUPPRESS_AFTER_GESTURE_MS;
 
+  const deltaY = zoomTouch.clientY - zoomStartPoint.y;
   const rawZoom = clampMapZoom(
-    zoomStartLevel + (zoomTouch.clientY - zoomStartPoint.y) / DOUBLE_TAP_ZOOM_PIXELS_PER_LEVEL
+    zoomStartLevel + deltaY / DOUBLE_TAP_ZOOM_PIXELS_PER_LEVEL
   );
 
-  // Quarter-step zoom is a better compromise here: much less jumpy than whole
-  // levels, but still settles onto a crisp integer level on release.
-  const nextZoom = clampMapZoom(
-    Math.round(rawZoom / DOUBLE_TAP_ZOOM_STEP) * DOUBLE_TAP_ZOOM_STEP
-  );
+  const nextZoom = rawZoom;
 
-  if (Math.abs(nextZoom - map.getZoom()) < 0.01) return;
+  const now = performance.now();
+  if (now - lastZoomUpdate < DOUBLE_TAP_ZOOM_THROTTLE_MS) return;
+  lastZoomUpdate = now;
+
+  if (Math.abs(nextZoom - map.getZoom()) < 0.02) return;
 
   map.setZoomAround(
     map.containerPointToLatLng(touchGestureState.startPoint),
