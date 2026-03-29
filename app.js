@@ -33,6 +33,7 @@ const DEFAULT_ZOOM = 12;
 const map = L.map("map", {
   zoomControl: true,
   preferCanvas: true,
+  tap: false,
 }).setView(DEFAULT_CENTER, DEFAULT_ZOOM);
 
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -98,14 +99,19 @@ const MAX_VISIBLE_ACCURACY_RADIUS_METERS = 45;
 const INITIAL_LOCATION_ZOOM = 14;
 const INITIAL_LOCATION_TIMEOUT_MS = 8000;
 
-const DOUBLE_TAP_MAX_DELAY_MS = 300;
+const DOUBLE_TAP_MAX_DELAY_MS = 400;
 const DOUBLE_TAP_MAX_DISTANCE_PX = 28;
 const DOUBLE_TAP_HOLD_DELAY_MS = 120;
 const DOUBLE_TAP_HOLD_TOLERANCE_PX = 12;
 const DOUBLE_TAP_ZOOM_PIXELS_PER_LEVEL = 140;
+const DOUBLE_TAP_ZOOM_STEP = 0.25;
 const DOUBLE_TAP_DBLCLICK_SUPPRESSION_MS = 250;
+const TOUCH_CLICK_SUPPRESSION_MS = 700;
 
 let suppressStatsPopupUntil = 0;
+let pendingStatsPopupTimer = null;
+let pendingStatsPopupLatLng = null;
+let lastTouchInteractionAt = 0;
 const SUPPRESS_AFTER_GESTURE_MS = L.Browser.mobile ? 450 : 0;
 
 const diagramContainer = document.getElementById("diagram");
@@ -120,13 +126,16 @@ const touchGestureState = {
   pending: false,
   holdTimer: null,
   activeTouchId: null,
+  controlTouchId: null,
   startPoint: null,
   startZoom: DEFAULT_ZOOM,
+  controlStartPoint: null,
+  controlStartZoom: DEFAULT_ZOOM,
   currentTouch: null,
   lastTap: null,
   dragWasEnabled: false,
   doubleClickZoomWasEnabled: false,
-  previousZoomSnap: null,
+
 };
 
 function setHourDefaults() {
@@ -422,10 +431,62 @@ function clearDoubleTapHoldTimer() {
   }
 }
 
+function clearPendingStatsPopup() {
+  if (pendingStatsPopupTimer !== null) {
+    window.clearTimeout(pendingStatsPopupTimer);
+    pendingStatsPopupTimer = null;
+  }
+
+  pendingStatsPopupLatLng = null;
+}
+
+function openStatsPopupAtLatLng(latlng) {
+  if (!latlng) return;
+
+  if (performance.now() < suppressStatsPopupUntil) {
+    return;
+  }
+
+  if (closePanelIfOpen()) {
+    return;
+  }
+
+  if (!lastRestaurants || lastRestaurants.length === 0) {
+    L.popup()
+      .setLatLng(latlng)
+      .setContent("Load data first (click ‘Load / Refresh for current view’).")
+      .openOn(map);
+    return;
+  }
+
+  const { hour, tauMeters } = lastParams;
+
+  const marker = setSpotMarker(latlng);
+  marker.bindPopup(renderSpotPopupHtml(latlng, lastRestaurants, tauMeters, hour)).openPopup();
+}
+
+function schedulePendingStatsPopup(latlng) {
+  clearPendingStatsPopup();
+
+  pendingStatsPopupLatLng = latlng;
+  pendingStatsPopupTimer = window.setTimeout(() => {
+    const nextLatLng = pendingStatsPopupLatLng;
+    clearPendingStatsPopup();
+    openStatsPopupAtLatLng(nextLatLng);
+  }, DOUBLE_TAP_MAX_DELAY_MS);
+}
+
 function resetDoubleTapHoldZoomState() {
   clearDoubleTapHoldTimer();
 
   if (touchGestureState.active) {
+    // Snap to the nearest integer zoom so Leaflet loads crisp tiles.
+    map.setZoom(Math.round(map.getZoom()), { animate: false });
+
+    if (touchGestureState.previousZoomSnap !== null) {
+      map.options.zoomSnap = touchGestureState.previousZoomSnap;
+    }
+
     if (touchGestureState.dragWasEnabled && map.dragging) {
       map.dragging.enable();
     }
@@ -435,18 +496,17 @@ function resetDoubleTapHoldZoomState() {
         map.doubleClickZoom.enable();
       }, DOUBLE_TAP_DBLCLICK_SUPPRESSION_MS);
     }
-
-    if (touchGestureState.previousZoomSnap !== null) {
-      map.options.zoomSnap = touchGestureState.previousZoomSnap;
-    }
   }
 
   touchGestureState.active = false;
   touchGestureState.pending = false;
   touchGestureState.holdTimer = null;
   touchGestureState.activeTouchId = null;
+  touchGestureState.controlTouchId = null;
   touchGestureState.startPoint = null;
   touchGestureState.startZoom = map.getZoom();
+  touchGestureState.controlStartPoint = null;
+  touchGestureState.controlStartZoom = map.getZoom();
   touchGestureState.dragWasEnabled = false;
   touchGestureState.doubleClickZoomWasEnabled = false;
   touchGestureState.previousZoomSnap = null;
@@ -462,13 +522,29 @@ function findTouchById(touchList, touchId) {
   return null;
 }
 
+function findZoomControlTouch(touchList, anchorTouchId) {
+  if (!touchList?.length) return null;
+
+  for (const touch of touchList) {
+    if (touch.identifier !== anchorTouchId) return touch;
+  }
+
+  return findTouchById(touchList, anchorTouchId);
+}
+
 function handleMapTouchStart(event) {
   const originalEvent = event.originalEvent;
   if (!originalEvent) return;
 
+  lastTouchInteractionAt = performance.now();
+  clearPendingStatsPopup();
+
+  if (touchGestureState.pending || touchGestureState.active) {
+    return;
+  }
+
   if (originalEvent.touches.length !== 1) {
     touchGestureState.currentTouch = null;
-    resetDoubleTapHoldZoomState();
     return;
   }
 
@@ -498,6 +574,9 @@ function handleMapTouchStart(event) {
   touchGestureState.activeTouchId = touch.identifier;
   touchGestureState.startPoint = point;
   touchGestureState.startZoom = map.getZoom();
+  touchGestureState.controlTouchId = null;
+  touchGestureState.controlStartPoint = null;
+  touchGestureState.controlStartZoom = touchGestureState.startZoom;
 
   clearDoubleTapHoldTimer();
 
@@ -531,16 +610,10 @@ function handleMapTouchMove(event) {
   const originalEvent = event.originalEvent;
   if (!originalEvent) return;
 
-  if (originalEvent.touches.length !== 1) {
-    resetDoubleTapHoldZoomState();
-    return;
-  }
+  lastTouchInteractionAt = performance.now();
 
-  const trackedTouchId = touchGestureState.active
-    ? touchGestureState.activeTouchId
-    : touchGestureState.currentTouch?.id;
-
-  const touch = findTouchById(originalEvent.touches, trackedTouchId);
+  const currentTouchId = touchGestureState.currentTouch?.id;
+  const touch = findTouchById(originalEvent.touches, currentTouchId);
   if (!touch) return;
 
   const point = L.point(touch.clientX, touch.clientY);
@@ -554,20 +627,68 @@ function handleMapTouchMove(event) {
 
   if (touchGestureState.pending && touch.identifier === touchGestureState.activeTouchId) {
     if (touchGestureState.startPoint && point.distanceTo(touchGestureState.startPoint) > DOUBLE_TAP_HOLD_TOLERANCE_PX) {
-      resetDoubleTapHoldZoomState();
+      // Dragging before the hold timer fires — activate zoom immediately instead of cancelling.
+      clearDoubleTapHoldTimer();
+      touchGestureState.pending = false;
+      touchGestureState.active = true;
+      suppressStatsPopupUntil = performance.now() + SUPPRESS_AFTER_GESTURE_MS;
+      touchGestureState.lastTap = null;
+      touchGestureState.dragWasEnabled = Boolean(map.dragging?.enabled());
+      touchGestureState.doubleClickZoomWasEnabled = Boolean(map.doubleClickZoom?.enabled());
+      touchGestureState.previousZoomSnap = map.options.zoomSnap;
+      if (touchGestureState.dragWasEnabled) map.dragging.disable();
+      if (touchGestureState.doubleClickZoomWasEnabled) map.doubleClickZoom.disable();
+      map.options.zoomSnap = 0;
+      // Fall through to the zoom handling below.
+    } else {
+      return;
     }
-    return;
   }
 
   if (!touchGestureState.active || touch.identifier !== touchGestureState.activeTouchId || !touchGestureState.startPoint) {
+    if (!touchGestureState.active || !touchGestureState.startPoint) {
+      return;
+    }
+  }
+
+  const anchorTouch = findTouchById(originalEvent.touches, touchGestureState.activeTouchId);
+  if (!anchorTouch) {
+    resetDoubleTapHoldZoomState();
     return;
+  }
+
+  const zoomTouch = findZoomControlTouch(originalEvent.touches, touchGestureState.activeTouchId);
+  if (!zoomTouch) return;
+
+  let zoomStartPoint = touchGestureState.startPoint;
+  let zoomStartLevel = touchGestureState.startZoom;
+
+  if (zoomTouch.identifier !== touchGestureState.activeTouchId) {
+    if (touchGestureState.controlTouchId !== zoomTouch.identifier || !touchGestureState.controlStartPoint) {
+      touchGestureState.controlTouchId = zoomTouch.identifier;
+      touchGestureState.controlStartPoint = L.point(zoomTouch.clientX, zoomTouch.clientY);
+      touchGestureState.controlStartZoom = map.getZoom();
+    }
+
+    zoomStartPoint = touchGestureState.controlStartPoint;
+    zoomStartLevel = touchGestureState.controlStartZoom;
+  } else {
+    touchGestureState.controlTouchId = null;
+    touchGestureState.controlStartPoint = null;
+    touchGestureState.controlStartZoom = map.getZoom();
   }
 
   originalEvent.preventDefault();
   suppressStatsPopupUntil = performance.now() + SUPPRESS_AFTER_GESTURE_MS;
 
+  const rawZoom = clampMapZoom(
+    zoomStartLevel + (zoomTouch.clientY - zoomStartPoint.y) / DOUBLE_TAP_ZOOM_PIXELS_PER_LEVEL
+  );
+
+  // Quarter-step zoom is a better compromise here: much less jumpy than whole
+  // levels, but still settles onto a crisp integer level on release.
   const nextZoom = clampMapZoom(
-    touchGestureState.startZoom + (touch.clientY - touchGestureState.startPoint.y) / DOUBLE_TAP_ZOOM_PIXELS_PER_LEVEL
+    Math.round(rawZoom / DOUBLE_TAP_ZOOM_STEP) * DOUBLE_TAP_ZOOM_STEP
   );
 
   if (Math.abs(nextZoom - map.getZoom()) < 0.01) return;
@@ -582,6 +703,7 @@ function handleMapTouchMove(event) {
 function handleMapTouchEnd(event) {
   const originalEvent = event.originalEvent;
   const currentTouch = touchGestureState.currentTouch;
+  lastTouchInteractionAt = performance.now();
 
   const finishedTouch = currentTouch
     ? findTouchById(originalEvent?.changedTouches, currentTouch.id)
@@ -590,6 +712,9 @@ function handleMapTouchEnd(event) {
   const endPoint = finishedTouch
     ? L.point(finishedTouch.clientX, finishedTouch.clientY)
     : currentTouch?.startPoint;
+  const endLatLng = finishedTouch
+    ? map.mouseEventToLatLng(finishedTouch)
+    : null;
 
   const now = performance.now();
 
@@ -598,17 +723,35 @@ function handleMapTouchEnd(event) {
     suppressStatsPopupUntil = now + SUPPRESS_AFTER_GESTURE_MS;
   }
 
-  if (touchGestureState.active && currentTouch?.id === touchGestureState.activeTouchId) {
+  const activeTouchEnded = Boolean(
+    touchGestureState.activeTouchId !== null
+      && findTouchById(originalEvent?.changedTouches, touchGestureState.activeTouchId)
+  );
+  const controlTouchEnded = Boolean(
+    touchGestureState.controlTouchId !== null
+      && findTouchById(originalEvent?.changedTouches, touchGestureState.controlTouchId)
+  );
+
+  if (touchGestureState.active && activeTouchEnded) {
     resetDoubleTapHoldZoomState();
     touchGestureState.currentTouch = null;
     return;
   }
 
-  if (touchGestureState.pending && currentTouch?.id === touchGestureState.activeTouchId) {
+  if (touchGestureState.active && controlTouchEnded) {
+    touchGestureState.controlTouchId = null;
+    touchGestureState.controlStartPoint = null;
+    touchGestureState.controlStartZoom = map.getZoom();
+  }
+
+  if (touchGestureState.pending && activeTouchEnded) {
     clearDoubleTapHoldTimer();
     touchGestureState.pending = false;
     touchGestureState.activeTouchId = null;
     touchGestureState.startPoint = null;
+    touchGestureState.controlTouchId = null;
+    touchGestureState.controlStartPoint = null;
+    touchGestureState.controlStartZoom = map.getZoom();
   }
 
   if (currentTouch && endPoint && !currentTouch.moved && now - currentTouch.startTime <= DOUBLE_TAP_MAX_DELAY_MS) {
@@ -616,16 +759,24 @@ function handleMapTouchEnd(event) {
       point: endPoint,
       time: now,
     };
+
+    if (!touchGestureState.active && endLatLng) {
+      suppressStatsPopupUntil = now + DOUBLE_TAP_MAX_DELAY_MS;
+      schedulePendingStatsPopup(endLatLng);
+    }
   } else if (!touchGestureState.active) {
     touchGestureState.lastTap = null;
+    clearPendingStatsPopup();
   }
 
   touchGestureState.currentTouch = null;
 }
 
 function handleMapTouchCancel() {
+  lastTouchInteractionAt = performance.now();
   touchGestureState.currentTouch = null;
   touchGestureState.lastTap = null;
+  clearPendingStatsPopup();
   resetDoubleTapHoldZoomState();
 }
 
@@ -1052,33 +1203,29 @@ async function loadForView() {
 
 map.on("moveend", checkDataFreshness);
 
-map.on("touchstart", handleMapTouchStart);
-map.on("touchmove", handleMapTouchMove);
-map.on("touchend", handleMapTouchEnd);
-map.on("touchcancel", handleMapTouchCancel);
+// Leaflet does not re-emit touchstart/move/end/cancel as map-level events,
+// so we attach directly to the DOM container.
+const _mapEl = map.getContainer();
+_mapEl.addEventListener("touchstart",  (e) => handleMapTouchStart({ originalEvent: e }),  { passive: true });
+_mapEl.addEventListener("touchmove",   (e) => handleMapTouchMove({ originalEvent: e }),   { passive: false });
+_mapEl.addEventListener("touchend",    (e) => handleMapTouchEnd({ originalEvent: e }),    { passive: false });
+_mapEl.addEventListener("touchcancel", ()  => handleMapTouchCancel(),                     { passive: true });
 
 map.on("click", (e) => {
+  // Ignore browser-synthesized clicks that originated from a touch/pen.
+  const pointerType = e.originalEvent?.pointerType;
+  if (pointerType === "touch" || pointerType === "pen") return;
+
+  // Fallback: ignore anything arriving shortly after a real touch interaction.
+  if (performance.now() - lastTouchInteractionAt <= TOUCH_CLICK_SUPPRESSION_MS) return;
+
   if (performance.now() < suppressStatsPopupUntil) {
     suppressStatsPopupUntil = 0;
     return;
   }
 
-  if (closePanelIfOpen()) {
-    return;
-  }
-
-  if (!lastRestaurants || lastRestaurants.length === 0) {
-    L.popup()
-      .setLatLng(e.latlng)
-      .setContent("Load data first (click ‘Load / Refresh for current view’).")
-      .openOn(map);
-    return;
-  }
-
-  const { hour, tauMeters } = lastParams;
-
-  const marker = setSpotMarker(e.latlng);
-  marker.bindPopup(renderSpotPopupHtml(e.latlng, lastRestaurants, tauMeters, hour)).openPopup();
+  clearPendingStatsPopup();
+  openStatsPopupAtLatLng(e.latlng);
 });
 
 elLoad.addEventListener("click", () => {
