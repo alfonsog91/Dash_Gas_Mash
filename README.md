@@ -1,6 +1,6 @@
-# Dash Parking Estimate Map (OSM)
+# Dash Parking Estimate Map
 
-Local, **public-data** map tool that renders a real OpenStreetMap basemap and overlays a **parking opportunity-likelihood heat surface** based on transparent heuristics.
+Local, **public-data** map tool that renders a vector basemap with MapLibre GL JS and overlays a **parking opportunity-likelihood heat surface** based on transparent heuristics.
 
 This is **not affiliated with DoorDash** and does **not** use proprietary DoorDash data. It’s a strategic, tunable proxy model inspired by public DoorDash engineering writeups.
 
@@ -118,6 +118,22 @@ From the workspace folder:
 - Manual fallback in PowerShell: `& .\.venv\Scripts\python.exe -m http.server 5173`
 - Then open `http://localhost:5173/` in your browser
 
+## Basemap configuration
+
+The app now uses `MapLibre GL JS`.
+
+- If `window.DASH_MAPTILER_KEY` is set in [index.html](index.html), the app uses a hosted `MapTiler` vector style.
+- If no key is configured, it falls back to the public `MapLibre` demo style so the app still loads for development.
+
+To enable `MapTiler`, edit [index.html](index.html) and set:
+
+```html
+<script>
+  window.DASH_MAPTILER_KEY = "your-maptiler-key";
+  window.DASH_MAPTILER_STYLE_ID = "basic-v2";
+</script>
+```
+
 ## How to use
 
 - Pan/zoom to your target area (Rancho Cucamonga / Ontario / Guasti, or anywhere)
@@ -161,7 +177,7 @@ Use the % to compare two parking choices under the same settings: higher % means
 
 ## Legal / attribution
 
-- Basemap tiles are from OpenStreetMap’s public tile server in dev mode. For redistribution/production or heavy usage, use your own tile provider that permits your use case.
+- The app uses `MapLibre GL JS` with either `MapTiler` vector tiles or the public `MapLibre` demo style for development.
 - Map data © OpenStreetMap contributors.
 
 ## Limitations

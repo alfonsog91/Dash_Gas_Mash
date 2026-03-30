@@ -13,6 +13,7 @@ import { fetchFoodPlaces, fetchParkingCandidates } from "./overpass.js";
 import {
   buildGridProbabilityHeat,
   filterOpenRestaurants,
+  haversineMeters,
   probabilityOfGoodOrder,
   rankParking,
   topLikelyMerchantsForParking,
@@ -27,26 +28,48 @@ if (window.location.protocol === "file:") {
   );
 }
 
-const DEFAULT_CENTER = [34.1064, -117.5931]; // Rancho Cucamonga
+const DEFAULT_CENTER = [-117.5931, 34.1064]; // [lng, lat] Rancho Cucamonga
 const DEFAULT_ZOOM = 12;
 
-const map = L.map("map", {
-  zoomControl: true,
-  preferCanvas: true,
-  tap: false,
-}).setView(DEFAULT_CENTER, DEFAULT_ZOOM);
+const MAPTILER_API_KEY = String(window.DASH_MAPTILER_KEY || "").trim();
+const MAPTILER_STYLE_ID = String(window.DASH_MAPTILER_STYLE_ID || "basic-v2").trim();
+const MAP_STYLE_URL = MAPTILER_API_KEY
+  ? `https://api.maptiler.com/maps/${encodeURIComponent(MAPTILER_STYLE_ID)}/style.json?key=${encodeURIComponent(MAPTILER_API_KEY)}`
+  : "https://demotiles.maplibre.org/style.json";
 
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+const SOURCE_RESTAURANTS = "restaurants";
+const SOURCE_PARKING = "parking";
+const SOURCE_HEAT = "heat";
+const SOURCE_SPOT = "spot";
+const SOURCE_CURRENT_LOCATION = "current-location";
+const SOURCE_CURRENT_LOCATION_ACCURACY = "current-location-accuracy";
+
+const LAYER_HEAT = "heat-layer";
+const LAYER_RESTAURANTS = "restaurants-layer";
+const LAYER_PARKING = "parking-layer";
+const LAYER_SPOT = "spot-layer";
+const LAYER_CURRENT_LOCATION_ACCURACY_FILL = "current-location-accuracy-fill";
+const LAYER_CURRENT_LOCATION_ACCURACY_LINE = "current-location-accuracy-line";
+const LAYER_CURRENT_LOCATION_DOT = "current-location-dot";
+
+const map = new maplibregl.Map({
+  container: "map",
+  style: MAP_STYLE_URL,
+  center: DEFAULT_CENTER,
+  zoom: DEFAULT_ZOOM,
   maxZoom: 19,
-  updateWhenZooming: false,
-  attribution: "&copy; OpenStreetMap contributors",
-}).addTo(map);
+  attributionControl: { compact: true },
+});
 
-let heatLayer = null;
-const restaurantLayer = L.layerGroup().addTo(map);
-const parkingLayer = L.layerGroup().addTo(map);
-let spotLayer = L.layerGroup().addTo(map);
-let spotMarker = null;
+map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+
+let activePopup = null;
+let activeAbort = null;
+let lastCurrentLocation = null;
+let lastCurrentLocationAccuracyMeters = null;
+
+const restaurantById = new Map();
+const parkingById = new Map();
 
 let lastRestaurants = [];
 let lastParkingCandidates = [];
@@ -100,49 +123,276 @@ const MAX_VISIBLE_ACCURACY_RADIUS_METERS = 45;
 const INITIAL_LOCATION_ZOOM = 14;
 const INITIAL_LOCATION_TIMEOUT_MS = 8000;
 
-const DOUBLE_TAP_MAX_DELAY_MS = 400;
-const DOUBLE_TAP_MAX_DISTANCE_PX = 28;
-const DOUBLE_TAP_HOLD_DELAY_MS = 120;
-const DOUBLE_TAP_HOLD_TOLERANCE_PX = 12;
-const DOUBLE_TAP_ZOOM_PIXELS_PER_LEVEL = 125;
-const DOUBLE_TAP_ZOOM_THROTTLE_MS = 16;
-const DOUBLE_TAP_DBLCLICK_SUPPRESSION_MS = 250;
-const TOUCH_CLICK_SUPPRESSION_MS = 700;
-
-let suppressStatsPopupUntil = 0;
-let pendingStatsPopupTimer = null;
-let pendingStatsPopupLatLng = null;
-let lastTouchInteractionAt = 0;
-const SUPPRESS_AFTER_GESTURE_MS = L.Browser.mobile ? 450 : 0;
-
 const diagramContainer = document.getElementById("diagram");
 renderModelDiagram(diagramContainer);
 
-let currentLocationLayer = L.layerGroup().addTo(map);
 let isLocating = false;
 let hasRequestedInitialLocation = false;
 
-const touchGestureState = {
-  active: false,
-  pending: false,
-  holdTimer: null,
-  activeTouchId: null,
-  controlTouchId: null,
-  startPoint: null,
-  startZoom: DEFAULT_ZOOM,
-  controlStartPoint: null,
-  controlStartZoom: DEFAULT_ZOOM,
-  currentTouch: null,
-  lastTap: null,
-  dragWasEnabled: false,
-  doubleClickZoomWasEnabled: false,
-  previousZoomSnap: null,
-  previewActive: false,
-  previewZoom: null,
-  previewTransformBase: null,
-};
+function featureCollection(features = []) {
+  return { type: "FeatureCollection", features };
+}
 
-let lastZoomUpdate = 0;
+function createBoundsAdapter(south, west, north, east) {
+  return {
+    getSouth: () => south,
+    getWest: () => west,
+    getNorth: () => north,
+    getEast: () => east,
+    getSouthWest: () => ({ lat: south, lng: west }),
+    getNorthEast: () => ({ lat: north, lng: east }),
+    intersects(other) {
+      return !(
+        other.getWest() > east
+        || other.getEast() < west
+        || other.getSouth() > north
+        || other.getNorth() < south
+      );
+    },
+    contains(other) {
+      return (
+        other.getSouth() >= south
+        && other.getWest() >= west
+        && other.getNorth() <= north
+        && other.getEast() <= east
+      );
+    },
+  };
+}
+
+function mapBoundsToAdapter(bounds) {
+  return createBoundsAdapter(bounds.getSouth(), bounds.getWest(), bounds.getNorth(), bounds.getEast());
+}
+
+function boundsAroundCenter(center, sizeMeters) {
+  const halfSizeMeters = sizeMeters / 2;
+  const latDelta = halfSizeMeters / 111320;
+  const lngScale = Math.max(Math.cos((center.lat * Math.PI) / 180), 0.1);
+  const lngDelta = halfSizeMeters / (111320 * lngScale);
+  return createBoundsAdapter(
+    center.lat - latDelta,
+    center.lng - lngDelta,
+    center.lat + latDelta,
+    center.lng + lngDelta
+  );
+}
+
+function lngLatToObject(value) {
+  if (Array.isArray(value)) {
+    return { lng: Number(value[0]), lat: Number(value[1]) };
+  }
+
+  return {
+    lng: Number(value.lng ?? value.lon),
+    lat: Number(value.lat),
+  };
+}
+
+function lngLatToArray(value) {
+  const point = lngLatToObject(value);
+  return [point.lng, point.lat];
+}
+
+function closeActivePopup() {
+  if (activePopup) {
+    activePopup.remove();
+    activePopup = null;
+  }
+}
+
+function openPopupAtLngLat(lngLat, html) {
+  closeActivePopup();
+  activePopup = new maplibregl.Popup({
+    closeButton: false,
+    closeOnClick: false,
+    className: "dgm-popup",
+    maxWidth: "360px",
+    offset: 12,
+  })
+    .setLngLat(lngLatToArray(lngLat))
+    .setHTML(html)
+    .addTo(map);
+
+  return activePopup;
+}
+
+function setSourceData(sourceId, data) {
+  const source = map.getSource(sourceId);
+  if (source) {
+    source.setData(data);
+  }
+}
+
+function setLayerVisibility(layerId, visible) {
+  if (!map.getLayer(layerId)) return;
+  map.setLayoutProperty(layerId, "visibility", visible ? "visible" : "none");
+}
+
+function createCirclePolygonFeature(latlng, radiusMeters, steps = 48) {
+  const center = lngLatToObject(latlng);
+  const coordinates = [];
+
+  for (let i = 0; i <= steps; i += 1) {
+    const angle = (i / steps) * Math.PI * 2;
+    const dx = Math.cos(angle) * radiusMeters;
+    const dy = Math.sin(angle) * radiusMeters;
+    const lat = center.lat + (dy / 111320);
+    const lngScale = Math.max(Math.cos((center.lat * Math.PI) / 180), 0.1);
+    const lng = center.lng + (dx / (111320 * lngScale));
+    coordinates.push([lng, lat]);
+  }
+
+  return {
+    type: "Feature",
+    geometry: {
+      type: "Polygon",
+      coordinates: [coordinates],
+    },
+    properties: {},
+  };
+}
+
+function ensureMapSourcesAndLayers() {
+  if (map.getSource(SOURCE_RESTAURANTS)) return;
+
+  map.addSource(SOURCE_RESTAURANTS, { type: "geojson", data: featureCollection() });
+  map.addSource(SOURCE_PARKING, { type: "geojson", data: featureCollection() });
+  map.addSource(SOURCE_HEAT, { type: "geojson", data: featureCollection() });
+  map.addSource(SOURCE_SPOT, { type: "geojson", data: featureCollection() });
+  map.addSource(SOURCE_CURRENT_LOCATION, { type: "geojson", data: featureCollection() });
+  map.addSource(SOURCE_CURRENT_LOCATION_ACCURACY, { type: "geojson", data: featureCollection() });
+
+  map.addLayer({
+    id: LAYER_HEAT,
+    type: "heatmap",
+    source: SOURCE_HEAT,
+    maxzoom: 17,
+    paint: {
+      "heatmap-weight": ["coalesce", ["get", "intensity"], 0],
+      "heatmap-intensity": 1,
+      "heatmap-radius": 22,
+      "heatmap-opacity": 0.85,
+      "heatmap-color": [
+        "interpolate", ["linear"], ["heatmap-density"],
+        0, "rgba(45,108,223,0)",
+        0.1, "#2d6cdf",
+        0.35, "#00d4ff",
+        0.55, "#fff1a8",
+        0.75, "#ff9b3d",
+        1, "#ff3b3b",
+      ],
+    },
+  });
+
+  map.addLayer({
+    id: LAYER_RESTAURANTS,
+    type: "circle",
+    source: SOURCE_RESTAURANTS,
+    paint: {
+      "circle-radius": 4,
+      "circle-color": "#ffbf45",
+      "circle-stroke-color": "#ffe59a",
+      "circle-stroke-width": 1,
+      "circle-opacity": 0.85,
+    },
+  });
+
+  map.addLayer({
+    id: LAYER_PARKING,
+    type: "circle",
+    source: SOURCE_PARKING,
+    paint: {
+      "circle-radius": 7,
+      "circle-color": "#2d6cdf",
+      "circle-stroke-color": "#9ad3ff",
+      "circle-stroke-width": 2,
+      "circle-opacity": 0.7,
+    },
+  });
+
+  map.addLayer({
+    id: LAYER_SPOT,
+    type: "circle",
+    source: SOURCE_SPOT,
+    paint: {
+      "circle-radius": 9,
+      "circle-color": "#b18bff",
+      "circle-stroke-color": "#f4f1ff",
+      "circle-stroke-width": 2,
+      "circle-opacity": 0.75,
+    },
+  });
+
+  map.addLayer({
+    id: LAYER_CURRENT_LOCATION_ACCURACY_FILL,
+    type: "fill",
+    source: SOURCE_CURRENT_LOCATION_ACCURACY,
+    paint: {
+      "fill-color": "#2d6cdf",
+      "fill-opacity": 0.1,
+    },
+  });
+
+  map.addLayer({
+    id: LAYER_CURRENT_LOCATION_ACCURACY_LINE,
+    type: "line",
+    source: SOURCE_CURRENT_LOCATION_ACCURACY,
+    paint: {
+      "line-color": "#a7e3ff",
+      "line-width": 1,
+    },
+  });
+
+  map.addLayer({
+    id: LAYER_CURRENT_LOCATION_DOT,
+    type: "circle",
+    source: SOURCE_CURRENT_LOCATION,
+    paint: {
+      "circle-radius": 8,
+      "circle-color": "#2d6cdf",
+      "circle-stroke-color": "#f4fbff",
+      "circle-stroke-width": 3,
+      "circle-opacity": 0.95,
+    },
+  });
+
+  for (const layerId of [LAYER_RESTAURANTS, LAYER_PARKING, LAYER_CURRENT_LOCATION_DOT]) {
+    map.on("mouseenter", layerId, () => {
+      map.getCanvas().style.cursor = "pointer";
+    });
+    map.on("mouseleave", layerId, () => {
+      map.getCanvas().style.cursor = "";
+    });
+  }
+
+  map.on("click", LAYER_RESTAURANTS, (event) => {
+    const feature = event.features?.[0];
+    if (!feature) return;
+
+    const restaurant = restaurantById.get(feature.properties?.id);
+    if (!restaurant) return;
+
+    const name = restaurant.tags?.name || restaurant.tags?.brand || "Food place";
+    const amenity = restaurant.tags?.amenity || "";
+    openPopupAtLngLat(event.lngLat, `<b>${escapeHtml(name)}</b><br/>${escapeHtml(amenity)}`);
+  });
+
+  map.on("click", LAYER_PARKING, (event) => {
+    const feature = event.features?.[0];
+    if (!feature) return;
+
+    const parking = parkingById.get(feature.properties?.id);
+    if (!parking) return;
+
+    const name = parking.tags?.name || parking.tags?.operator || "Parking";
+    openPopupAtLngLat(event.lngLat, renderParkingPopupHtml(parking, name, lastRestaurants, lastParams.tauMeters, lastParams.hour));
+  });
+
+  map.on("click", LAYER_CURRENT_LOCATION_DOT, () => {
+    if (!lastCurrentLocation) return;
+    openPopupAtLngLat(lastCurrentLocation, `You are here<br/><span class="mono">Accuracy ±${Math.round(Number(lastCurrentLocationAccuracyMeters) || 0)} m</span>`);
+  });
+}
 
 function setHourDefaults() {
   const now = new Date();
@@ -180,30 +430,27 @@ elKSpots.addEventListener("input", updateLabels);
 elMinSep.addEventListener("input", updateLabels);
 
 elShowRestaurants.addEventListener("change", () => {
-  if (elShowRestaurants.checked) restaurantLayer.addTo(map);
-  else restaurantLayer.removeFrom(map);
+  setLayerVisibility(LAYER_RESTAURANTS, elShowRestaurants.checked);
 });
 
 elShowParking.addEventListener("change", () => {
-  if (elShowParking.checked) parkingLayer.addTo(map);
-  else parkingLayer.removeFrom(map);
+  setLayerVisibility(LAYER_PARKING, elShowParking.checked);
 });
-
-let activeAbort = null;
 
 function clampQueryBounds(originalBounds) {
   // Overpass frequently 504s on large bounding boxes.
   // Clamp to a square around the center to keep queries light.
-  const diagMeters = map.distance(originalBounds.getSouthWest(), originalBounds.getNorthEast());
+  const sw = originalBounds.getSouthWest();
+  const ne = originalBounds.getNorthEast();
+  const diagMeters = haversineMeters(sw.lat, sw.lng, ne.lat, ne.lng);
   const maxDiagMeters = 12000; // ~12 km diagonal
   if (diagMeters <= maxDiagMeters) return originalBounds;
 
   // Show a persistent badge instead of a one-shot alert (m6).
   setDataStatus("Query area clamped to ~12 km diagonal — zoom in for full coverage", "warn");
 
-  const center = map.getCenter();
-  // Leaflet's toBounds uses meters; keep it conservative.
-  return center.toBounds(maxDiagMeters / 2);
+  const center = lngLatToObject(map.getCenter());
+  return boundsAroundCenter(center, maxDiagMeters / 2);
 }
 
 // --- Data-freshness UI helpers (C2 / m6) ---
@@ -222,7 +469,7 @@ function checkDataFreshness() {
     return;
   }
 
-  const current = map.getBounds();
+  const current = mapBoundsToAdapter(map.getBounds());
 
   if (!lastLoadedBounds.intersects(current)) {
     setDataStatus("Data stale — reload for this area", "warn");
@@ -234,18 +481,18 @@ function checkDataFreshness() {
 }
 
 function clearLayers() {
-  restaurantLayer.clearLayers();
-  parkingLayer.clearLayers();
-  spotLayer.clearLayers();
-  spotMarker = null;
+  restaurantById.clear();
+  parkingById.clear();
+
+  setSourceData(SOURCE_RESTAURANTS, featureCollection());
+  setSourceData(SOURCE_PARKING, featureCollection());
+  setSourceData(SOURCE_HEAT, featureCollection());
+  setSourceData(SOURCE_SPOT, featureCollection());
+
+  closeActivePopup();
 
   elParkingList.innerHTML = "";
   if (elSummaryCards) elSummaryCards.innerHTML = "";
-
-  if (heatLayer) {
-    map.removeLayer(heatLayer);
-    heatLayer = null;
-  }
 
   lastLoadedBounds = null;
   setDataStatus("", "");
@@ -261,7 +508,7 @@ function syncPanelState(isOpen) {
   }
 
   setTimeout(() => {
-    if (map) map.invalidateSize();
+    if (map) map.resize();
   }, 250);
 }
 
@@ -269,8 +516,7 @@ function closePanelIfOpen() {
   if (!panel?.classList.contains("open")) return false;
 
   syncPanelState(false);
-  map.closePopup();
-  if (spotMarker) spotMarker.closePopup();
+  closeActivePopup();
   return true;
 }
 
@@ -292,35 +538,35 @@ function describeGeolocationError(error) {
 }
 
 function showCurrentLocation(latlng, accuracyMeters) {
-  currentLocationLayer.clearLayers();
+  const currentLngLat = lngLatToObject(latlng);
 
   const accuracyRadius = Math.max(Number(accuracyMeters) || 0, 12);
+  lastCurrentLocation = currentLngLat;
+  lastCurrentLocationAccuracyMeters = accuracyRadius;
 
   if (accuracyRadius <= MAX_VISIBLE_ACCURACY_RADIUS_METERS) {
-    L.circle([latlng.lat, latlng.lng], {
-      radius: accuracyRadius,
-      weight: 1,
-      color: "#a7e3ff",
-      fillColor: "#2d6cdf",
-      fillOpacity: 0.1,
-    }).addTo(currentLocationLayer);
+    const accuracyFeature = createCirclePolygonFeature(currentLngLat, accuracyRadius);
+    accuracyFeature.properties = { accuracyMeters: accuracyRadius };
+    setSourceData(SOURCE_CURRENT_LOCATION_ACCURACY, featureCollection([accuracyFeature]));
+  } else {
+    setSourceData(SOURCE_CURRENT_LOCATION_ACCURACY, featureCollection());
   }
 
-  L.circleMarker([latlng.lat, latlng.lng], {
-    radius: 8,
-    weight: 3,
-    color: "#f4fbff",
-    fillColor: "#2d6cdf",
-    fillOpacity: 0.95,
-  })
-    .bindPopup(`You are here<br/><span class="mono">Accuracy ±${Math.round(accuracyRadius)} m</span>`)
-    .addTo(currentLocationLayer)
-    .openPopup();
+  setSourceData(SOURCE_CURRENT_LOCATION, featureCollection([{
+    type: "Feature",
+    geometry: {
+      type: "Point",
+      coordinates: [currentLngLat.lng, currentLngLat.lat],
+    },
+    properties: { accuracyMeters: accuracyRadius },
+  }]));
+
+  openPopupAtLngLat(currentLngLat, `You are here<br/><span class="mono">Accuracy ±${Math.round(accuracyRadius)} m</span>`);
 }
 
 function shouldAnimateLocate(latlng) {
   return map.getZoom() >= LOCATION_ANIMATION_MIN_START_ZOOM
-    && map.distance(map.getCenter(), latlng) <= LOCATION_ANIMATION_MAX_DISTANCE_METERS;
+    && haversineMeters(map.getCenter().lat, map.getCenter().lng, latlng.lat, latlng.lng) <= LOCATION_ANIMATION_MAX_DISTANCE_METERS;
 }
 
 function animateZoomToTarget(targetZoom, onComplete) {
@@ -337,7 +583,7 @@ function animateZoomToTarget(targetZoom, onComplete) {
     animateZoomToTarget(targetZoom, onComplete);
   });
 
-  map.setZoom(nextZoom, { animate: true });
+  map.easeTo({ zoom: nextZoom, duration: 400 });
 }
 
 function getCurrentPosition(options = {}) {
@@ -375,8 +621,10 @@ async function centerMapOnInitialLocationOnce() {
       maximumAge: 300000,
     });
 
-    const latlng = L.latLng(position.coords.latitude, position.coords.longitude);
-    map.setView(latlng, clampMapZoom(INITIAL_LOCATION_ZOOM), { animate: false });
+    map.jumpTo({
+      center: [position.coords.longitude, position.coords.latitude],
+      zoom: clampMapZoom(INITIAL_LOCATION_ZOOM),
+    });
   } catch (error) {
     console.info("Initial geolocation unavailable.", error);
   }
@@ -394,22 +642,23 @@ async function locateUser() {
 
   try {
     const position = await getCurrentPosition();
-    const latlng = L.latLng(position.coords.latitude, position.coords.longitude);
+    const latlng = { lat: position.coords.latitude, lng: position.coords.longitude };
 
     const animateLocate = shouldAnimateLocate(latlng);
     const targetZoom = clampMapZoom(LOCATION_TARGET_ZOOM);
 
     closePanelIfOpen();
-    currentLocationLayer.clearLayers();
+    lastCurrentLocation = null;
+    lastCurrentLocationAccuracyMeters = null;
+    setSourceData(SOURCE_CURRENT_LOCATION, featureCollection());
+    setSourceData(SOURCE_CURRENT_LOCATION_ACCURACY, featureCollection());
 
     if (animateLocate) {
       map.once("moveend", () => {
         showCurrentLocation(latlng, position.coords.accuracy);
       });
 
-      map.flyTo(latlng, targetZoom, {
-        duration: 0.85,
-      });
+      map.flyTo({ center: lngLatToArray(latlng), zoom: targetZoom, duration: 850 });
     } else {
       map.once("moveend", () => {
         animateZoomToTarget(targetZoom, () => {
@@ -417,11 +666,7 @@ async function locateUser() {
         });
       });
 
-      map.panTo(latlng, {
-        animate: true,
-        duration: LOCATION_PAN_DURATION_SECONDS,
-        easeLinearity: 0.2,
-      });
+      map.easeTo({ center: lngLatToArray(latlng), duration: LOCATION_PAN_DURATION_SECONDS * 1000 });
     }
   } catch (error) {
     alert(describeGeolocationError(error));
@@ -430,408 +675,25 @@ async function locateUser() {
   }
 }
 
-function clearDoubleTapHoldTimer() {
-  if (touchGestureState.holdTimer !== null) {
-    window.clearTimeout(touchGestureState.holdTimer);
-    touchGestureState.holdTimer = null;
-  }
-}
-
-function clearPendingStatsPopup() {
-  if (pendingStatsPopupTimer !== null) {
-    window.clearTimeout(pendingStatsPopupTimer);
-    pendingStatsPopupTimer = null;
-  }
-
-  pendingStatsPopupLatLng = null;
-}
-
 function openStatsPopupAtLatLng(latlng) {
   if (!latlng) return;
-
-  if (performance.now() < suppressStatsPopupUntil) {
-    return;
-  }
 
   if (closePanelIfOpen()) {
     return;
   }
 
   if (!lastRestaurants || lastRestaurants.length === 0) {
-    L.popup()
-      .setLatLng(latlng)
-      .setContent("Load data first (click ‘Load / Refresh for current view’).")
-      .openOn(map);
+    openPopupAtLngLat(latlng, "Load data first (click ‘Load / Refresh for current view’).");
     return;
   }
 
   const { hour, tauMeters } = lastParams;
-
-  const marker = setSpotMarker(latlng);
-  marker.bindPopup(renderSpotPopupHtml(latlng, lastRestaurants, tauMeters, hour)).openPopup();
+  setSpotMarker(latlng);
+  openPopupAtLngLat(latlng, renderSpotPopupHtml(latlngToObject(latlng), lastRestaurants, tauMeters, hour));
 }
 
-function schedulePendingStatsPopup(latlng) {
-  clearPendingStatsPopup();
-
-  pendingStatsPopupLatLng = latlng;
-  pendingStatsPopupTimer = window.setTimeout(() => {
-    const nextLatLng = pendingStatsPopupLatLng;
-    clearPendingStatsPopup();
-    openStatsPopupAtLatLng(nextLatLng);
-  }, DOUBLE_TAP_MAX_DELAY_MS);
-}
-
-function applyDoubleTapZoomPreview(zoom) {
-  const mapPane = map.getPanes()?.mapPane;
-  if (!mapPane || !touchGestureState.startPoint) return;
-
-  if (!touchGestureState.previewActive) {
-    touchGestureState.previewTransformBase = mapPane.style.transform || "";
-    touchGestureState.previewActive = true;
-  }
-
-  const zoomDelta = zoom - touchGestureState.startZoom;
-  const scale = 2 ** zoomDelta;
-  mapPane.style.transformOrigin = `${touchGestureState.startPoint.x}px ${touchGestureState.startPoint.y}px`;
-  mapPane.style.transform = `${touchGestureState.previewTransformBase} scale(${scale})`;
-  touchGestureState.previewZoom = zoom;
-}
-
-function clearDoubleTapZoomPreview(restoreBaseTransform = true) {
-  const mapPane = map.getPanes()?.mapPane;
-  if (!mapPane || !touchGestureState.previewActive) return;
-
-  if (restoreBaseTransform) {
-    mapPane.style.transform = touchGestureState.previewTransformBase || "";
-  }
-
-  mapPane.style.transformOrigin = "";
-  touchGestureState.previewActive = false;
-  touchGestureState.previewZoom = null;
-  touchGestureState.previewTransformBase = null;
-}
-
-function resetDoubleTapHoldZoomState() {
-  clearDoubleTapHoldTimer();
-
-  if (touchGestureState.active) {
-    const currentZoom = touchGestureState.previewZoom ?? map.getZoom();
-    const snappedZoom = Math.round(currentZoom);
-    const zoomAnchor = touchGestureState.startPoint
-      ? map.containerPointToLatLng(touchGestureState.startPoint)
-      : null;
-
-    if (Math.abs(snappedZoom - map.getZoom()) > 0.02) {
-      if (zoomAnchor) {
-        map.setZoomAround(zoomAnchor, snappedZoom, { animate: false });
-      } else {
-        map.setZoom(snappedZoom, { animate: false });
-      }
-    } else {
-      map.setZoom(snappedZoom, { animate: false });
-    }
-
-    clearDoubleTapZoomPreview(false);
-
-    if (touchGestureState.previousZoomSnap !== null) {
-      map.options.zoomSnap = touchGestureState.previousZoomSnap;
-    }
-
-    if (touchGestureState.dragWasEnabled && map.dragging) {
-      map.dragging.enable();
-    }
-
-    if (touchGestureState.doubleClickZoomWasEnabled && map.doubleClickZoom) {
-      window.setTimeout(() => {
-        map.doubleClickZoom.enable();
-      }, DOUBLE_TAP_DBLCLICK_SUPPRESSION_MS);
-    }
-  } else {
-    clearDoubleTapZoomPreview();
-  }
-
-  touchGestureState.active = false;
-  touchGestureState.pending = false;
-  touchGestureState.holdTimer = null;
-  touchGestureState.activeTouchId = null;
-  touchGestureState.controlTouchId = null;
-  touchGestureState.startPoint = null;
-  touchGestureState.startZoom = map.getZoom();
-  touchGestureState.controlStartPoint = null;
-  touchGestureState.controlStartZoom = map.getZoom();
-  touchGestureState.dragWasEnabled = false;
-  touchGestureState.doubleClickZoomWasEnabled = false;
-  touchGestureState.previousZoomSnap = null;
-  lastZoomUpdate = 0;
-}
-
-function findTouchById(touchList, touchId) {
-  if (!touchList) return null;
-
-  for (const touch of touchList) {
-    if (touch.identifier === touchId) return touch;
-  }
-
-  return null;
-}
-
-function findZoomControlTouch(touchList, anchorTouchId) {
-  if (!touchList?.length) return null;
-
-  for (const touch of touchList) {
-    if (touch.identifier !== anchorTouchId) return touch;
-  }
-
-  return findTouchById(touchList, anchorTouchId);
-}
-
-function handleMapTouchStart(event) {
-  const originalEvent = event.originalEvent;
-  if (!originalEvent) return;
-
-  lastTouchInteractionAt = performance.now();
-  clearPendingStatsPopup();
-
-  if (touchGestureState.pending || touchGestureState.active) {
-    return;
-  }
-
-  if (originalEvent.touches.length !== 1) {
-    touchGestureState.currentTouch = null;
-    return;
-  }
-
-  const touch = originalEvent.touches[0];
-  const point = L.point(touch.clientX, touch.clientY);
-  const now = performance.now();
-
-  touchGestureState.currentTouch = {
-    id: touch.identifier,
-    startPoint: point,
-    startTime: now,
-    moved: false,
-  };
-
-  const lastTap = touchGestureState.lastTap;
-
-  const isDoubleTap = lastTap
-    && now - lastTap.time <= DOUBLE_TAP_MAX_DELAY_MS
-    && point.distanceTo(lastTap.point) <= DOUBLE_TAP_MAX_DISTANCE_PX;
-
-  if (!isDoubleTap) return;
-
-  suppressStatsPopupUntil = now + SUPPRESS_AFTER_GESTURE_MS;
-
-  // Wait briefly on the second tap so normal taps and pans still pass through untouched.
-  touchGestureState.pending = true;
-  touchGestureState.activeTouchId = touch.identifier;
-  touchGestureState.startPoint = point;
-  touchGestureState.startZoom = map.getZoom();
-  touchGestureState.controlTouchId = null;
-  touchGestureState.controlStartPoint = null;
-  touchGestureState.controlStartZoom = touchGestureState.startZoom;
-
-  clearDoubleTapHoldTimer();
-
-  touchGestureState.holdTimer = window.setTimeout(() => {
-    if (!touchGestureState.pending || !touchGestureState.startPoint) return;
-
-    // Once the hold is confirmed, convert vertical drag distance into fractional zoom.
-    touchGestureState.pending = false;
-    touchGestureState.active = true;
-
-    suppressStatsPopupUntil = performance.now() + SUPPRESS_AFTER_GESTURE_MS;
-
-    touchGestureState.lastTap = null;
-    touchGestureState.dragWasEnabled = Boolean(map.dragging?.enabled());
-    touchGestureState.doubleClickZoomWasEnabled = Boolean(map.doubleClickZoom?.enabled());
-    touchGestureState.previousZoomSnap = map.options.zoomSnap;
-
-    if (touchGestureState.dragWasEnabled) {
-      map.dragging.disable();
-    }
-
-    if (touchGestureState.doubleClickZoomWasEnabled) {
-      map.doubleClickZoom.disable();
-    }
-
-    map.options.zoomSnap = 0;
-    lastZoomUpdate = 0;
-  }, DOUBLE_TAP_HOLD_DELAY_MS);
-}
-
-function handleMapTouchMove(event) {
-  const originalEvent = event.originalEvent;
-  if (!originalEvent) return;
-
-  lastTouchInteractionAt = performance.now();
-
-  const currentTouchId = touchGestureState.currentTouch?.id;
-  const touch = findTouchById(originalEvent.touches, currentTouchId);
-  if (!touch) return;
-
-  const point = L.point(touch.clientX, touch.clientY);
-
-  if (touchGestureState.currentTouch?.startPoint) {
-    const movedDistance = point.distanceTo(touchGestureState.currentTouch.startPoint);
-    if (movedDistance > DOUBLE_TAP_HOLD_TOLERANCE_PX) {
-      touchGestureState.currentTouch.moved = true;
-    }
-  }
-
-  if (touchGestureState.pending && touch.identifier === touchGestureState.activeTouchId) {
-    if (touchGestureState.startPoint && point.distanceTo(touchGestureState.startPoint) > DOUBLE_TAP_HOLD_TOLERANCE_PX) {
-      // Dragging before the hold timer fires — activate zoom immediately instead of cancelling.
-      clearDoubleTapHoldTimer();
-      touchGestureState.pending = false;
-      touchGestureState.active = true;
-      suppressStatsPopupUntil = performance.now() + SUPPRESS_AFTER_GESTURE_MS;
-      touchGestureState.lastTap = null;
-      touchGestureState.dragWasEnabled = Boolean(map.dragging?.enabled());
-      touchGestureState.doubleClickZoomWasEnabled = Boolean(map.doubleClickZoom?.enabled());
-      touchGestureState.previousZoomSnap = map.options.zoomSnap;
-      if (touchGestureState.dragWasEnabled) map.dragging.disable();
-      if (touchGestureState.doubleClickZoomWasEnabled) map.doubleClickZoom.disable();
-      map.options.zoomSnap = 0;
-      lastZoomUpdate = 0;
-      // Fall through to the zoom handling below.
-    } else {
-      return;
-    }
-  }
-
-  if (!touchGestureState.active || touch.identifier !== touchGestureState.activeTouchId || !touchGestureState.startPoint) {
-    if (!touchGestureState.active || !touchGestureState.startPoint) {
-      return;
-    }
-  }
-
-  const anchorTouch = findTouchById(originalEvent.touches, touchGestureState.activeTouchId);
-  if (!anchorTouch) {
-    resetDoubleTapHoldZoomState();
-    return;
-  }
-
-  const zoomTouch = findZoomControlTouch(originalEvent.touches, touchGestureState.activeTouchId);
-  if (!zoomTouch) return;
-
-  let zoomStartPoint = touchGestureState.startPoint;
-  let zoomStartLevel = touchGestureState.startZoom;
-
-  if (zoomTouch.identifier !== touchGestureState.activeTouchId) {
-    if (touchGestureState.controlTouchId !== zoomTouch.identifier || !touchGestureState.controlStartPoint) {
-      touchGestureState.controlTouchId = zoomTouch.identifier;
-      touchGestureState.controlStartPoint = L.point(zoomTouch.clientX, zoomTouch.clientY);
-      touchGestureState.controlStartZoom = map.getZoom();
-    }
-
-    zoomStartPoint = touchGestureState.controlStartPoint;
-    zoomStartLevel = touchGestureState.controlStartZoom;
-  } else {
-    touchGestureState.controlTouchId = null;
-    touchGestureState.controlStartPoint = null;
-    touchGestureState.controlStartZoom = map.getZoom();
-  }
-
-  originalEvent.preventDefault();
-  suppressStatsPopupUntil = performance.now() + SUPPRESS_AFTER_GESTURE_MS;
-
-  const deltaY = zoomTouch.clientY - zoomStartPoint.y;
-  const rawZoom = clampMapZoom(
-    zoomStartLevel + deltaY / DOUBLE_TAP_ZOOM_PIXELS_PER_LEVEL
-  );
-
-  const nextZoom = rawZoom;
-
-  const now = performance.now();
-  if (now - lastZoomUpdate < DOUBLE_TAP_ZOOM_THROTTLE_MS) return;
-  lastZoomUpdate = now;
-
-  const currentPreviewZoom = touchGestureState.previewZoom ?? map.getZoom();
-  if (Math.abs(nextZoom - currentPreviewZoom) < 0.02) return;
-
-  applyDoubleTapZoomPreview(nextZoom);
-}
-
-function handleMapTouchEnd(event) {
-  const originalEvent = event.originalEvent;
-  const currentTouch = touchGestureState.currentTouch;
-  lastTouchInteractionAt = performance.now();
-
-  const finishedTouch = currentTouch
-    ? findTouchById(originalEvent?.changedTouches, currentTouch.id)
-    : null;
-
-  const endPoint = finishedTouch
-    ? L.point(finishedTouch.clientX, finishedTouch.clientY)
-    : currentTouch?.startPoint;
-  const endLatLng = finishedTouch
-    ? map.mouseEventToLatLng(finishedTouch)
-    : null;
-
-  const now = performance.now();
-
-  if (touchGestureState.active || touchGestureState.pending) {
-    if (originalEvent) L.DomEvent.preventDefault(originalEvent);
-    suppressStatsPopupUntil = now + SUPPRESS_AFTER_GESTURE_MS;
-  }
-
-  const activeTouchEnded = Boolean(
-    touchGestureState.activeTouchId !== null
-      && findTouchById(originalEvent?.changedTouches, touchGestureState.activeTouchId)
-  );
-  const controlTouchEnded = Boolean(
-    touchGestureState.controlTouchId !== null
-      && findTouchById(originalEvent?.changedTouches, touchGestureState.controlTouchId)
-  );
-
-  if (touchGestureState.active && activeTouchEnded) {
-    resetDoubleTapHoldZoomState();
-    touchGestureState.currentTouch = null;
-    return;
-  }
-
-  if (touchGestureState.active && controlTouchEnded) {
-    touchGestureState.controlTouchId = null;
-    touchGestureState.controlStartPoint = null;
-    touchGestureState.controlStartZoom = map.getZoom();
-  }
-
-  if (touchGestureState.pending && activeTouchEnded) {
-    clearDoubleTapHoldTimer();
-    touchGestureState.pending = false;
-    touchGestureState.activeTouchId = null;
-    touchGestureState.startPoint = null;
-    touchGestureState.controlTouchId = null;
-    touchGestureState.controlStartPoint = null;
-    touchGestureState.controlStartZoom = map.getZoom();
-  }
-
-  if (currentTouch && endPoint && !currentTouch.moved && now - currentTouch.startTime <= DOUBLE_TAP_MAX_DELAY_MS) {
-    touchGestureState.lastTap = {
-      point: endPoint,
-      time: now,
-    };
-
-    if (!touchGestureState.active && endLatLng) {
-      suppressStatsPopupUntil = now + DOUBLE_TAP_MAX_DELAY_MS;
-      schedulePendingStatsPopup(endLatLng);
-    }
-  } else if (!touchGestureState.active) {
-    touchGestureState.lastTap = null;
-    clearPendingStatsPopup();
-  }
-
-  touchGestureState.currentTouch = null;
-}
-
-function handleMapTouchCancel() {
-  lastTouchInteractionAt = performance.now();
-  touchGestureState.currentTouch = null;
-  touchGestureState.lastTap = null;
-  clearPendingStatsPopup();
-  resetDoubleTapHoldZoomState();
+function latlngToObject(value) {
+  return lngLatToObject(value);
 }
 
 function clamp01(x) {
@@ -966,40 +828,45 @@ function renderSummaryCards(rankedParking, restaurants, parking) {
 }
 
 function addRestaurantMarkers(restaurants) {
-  for (const r of restaurants) {
-    const name = r.tags?.name || r.tags?.brand || "Food place";
-    const amenity = r.tags?.amenity || "";
+  restaurantById.clear();
 
-    L.circleMarker([r.lat, r.lon], {
-      radius: 4,
-      weight: 1,
-      color: "#ffe59a",
-      fillColor: "#ffbf45",
-      fillOpacity: 0.8,
-    })
-      .bindPopup(`<b>${escapeHtml(name)}</b><br/>${escapeHtml(amenity)}`)
-      .addTo(restaurantLayer);
-  }
+  const features = restaurants.map((restaurant) => {
+    restaurantById.set(restaurant.id, restaurant);
+
+    return {
+      type: "Feature",
+      geometry: {
+        type: "Point",
+        coordinates: [restaurant.lon, restaurant.lat],
+      },
+      properties: {
+        id: restaurant.id,
+      },
+    };
+  });
+
+  setSourceData(SOURCE_RESTAURANTS, featureCollection(features));
 }
 
 function addParkingMarkers(rankedParking, restaurants, tauMeters, hour) {
-  for (const p of rankedParking) {
-    const name = p.tags?.name || p.tags?.operator || "Parking";
+  parkingById.clear();
 
-    const marker = L.circleMarker([p.lat, p.lon], {
-      radius: 7,
-      weight: 2,
-      color: "#9ad3ff",
-      fillColor: "#2d6cdf",
-      fillOpacity: 0.6,
-    })
-      .bindPopup(renderParkingPopupHtml(p, name, restaurants, tauMeters, hour))
-      .addTo(parkingLayer);
+  const features = rankedParking.map((parking) => {
+    parkingById.set(parking.id, parking);
 
-    marker.on("click", () => {
-      map.setView([p.lat, p.lon], Math.max(map.getZoom(), 15));
-    });
-  }
+    return {
+      type: "Feature",
+      geometry: {
+        type: "Point",
+        coordinates: [parking.lon, parking.lat],
+      },
+      properties: {
+        id: parking.id,
+      },
+    };
+  });
+
+  setSourceData(SOURCE_PARKING, featureCollection(features));
 }
 
 function renderParkingPopupHtml(p, name, restaurants, tauMeters, hour) {
@@ -1084,17 +951,18 @@ function renderSpotPopupHtml(latlng, restaurants, tauMeters, hour) {
 }
 
 function setSpotMarker(latlng) {
-  spotLayer.clearLayers();
+  const point = latlngToObject(latlng);
 
-  spotMarker = L.circleMarker([latlng.lat, latlng.lng], {
-    radius: 9,
-    weight: 2,
-    color: "#f4f1ff",
-    fillColor: "#b18bff",
-    fillOpacity: 0.75,
-  }).addTo(spotLayer);
+  setSourceData(SOURCE_SPOT, featureCollection([{
+    type: "Feature",
+    geometry: {
+      type: "Point",
+      coordinates: [point.lng, point.lat],
+    },
+    properties: {},
+  }]));
 
-  return spotMarker;
+  return point;
 }
 
 function renderParkingList(rankedParking) {
@@ -1115,7 +983,11 @@ function renderParkingList(rankedParking) {
 `;
 
     btn.addEventListener("click", () => {
-      map.setView([p.lat, p.lon], Math.max(map.getZoom(), 15));
+      map.easeTo({
+        center: [p.lon, p.lat],
+        zoom: Math.max(map.getZoom(), 15),
+        duration: 700,
+      });
     });
 
     li.appendChild(btn);
@@ -1179,7 +1051,7 @@ async function loadForView() {
       minSepMeters,
     };
 
-    const bbox = map.getBounds();
+    const bbox = mapBoundsToAdapter(map.getBounds());
     const queryBounds = clampQueryBounds(bbox);
 
     const [allRestaurants, parking] = await Promise.all([
@@ -1216,19 +1088,18 @@ async function loadForView() {
 
     checkDataFreshness();
 
-    heatLayer = L.heatLayer(heatResult.heatPoints, {
-      radius: 22,
-      blur: 18,
-      maxZoom: 17,
-      minOpacity: 0.25,
-      gradient: {
-        0.1: "#2d6cdf",
-        0.35: "#00d4ff",
-        0.55: "#fff1a8",
-        0.75: "#ff9b3d",
-        1.0: "#ff3b3b",
+    const heatFeatures = heatResult.heatPoints.map(([lat, lon, intensity]) => ({
+      type: "Feature",
+      geometry: {
+        type: "Point",
+        coordinates: [lon, lat],
       },
-    }).addTo(map);
+      properties: {
+        intensity,
+      },
+    }));
+
+    setSourceData(SOURCE_HEAT, featureCollection(heatFeatures));
 
     const rankedAll = rankParking(
       parking,
@@ -1247,40 +1118,13 @@ async function loadForView() {
     renderParkingList(ranked);
     renderSummaryCards(ranked, restaurants, parking);
 
-    if (!elShowRestaurants.checked) restaurantLayer.removeFrom(map);
-    if (!elShowParking.checked) parkingLayer.removeFrom(map);
+    setLayerVisibility(LAYER_RESTAURANTS, elShowRestaurants.checked);
+    setLayerVisibility(LAYER_PARKING, elShowParking.checked);
   } finally {
     elLoad.disabled = false;
     elLoad.textContent = "Load / Refresh for current view";
   }
 }
-
-map.on("moveend", checkDataFreshness);
-
-// Leaflet does not re-emit touchstart/move/end/cancel as map-level events,
-// so we attach directly to the DOM container.
-const _mapEl = map.getContainer();
-_mapEl.addEventListener("touchstart",  (e) => handleMapTouchStart({ originalEvent: e }),  { passive: true });
-_mapEl.addEventListener("touchmove",   (e) => handleMapTouchMove({ originalEvent: e }),   { passive: false });
-_mapEl.addEventListener("touchend",    (e) => handleMapTouchEnd({ originalEvent: e }),    { passive: false });
-_mapEl.addEventListener("touchcancel", ()  => handleMapTouchCancel(),                     { passive: true });
-
-map.on("click", (e) => {
-  // Ignore browser-synthesized clicks that originated from a touch/pen.
-  const pointerType = e.originalEvent?.pointerType;
-  if (pointerType === "touch" || pointerType === "pen") return;
-
-  // Fallback: ignore anything arriving shortly after a real touch interaction.
-  if (performance.now() - lastTouchInteractionAt <= TOUCH_CLICK_SUPPRESSION_MS) return;
-
-  if (performance.now() < suppressStatsPopupUntil) {
-    suppressStatsPopupUntil = 0;
-    return;
-  }
-
-  clearPendingStatsPopup();
-  openStatsPopupAtLatLng(e.latlng);
-});
 
 elLoad.addEventListener("click", () => {
   loadForView().catch((err) => {
@@ -1293,27 +1137,37 @@ if (elLocateMe) {
   elLocateMe.addEventListener("click", locateUser);
 }
 
-// Helpful default: pre-load once the first tiles render.
-map.whenReady(() => {
+map.on("moveend", checkDataFreshness);
+
+map.on("click", (event) => {
+  const featuresAtPoint = map.queryRenderedFeatures(event.point, {
+    layers: [LAYER_RESTAURANTS, LAYER_PARKING, LAYER_CURRENT_LOCATION_DOT],
+  });
+
+  if (featuresAtPoint.length) return;
+
+  openStatsPopupAtLatLng(event.lngLat);
+});
+
+map.on("load", () => {
+  ensureMapSourcesAndLayers();
+
   if (menuButton && panel) {
     menuButton.addEventListener("click", () => {
       syncPanelState(!panel.classList.contains("open"));
     });
   }
 
-  // Prevent clicks inside the panel from closing it
   if (panel) {
-    panel.addEventListener("click", (e) => {
-      e.stopPropagation();
+    panel.addEventListener("click", (event) => {
+      event.stopPropagation();
     });
   }
 
-  // Force size recalculation before first data load so the canvas
-  // never encounters a zero-height container (Leaflet #3575).
-  if (map) map.invalidateSize();
+  map.resize();
 
   setTimeout(async () => {
-    if (map) map.invalidateSize();
+    map.resize();
 
     await centerMapOnInitialLocationOnce();
 

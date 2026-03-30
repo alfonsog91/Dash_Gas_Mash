@@ -3,16 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Dash Parking Estimate Map (OSM)</title>
+    <title>Dash Parking Estimate Map</title>
 
     <link
       rel="stylesheet"
-      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
       crossorigin=""
     />
 
     <link rel="stylesheet" href="./styles.css" />
+    <script>
+      window.DASH_MAPTILER_KEY = window.DASH_MAPTILER_KEY || "3fnxdfXcA9sh6SX5x78N";
+      window.DASH_MAPTILER_STYLE_ID = window.DASH_MAPTILER_STYLE_ID || "basic-v2";
+    </script>
   </head>
   <body>
     <div id="app">
@@ -196,7 +199,7 @@
 
         <footer>
           <p class="small">
-            Map data © OpenStreetMap contributors. Tiles via openstreetmap.org.
+            Basemap © OpenStreetMap contributors. Vector map via MapTiler when configured, otherwise MapLibre demo tiles.
           </p>
         </footer>
       </aside>
@@ -208,14 +211,7 @@
     </div>
 
     <script
-      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-      crossorigin=""
-    ></script>
-
-    <script
-      src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"
-      integrity="sha256-65UqrlgGoRAnKfKRuriH3eeDrOhZgZo1SCenduc+SGo="
+      src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"
       crossorigin=""
     ></script>
 
