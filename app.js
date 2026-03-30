@@ -38,6 +38,7 @@ const map = L.map("map", {
 
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19,
+  updateWhenZooming: false,
   attribution: "&copy; OpenStreetMap contributors",
 }).addTo(map);
 
@@ -136,6 +137,9 @@ const touchGestureState = {
   dragWasEnabled: false,
   doubleClickZoomWasEnabled: false,
   previousZoomSnap: null,
+  previewActive: false,
+  previewZoom: null,
+  previewTransformBase: null,
 };
 
 let lastZoomUpdate = 0;
@@ -478,18 +482,57 @@ function schedulePendingStatsPopup(latlng) {
   }, DOUBLE_TAP_MAX_DELAY_MS);
 }
 
+function applyDoubleTapZoomPreview(zoom) {
+  const mapPane = map.getPanes()?.mapPane;
+  if (!mapPane || !touchGestureState.startPoint) return;
+
+  if (!touchGestureState.previewActive) {
+    touchGestureState.previewTransformBase = mapPane.style.transform || "";
+    touchGestureState.previewActive = true;
+  }
+
+  const zoomDelta = zoom - touchGestureState.startZoom;
+  const scale = 2 ** zoomDelta;
+  mapPane.style.transformOrigin = `${touchGestureState.startPoint.x}px ${touchGestureState.startPoint.y}px`;
+  mapPane.style.transform = `${touchGestureState.previewTransformBase} scale(${scale})`;
+  touchGestureState.previewZoom = zoom;
+}
+
+function clearDoubleTapZoomPreview(restoreBaseTransform = true) {
+  const mapPane = map.getPanes()?.mapPane;
+  if (!mapPane || !touchGestureState.previewActive) return;
+
+  if (restoreBaseTransform) {
+    mapPane.style.transform = touchGestureState.previewTransformBase || "";
+  }
+
+  mapPane.style.transformOrigin = "";
+  touchGestureState.previewActive = false;
+  touchGestureState.previewZoom = null;
+  touchGestureState.previewTransformBase = null;
+}
+
 function resetDoubleTapHoldZoomState() {
   clearDoubleTapHoldTimer();
 
   if (touchGestureState.active) {
-    const currentZoom = map.getZoom();
+    const currentZoom = touchGestureState.previewZoom ?? map.getZoom();
     const snappedZoom = Math.round(currentZoom);
+    const zoomAnchor = touchGestureState.startPoint
+      ? map.containerPointToLatLng(touchGestureState.startPoint)
+      : null;
 
-    if (Math.abs(snappedZoom - currentZoom) > 0.02) {
-      map.setZoom(snappedZoom, { animate: true, duration: 0.12 });
+    if (Math.abs(snappedZoom - map.getZoom()) > 0.02) {
+      if (zoomAnchor) {
+        map.setZoomAround(zoomAnchor, snappedZoom, { animate: false });
+      } else {
+        map.setZoom(snappedZoom, { animate: false });
+      }
     } else {
       map.setZoom(snappedZoom, { animate: false });
     }
+
+    clearDoubleTapZoomPreview(false);
 
     if (touchGestureState.previousZoomSnap !== null) {
       map.options.zoomSnap = touchGestureState.previousZoomSnap;
@@ -504,6 +547,8 @@ function resetDoubleTapHoldZoomState() {
         map.doubleClickZoom.enable();
       }, DOUBLE_TAP_DBLCLICK_SUPPRESSION_MS);
     }
+  } else {
+    clearDoubleTapZoomPreview();
   }
 
   touchGestureState.active = false;
@@ -518,6 +563,7 @@ function resetDoubleTapHoldZoomState() {
   touchGestureState.dragWasEnabled = false;
   touchGestureState.doubleClickZoomWasEnabled = false;
   touchGestureState.previousZoomSnap = null;
+  lastZoomUpdate = 0;
 }
 
 function findTouchById(touchList, touchId) {
@@ -611,6 +657,7 @@ function handleMapTouchStart(event) {
     }
 
     map.options.zoomSnap = 0;
+    lastZoomUpdate = 0;
   }, DOUBLE_TAP_HOLD_DELAY_MS);
 }
 
@@ -647,6 +694,7 @@ function handleMapTouchMove(event) {
       if (touchGestureState.dragWasEnabled) map.dragging.disable();
       if (touchGestureState.doubleClickZoomWasEnabled) map.doubleClickZoom.disable();
       map.options.zoomSnap = 0;
+      lastZoomUpdate = 0;
       // Fall through to the zoom handling below.
     } else {
       return;
@@ -700,13 +748,10 @@ function handleMapTouchMove(event) {
   if (now - lastZoomUpdate < DOUBLE_TAP_ZOOM_THROTTLE_MS) return;
   lastZoomUpdate = now;
 
-  if (Math.abs(nextZoom - map.getZoom()) < 0.02) return;
+  const currentPreviewZoom = touchGestureState.previewZoom ?? map.getZoom();
+  if (Math.abs(nextZoom - currentPreviewZoom) < 0.02) return;
 
-  map.setZoomAround(
-    map.containerPointToLatLng(touchGestureState.startPoint),
-    nextZoom,
-    { animate: false }
-  );
+  applyDoubleTapZoomPreview(nextZoom);
 }
 
 function handleMapTouchEnd(event) {
