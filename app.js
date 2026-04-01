@@ -32,11 +32,13 @@ import {
   selectParkingSetSubmodular,
 } from "./optimizer.js?v=20260401-learnedglm";
 
-const APP_BUILD_ID = "20260401-learnedglm";
+const APP_BUILD_ID = "20260401-address-search";
 console.info("[DGM] app build", APP_BUILD_ID);
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
 const SHADOW_LEARNED_MODEL = Boolean(window.DGM_SHADOW_PREDICTION_MODEL);
+const MAPTILER_GEOCODING_API_URL = "https://api.maptiler.com/geocoding";
+const NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search";
 
 if (window.location.protocol === "file:") {
   alert(
@@ -83,6 +85,13 @@ let activePopup = null;
 let activeAbort = null;
 let lastCurrentLocation = null;
 let lastCurrentLocationAccuracyMeters = null;
+let activeSearchAbort = null;
+let activeSearchMarker = null;
+let searchSequence = 0;
+let searchDebounceTimer = null;
+let renderedSearchResults = [];
+let searchResultPressActive = false;
+let searchResultPressTimer = null;
 
 const restaurantById = new Map();
 const parkingById = new Map();
@@ -133,6 +142,10 @@ const elSummaryCards = document.getElementById("summaryCards");
 const menuButton = document.getElementById("menuToggle");
 const panel = document.getElementById("panel");
 const elLocateMe = document.getElementById("locateMe");
+const elSearchForm = document.getElementById("searchForm");
+const elSearchInput = document.getElementById("searchInput");
+const elSearchButton = document.getElementById("searchButton");
+const elSearchResults = document.getElementById("searchResults");
 
 const LOCATION_TARGET_ZOOM = 16;
 const LOCATION_ANIMATION_MIN_START_ZOOM = 14;
@@ -252,6 +265,276 @@ function setSourceData(sourceId, data) {
   if (source) {
     source.setData(data);
   }
+}
+
+function setSearchResultsExpanded(isExpanded) {
+  if (!elSearchResults) return;
+  elSearchResults.classList.toggle("has-results", Boolean(isExpanded));
+  elSearchResults.setAttribute("aria-hidden", String(!isExpanded));
+}
+
+function clearSearchInteractionState() {
+  searchResultPressActive = false;
+  if (searchResultPressTimer) {
+    clearTimeout(searchResultPressTimer);
+    searchResultPressTimer = null;
+  }
+}
+
+function noteSearchResultsInteraction() {
+  searchResultPressActive = true;
+  if (searchResultPressTimer) {
+    clearTimeout(searchResultPressTimer);
+  }
+  searchResultPressTimer = setTimeout(() => {
+    searchResultPressActive = false;
+    searchResultPressTimer = null;
+  }, 250);
+}
+
+function clearActiveSearchMarker() {
+  if (activeSearchMarker) {
+    activeSearchMarker.remove();
+    activeSearchMarker = null;
+  }
+}
+
+function splitSearchDisplayName(displayName) {
+  const pieces = String(displayName || "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  return {
+    title: pieces[0] || String(displayName || "").trim() || "Search result",
+    subtitle: pieces.slice(1).join(", ") || "Mapped location",
+  };
+}
+
+function clearSearchResults() {
+  if (!elSearchResults) return;
+  renderedSearchResults = [];
+  clearSearchInteractionState();
+  elSearchResults.innerHTML = "";
+  setSearchResultsExpanded(false);
+}
+
+function renderSearchResults(results) {
+  if (!elSearchResults) return;
+  renderedSearchResults = Array.isArray(results) ? results : [];
+
+  if (!renderedSearchResults.length) {
+    clearSearchResults();
+    return;
+  }
+
+  elSearchResults.innerHTML = renderedSearchResults
+    .map((result, index) => `
+      <button class="search-result" type="button" data-index="${index}" role="option">
+        <span class="search-result-title">${escapeHtml(result.title)}</span>
+        ${result.subtitle ? `<span class="search-result-meta">${escapeHtml(result.subtitle)}</span>` : ""}
+      </button>
+    `)
+    .join("");
+  setSearchResultsExpanded(true);
+}
+
+function normalizeMapTilerMatch(rawMatch) {
+  const coordinates = Array.isArray(rawMatch?.center)
+    ? rawMatch.center
+    : rawMatch?.geometry?.coordinates;
+  const displayName = String(rawMatch?.place_name ?? rawMatch?.properties?.label ?? rawMatch?.text ?? "").trim();
+  const { title, subtitle } = splitSearchDisplayName(displayName);
+
+  return {
+    lat: Number(coordinates?.[1]),
+    lng: Number(coordinates?.[0]),
+    title,
+    subtitle,
+    label: displayName || title,
+  };
+}
+
+function normalizeNominatimMatch(rawMatch) {
+  const displayName = String(rawMatch?.display_name ?? "").trim();
+  const { title, subtitle } = splitSearchDisplayName(displayName);
+
+  return {
+    lat: Number(rawMatch?.lat),
+    lng: Number(rawMatch?.lon),
+    title,
+    subtitle,
+    label: displayName || title,
+  };
+}
+
+async function fetchMapTilerMatches(query, { limit = 5, signal } = {}) {
+  const searchUrl = new URL(`${MAPTILER_GEOCODING_API_URL}/${encodeURIComponent(query)}.json`);
+  searchUrl.searchParams.set("key", MAPTILER_API_KEY);
+  searchUrl.searchParams.set("autocomplete", "true");
+  searchUrl.searchParams.set("limit", String(limit));
+  searchUrl.searchParams.set("language", "en");
+  searchUrl.searchParams.set("types", "address,poi,place,locality,neighbourhood,street");
+
+  const center = map.getCenter();
+  if (Number.isFinite(center?.lng) && Number.isFinite(center?.lat)) {
+    searchUrl.searchParams.set("proximity", `${center.lng},${center.lat}`);
+  }
+
+  const response = await fetch(searchUrl, {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+
+  if (!response.ok) {
+    throw new Error(`Search failed (${response.status})`);
+  }
+
+  const payload = await response.json();
+  return Array.isArray(payload?.features)
+    ? payload.features
+      .map(normalizeMapTilerMatch)
+      .filter((match) => Number.isFinite(match.lat) && Number.isFinite(match.lng))
+    : [];
+}
+
+async function fetchNominatimMatches(query, { limit = 5, signal } = {}) {
+  const searchUrl = new URL(NOMINATIM_SEARCH_URL);
+  searchUrl.searchParams.set("format", "jsonv2");
+  searchUrl.searchParams.set("limit", String(limit));
+  searchUrl.searchParams.set("q", query);
+
+  const response = await fetch(searchUrl, {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+
+  if (!response.ok) {
+    throw new Error(`Search failed (${response.status})`);
+  }
+
+  const payload = await response.json();
+  return Array.isArray(payload)
+    ? payload.map(normalizeNominatimMatch).filter((match) => Number.isFinite(match.lat) && Number.isFinite(match.lng))
+    : [];
+}
+
+async function fetchSearchMatches(query, { limit = 5, signal } = {}) {
+  if (MAPTILER_API_KEY) {
+    try {
+      const primaryMatches = await fetchMapTilerMatches(query, { limit, signal });
+      if (primaryMatches.length) {
+        return primaryMatches;
+      }
+    } catch (error) {
+      if (error?.name === "AbortError") throw error;
+      console.warn("MapTiler geocoding failed; falling back to Nominatim.", error);
+    }
+  }
+
+  return fetchNominatimMatches(query, { limit, signal });
+}
+
+async function updateSearchSuggestions(query) {
+  const trimmed = String(query || "").trim();
+  if (trimmed.length < 3) {
+    if (activeSearchAbort) activeSearchAbort.abort();
+    clearSearchResults();
+    return;
+  }
+
+  if (activeSearchAbort) activeSearchAbort.abort();
+  activeSearchAbort = new AbortController();
+  const requestId = ++searchSequence;
+
+  try {
+    const matches = await fetchSearchMatches(trimmed, { limit: 5, signal: activeSearchAbort.signal });
+    if (requestId !== searchSequence) return;
+    renderSearchResults(matches);
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    console.error(error);
+    clearSearchResults();
+  }
+}
+
+function scheduleSearchSuggestions(query) {
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer);
+  }
+  searchDebounceTimer = setTimeout(() => {
+    updateSearchSuggestions(query).catch((error) => console.error(error));
+  }, 180);
+}
+
+function renderSearchPopupHtml(match) {
+  const subtitle = match.subtitle && match.subtitle !== match.title
+    ? `<div class="popup-detail">${escapeHtml(match.subtitle)}</div>`
+    : "";
+
+  return `<div class="popup-friendly"><b>${escapeHtml(match.title)}</b>${subtitle}</div>`;
+}
+
+function focusSearchMatch(match) {
+  const lat = Number(match.lat);
+  const lng = Number(match.lng);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return;
+  }
+
+  clearActiveSearchMarker();
+
+  map.flyTo({
+    center: [lng, lat],
+    zoom: Math.max(map.getZoom(), 15),
+    duration: 900,
+    essential: true,
+  });
+
+  const marker = new maplibregl.Marker({ color: "#ffbf45" })
+    .setLngLat([lng, lat])
+    .addTo(map);
+  activeSearchMarker = marker;
+
+  const popup = openPopupAtLngLat(
+    { lat, lng },
+    renderSearchPopupHtml(match),
+    { closeButton: true }
+  );
+
+  popup.on("close", () => {
+    if (activeSearchMarker === marker) {
+      marker.remove();
+      activeSearchMarker = null;
+    }
+  });
+}
+
+async function searchAddress(query) {
+  const trimmed = String(query || "").trim();
+  if (!trimmed) return;
+  const [match] = await fetchSearchMatches(trimmed, { limit: 1 });
+  if (!match) {
+    throw new Error("No matching address found.");
+  }
+  clearSearchResults();
+  if (elSearchInput) {
+    elSearchInput.value = match.label || match.title;
+  }
+  focusSearchMatch(match);
+}
+
+function selectRenderedSearchResult(index) {
+  const match = renderedSearchResults[Number(index)];
+  if (!match) return;
+
+  clearSearchInteractionState();
+  clearSearchResults();
+  if (elSearchInput) {
+    elSearchInput.value = match.label || match.title;
+  }
+  focusSearchMatch(match);
 }
 
 function setLayerVisibility(layerId, visible) {
@@ -1270,6 +1553,65 @@ elLoad.addEventListener("click", () => {
 
 if (elLocateMe) {
   elLocateMe.addEventListener("click", locateUser);
+}
+
+if (elSearchForm && elSearchInput && elSearchButton) {
+  elSearchForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    clearSearchResults();
+    const query = elSearchInput.value;
+    if (!String(query).trim()) return;
+
+    elSearchButton.disabled = true;
+    elSearchButton.textContent = "Searching…";
+
+    try {
+      await searchAddress(query);
+    } catch (error) {
+      console.error(error);
+      alert(error?.message ?? String(error));
+    } finally {
+      elSearchButton.disabled = false;
+      elSearchButton.textContent = "Search";
+    }
+  });
+
+  elSearchInput.addEventListener("input", () => {
+    scheduleSearchSuggestions(elSearchInput.value);
+  });
+
+  elSearchInput.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      clearSearchResults();
+      elSearchInput.blur();
+    }
+  });
+
+  elSearchInput.addEventListener("blur", () => {
+    window.setTimeout(() => {
+      if (searchResultPressActive) return;
+      clearSearchResults();
+    }, 120);
+  });
+
+  elSearchInput.addEventListener("focus", () => {
+    if (elSearchResults?.innerHTML.trim()) {
+      setSearchResultsExpanded(true);
+    }
+  });
+}
+
+if (elSearchResults) {
+  const markInteraction = () => noteSearchResultsInteraction();
+
+  elSearchResults.addEventListener("pointerdown", markInteraction);
+  elSearchResults.addEventListener("touchstart", markInteraction, { passive: true });
+  elSearchResults.addEventListener("click", (event) => {
+    const button = event.target.closest(".search-result");
+    if (!button || !elSearchResults.contains(button)) return;
+    event.preventDefault();
+    selectRenderedSearchResult(button.dataset.index);
+  });
 }
 
 map.on("moveend", checkDataFreshness);

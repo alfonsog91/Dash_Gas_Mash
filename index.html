@@ -217,6 +217,13 @@
 
       <main id="main">
         <div id="map"></div>
+        <div class="map-toolbar" aria-label="Map tools">
+          <form id="searchForm" class="map-search" role="search">
+            <input id="searchInput" type="search" placeholder="Search address or place" aria-label="Search address or place" aria-autocomplete="list" aria-controls="searchResults" autocomplete="off" enterkeyhint="search" spellcheck="false" />
+            <button id="searchButton" type="submit">Search</button>
+          </form>
+          <div id="searchResults" class="search-results" role="listbox" aria-label="Search results" aria-hidden="true"></div>
+        </div>
         <button id="locateMe" class="locate-me" type="button" aria-label="Find my current location" title="Find my current location">ME</button>
       </main>
     </div>
@@ -232,6 +239,6 @@
       crossorigin=""
     ></script>
 
-    <script type="module" src="./app.js?v=20260401-learnedglm"></script>
+    <script type="module" src="./app.js?v=20260401-address-search"></script>
   </body>
 </html>
