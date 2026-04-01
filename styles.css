@@ -101,6 +101,89 @@ button:hover {
 
 #map { height: 100%; width: 100%; }
 
+.map-toolbar {
+  position: absolute;
+  top: calc(env(safe-area-inset-top, 0px) + 18px);
+  left: calc(env(safe-area-inset-left, 0px) + 18px);
+  z-index: 1000;
+  display: grid;
+  gap: 10px;
+  width: min(360px, calc(100% - 96px));
+}
+
+.map-search {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 14px;
+  background: rgba(16, 26, 43, 0.92);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+.map-search input {
+  min-width: 0;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 10px;
+  background: rgba(255,255,255,0.06);
+  color: var(--text);
+  padding: 10px 12px;
+}
+
+.map-search input::placeholder {
+  color: rgba(169, 181, 199, 0.8);
+}
+
+.search-results {
+  display: none;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 14px;
+  background: rgba(16, 26, 43, 0.96);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+
+.search-results.has-results {
+  display: block;
+}
+
+.search-result {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+  padding: 10px 12px;
+}
+
+.search-result:last-child {
+  border-bottom: 0;
+}
+
+.search-result:hover,
+.search-result:focus-visible {
+  background: rgba(255,255,255,0.08);
+}
+
+.search-result-title {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.search-result-meta {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
 .list {
   margin: 10px 0 0 18px;
   padding: 0;
@@ -450,6 +533,20 @@ summary {
 }
 
 @media (max-width: 768px) {
+  .map-toolbar {
+    top: calc(env(safe-area-inset-top, 0px) + 14px);
+    left: calc(env(safe-area-inset-left, 0px) + 14px);
+    width: min(100%, calc(100% - 92px));
+  }
+
+  .map-search {
+    grid-template-columns: 1fr;
+  }
+
+  .search-results {
+    width: 100%;
+  }
+
   /* Keep primary navigation high and move zoom to the thumb zone to avoid stacked map controls on phones. */
   html, body {
     height: 100%;
