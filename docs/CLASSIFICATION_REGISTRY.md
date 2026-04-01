@@ -5,6 +5,7 @@ Each element from the Unified Mathematical Governance Corpus is classified below
 **Valid classifications:**
 - `GOV` — Non-executable governance constraint
 - `ABS` — Analytical or bounding structure
+- `EXE` — Authorized executable runtime component
 - `FEC` — Potential future executable candidate
 
 ---
@@ -79,7 +80,7 @@ Each element from the Unified Mathematical Governance Corpus is classified below
 | ID | Element | Definition | Classification | Location | Rationale |
 |----|---------|-----------|---------------|----------|-----------|
 | 7.1 | No conversion without authorization (G-1) | Corpus math cannot become executable without §8 process | `GOV` | [docs/GOVERNANCE.md §7](GOVERNANCE.md) | Master gate for all corpus elements |
-| 7.2 | No new prediction/optimization/decision (G-2) | No new P/O/D logic beyond what is already present | `GOV` | [docs/GOVERNANCE.md §7](GOVERNANCE.md) | Prevents scope expansion |
+| 7.2 | No new prediction/optimization/decision (G-2) | No new P/O/D logic unless it replaces a named heuristic and satisfies §8 | `GOV` | [docs/GOVERNANCE.md §7](GOVERNANCE.md) | Prevents unbounded scope expansion while allowing controlled promotion |
 | 7.3 | No semantic coupling beyond defined (G-3) | No coupling beyond §1–§6 definitions | `GOV` | [docs/GOVERNANCE.md §7](GOVERNANCE.md) | Prevents hidden dependencies |
 | 7.4 | Preserve §1–§6 in all changes (G-4) | Future changes must preserve all sections | `GOV` | [docs/GOVERNANCE.md §7](GOVERNANCE.md) | Master preservation constraint |
 
@@ -87,7 +88,13 @@ Each element from the Unified Mathematical Governance Corpus is classified below
 
 | ID | Element | Definition | Classification | Location | Rationale |
 |----|---------|-----------|---------------|----------|-----------|
-| 8.1 | Reclassification gate | Four conditions required for any `FEC` → executable promotion | `GOV` | [docs/GOVERNANCE.md §8](GOVERNANCE.md) | Defines the only valid path for corpus math to become runtime |
+| 8.1 | Reclassification gate | Five conditions required for any `FEC` → executable promotion | `GOV` | [docs/GOVERNANCE.md §8](GOVERNANCE.md) | Defines the only valid path for corpus math to become runtime |
+| 8.2 | Residential demand field $\lambda_{res}$ | $\lambda_{res}(p)=\sum_{a \in \mathcal{A}} w(a,h,day)e^{-d(p,a)/\tau_{res}}$ and blended $\lambda_{eff}$ contribution | `EXE` | [docs/GOVERNANCE.md §8.2](GOVERNANCE.md), runtime: `residentialIntensityAtPoint()` and `probabilityOfGoodOrder()` in [model.js](../model.js), fetch path in [overpass.js](../overpass.js), wiring in [app.js](../app.js) | Promoted because residential-demand math already existed but was dormant in the app flow; activation replaces the merchant-only heuristic while preserving non-negativity, monotonicity, and rollback via blend $\eta=0$ |
+| 8.3 | Demand coverage node set $Q$ | $Q$ is the non-negative weighted set of merchant and residential demand nodes used by the fallback selector | `EXE` | [docs/GOVERNANCE.md §8.3](GOVERNANCE.md), runtime: `buildDemandCoverageNodes()` in [model.js](../model.js), consumed in [app.js](../app.js) | Required to isolate demand representation for the fallback objective without changing the existing four-signal decomposition |
+| 8.4 | Submodular coverage objective $F(S)$ | $F(S)=\sum_{q \in Q} w_q \max_{p \in S}[u(p)e^{-d(p,q)/\sigma}]$ with greedy cardinality-constrained selection | `EXE` | [docs/GOVERNANCE.md §8.3](GOVERNANCE.md), runtime: `selectParkingSetSubmodular()` and `evaluateParkingCoverage()` in [optimizer.js](../optimizer.js), shadow audit in [app.js](../app.js) | Promoted to replace the naive non-MIP top-K slice. The objective is monotone submodular on the supplied candidate pool, so greedy selection provides the classical $(1-1/e)$ approximation guarantee for the fallback path |
+| 8.5 | Learned monotone predictor $\hat p_{any}, \hat q$ | $\hat p_{any}(x)=\mathcal{C}_{any}(\sigma(\theta^\top \phi(x)))$, $\hat q(x)=\mathcal{C}_{q}(\sigma(\omega^\top \psi(x)))$ with $\phi,\psi$ built only from existing runtime signals and context | `EXE` | [docs/GOVERNANCE.md §8.4](GOVERNANCE.md), runtime: `predictLearnedOrderModel()` and `buildLearnedFeatureMaps()` in [learned_predictor.js](../learned_predictor.js), integration in [model.js](../model.js), flag bootstrap in [index.html](../index.html) | Promoted to replace the hand-tuned rate and quality mapping only when explicitly enabled. The model preserves output semantics, is bounded to existing signals, and leaves downstream optimization unchanged |
+| 8.6 | Beta-style calibration layer $\mathcal{C}$ | $\mathcal{C}(p)=\sigma(a\log p + b\log(1-p) + c)$ | `EXE` | [docs/GOVERNANCE.md §8.5](GOVERNANCE.md), runtime: `betaCalibrate()` in [learned_predictor.js](../learned_predictor.js) | Promoted because the learned predictor needs calibrated probabilities while keeping outputs in $[0,1]$ and preserving the existing probability semantics |
+| 8.7 | Uncertainty-aware shrinkage $\tilde p, \tilde q$ | $\tilde p=(1-\alpha)p_{legacy}+\alpha\hat p$, $\tilde q=(1-\alpha)q_{legacy}+\alpha\hat q$ with $\alpha$ driven by support and predictive uncertainty | `EXE` | [docs/GOVERNANCE.md §8.6](GOVERNANCE.md), runtime: `predictLearnedOrderModel()` in [learned_predictor.js](../learned_predictor.js), consumed in [model.js](../model.js) | Promoted to preserve regime stability and guarantee rollback-safe behavior by anchoring weak-support regions to the legacy scorer |
 
 ## Summary Statistics
 
@@ -95,5 +102,6 @@ Each element from the Unified Mathematical Governance Corpus is classified below
 |---------------|-------|
 | `GOV` — Non-executable governance constraint | 27 |
 | `ABS` — Analytical or bounding structure | 6 |
+| `EXE` — Authorized executable runtime component | 6 |
 | `FEC` — Potential future executable candidate | 3 |
-| **Total** | **36** |
+| **Total** | **42** |

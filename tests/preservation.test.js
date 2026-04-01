@@ -1,4 +1,5 @@
 import {
+  buildDemandCoverageNodes,
   haversineMeters,
   scorePointAgainstRestaurants,
   probabilityOfGoodOrder,
@@ -9,6 +10,15 @@ import {
   rankParking,
   topLikelyMerchantsForParking,
 } from "../model.js";
+import {
+  evaluateParkingCoverage,
+  selectParkingSetSubmodular,
+} from "../optimizer.js";
+import {
+  brierScore,
+  expectedCalibrationError,
+  generateSyntheticPredictionDataset,
+} from "../learned_predictor.js";
 
 const PASS = "\u2705";
 const FAIL = "\u274c";
@@ -30,9 +40,11 @@ function approx(a, b, eps = 1e-6) {
 }
 
 function log(msg) {
-  const el = document.getElementById("log");
-  if (el) {
-    el.textContent += msg + "\n";
+  if (typeof document !== "undefined") {
+    const el = document.getElementById("log");
+    if (el) {
+      el.textContent += msg + "\n";
+    }
   }
   console.log(msg);
 }
@@ -285,11 +297,177 @@ function testClosedRestaurantsExcludedFromPipeline() {
   );
 }
 
+function testResidentialDemandPromotion() {
+  log("\n--- Residential demand promotion ---");
+
+  const symmetricRestaurants = [
+    { id: "node/rest-west", lat: 34.1005, lon: -117.5900, tags: { amenity: "restaurant", cuisine: "pizza", name: "West Pizza" } },
+    { id: "node/rest-east", lat: 34.1005, lon: -117.5800, tags: { amenity: "restaurant", cuisine: "pizza", name: "East Pizza" } },
+  ];
+  const symmetricParking = [
+    { id: "node/park-west", lat: 34.1000, lon: -117.5900, tags: { amenity: "parking" } },
+    { id: "node/park-east", lat: 34.1000, lon: -117.5800, tags: { amenity: "parking" } },
+  ];
+  const localResidential = [
+    { id: "way/home-east", lat: 34.1002, lon: -117.5801, tags: { building: "apartments" } },
+  ];
+  const params = {
+    ...baseParams,
+    hour: 18,
+    lambdaRef: 1.0,
+    residentialAnchors: localResidential,
+    residentialDemandWeight: 0.65,
+  };
+
+  const westNoResidential = probabilityOfGoodOrder(symmetricParking[0], symmetricRestaurants, symmetricParking, {
+    ...baseParams,
+    hour: 18,
+    lambdaRef: 1.0,
+    residentialDemandWeight: 0,
+  });
+  const eastNoResidential = probabilityOfGoodOrder(symmetricParking[1], symmetricRestaurants, symmetricParking, {
+    ...baseParams,
+    hour: 18,
+    lambdaRef: 1.0,
+    residentialDemandWeight: 0,
+  });
+  const westWithResidential = probabilityOfGoodOrder(symmetricParking[0], symmetricRestaurants, symmetricParking, params);
+  const eastWithResidential = probabilityOfGoodOrder(symmetricParking[1], symmetricRestaurants, symmetricParking, params);
+
+  assert(approx(westNoResidential.pGood, eastNoResidential.pGood, 1e-4), "symmetric points match before residential demand is added");
+  assert(eastWithResidential.pGood > westWithResidential.pGood, "residential anchors lift the nearby parking score");
+  assert(eastWithResidential.residentialShare > westWithResidential.residentialShare, "demand mix exposes the local residential contribution");
+
+  const demandNodes = buildDemandCoverageNodes(symmetricRestaurants, {
+    hour: 18,
+    dayOfWeek: 3,
+    residentialAnchors: localResidential,
+    residentialDemandWeight: 0.65,
+  });
+  assert(demandNodes.some((node) => node.sourceType === "residential"), "demand coverage nodes include residential anchors when enabled");
+
+  const ranked = rankParking(symmetricParking, symmetricRestaurants, symmetricParking, params, { lambdaRef: 1.0 }, 2);
+  assert(ranked[0].id === "node/park-east", "parking ranking reflects residential demand after promotion");
+}
+
+function combinations(items, pickCount) {
+  const results = [];
+
+  function visit(startIndex, current) {
+    if (current.length === pickCount) {
+      results.push([...current]);
+      return;
+    }
+
+    for (let index = startIndex; index < items.length; index += 1) {
+      current.push(items[index]);
+      visit(index + 1, current);
+      current.pop();
+    }
+  }
+
+  visit(0, []);
+  return results;
+}
+
+function testSubmodularFallbackSelection() {
+  log("\n--- Submodular fallback selection ---");
+
+  const candidateScores = [
+    { id: "west-a", lat: 34.1000, lon: -117.5900, pGood: 0.91, stabilityLow: 0.84 },
+    { id: "west-b", lat: 34.1001, lon: -117.5897, pGood: 0.88, stabilityLow: 0.82 },
+    { id: "east-a", lat: 34.1000, lon: -117.5800, pGood: 0.74, stabilityLow: 0.69 },
+    { id: "east-b", lat: 34.1001, lon: -117.5797, pGood: 0.71, stabilityLow: 0.66 },
+  ];
+  const demandNodes = [
+    { id: "merchant-west", lat: 34.1004, lon: -117.5901, weight: 1.0, sourceType: "merchant" },
+    { id: "merchant-east", lat: 34.1004, lon: -117.5801, weight: 1.0, sourceType: "merchant" },
+    { id: "res-east", lat: 34.1002, lon: -117.5799, weight: 0.9, sourceType: "residential" },
+  ];
+  const coverageTauMeters = 650;
+
+  const naiveTopK = candidateScores.slice().sort((a, b) => b.pGood - a.pGood).slice(0, 2);
+  const selected = selectParkingSetSubmodular(candidateScores, {
+    k: 2,
+    demandNodes,
+    coverageTauMeters,
+  });
+
+  const selectedIds = selected.map((candidate) => candidate.id);
+  assert(selectedIds.some((id) => id.startsWith("west-")), "fallback keeps western coverage");
+  assert(selectedIds.some((id) => id.startsWith("east-")), "fallback also covers the eastern demand cluster");
+
+  const naiveCoverage = evaluateParkingCoverage(naiveTopK, demandNodes, { coverageTauMeters });
+  const selectedCoverage = evaluateParkingCoverage(selected, demandNodes, { coverageTauMeters });
+  assert(selectedCoverage > naiveCoverage, "submodular selector improves total demand coverage over naive top-K");
+
+  const optimalCoverage = Math.max(
+    ...combinations(candidateScores, 2).map((candidateSet) =>
+      evaluateParkingCoverage(candidateSet, demandNodes, { coverageTauMeters })
+    )
+  );
+  assert(selectedCoverage / optimalCoverage >= 0.63, "greedy selector stays near the brute-force optimum on a small instance");
+}
+
+function testLearnedModelAgreement() {
+  log("\n--- Learned model agreement ---");
+
+  const nearPoint = { lat: 34.1064, lon: -117.5931 };
+  const farPoint = { lat: 34.2000, lon: -117.7000 };
+  const legacyNear = probabilityOfGoodOrder(nearPoint, fixtureRestaurants, fixtureParking, {
+    ...baseParams,
+    lambdaRef: 1.0,
+    predictionModel: "legacy",
+  });
+  const learnedNear = probabilityOfGoodOrder(nearPoint, fixtureRestaurants, fixtureParking, {
+    ...baseParams,
+    lambdaRef: 1.0,
+    predictionModel: "glm",
+  });
+  const legacyFar = probabilityOfGoodOrder(farPoint, fixtureRestaurants, fixtureParking, {
+    ...baseParams,
+    lambdaRef: 1.0,
+    predictionModel: "legacy",
+  });
+  const learnedFar = probabilityOfGoodOrder(farPoint, fixtureRestaurants, fixtureParking, {
+    ...baseParams,
+    lambdaRef: 1.0,
+    predictionModel: "glm",
+  });
+
+  assert(Math.abs(learnedNear.pGood - legacyNear.pGood) <= 0.12, "learned model stays close to legacy on a representative high-support point");
+  assert(learnedNear.pGood >= learnedFar.pGood, "learned model preserves simple near-vs-far ordering");
+  assert(Math.abs(learnedFar.pGood - legacyFar.pGood) <= 0.08, "learned model shrinks back toward legacy in sparse regimes");
+  assert(learnedNear.predictionModel === "glm", "learned path reports the glm prediction model");
+}
+
+function testLearnedModelSyntheticCalibration() {
+  log("\n--- Learned model synthetic calibration ---");
+
+  const heldOut = generateSyntheticPredictionDataset(600, 42);
+  const legacySamples = heldOut.map((sample) => ({
+    probability: sample.legacy.pGood,
+    label: sample.label,
+  }));
+  const learnedSamples = heldOut.map((sample) => ({
+    probability: sample.learned.pGood,
+    label: sample.label,
+  }));
+
+  const legacyEce = expectedCalibrationError(legacySamples);
+  const learnedEce = expectedCalibrationError(learnedSamples);
+  const legacyBrier = brierScore(legacySamples);
+  const learnedBrier = brierScore(learnedSamples);
+
+  assert(learnedEce < legacyEce, `learned model improves ECE on synthetic held-out data (${learnedEce.toFixed(4)} < ${legacyEce.toFixed(4)})`);
+  assert(learnedBrier < legacyBrier, `learned model improves Brier score on synthetic held-out data (${learnedBrier.toFixed(4)} < ${legacyBrier.toFixed(4)})`);
+}
+
 // ─── Run ──────────────────────────────────────────────────────
 
 export function runPreservationTests() {
   log("DGM Preservation Tests");
-  log("Verifying: runtime outputs unchanged, no actionability, governance math non-executable.\n");
+  log("Verifying: invariants preserved, promoted math bounded, and no actionability introduced.\n");
 
   testHaversine();
   testTimeBucket();
@@ -304,6 +482,10 @@ export function runPreservationTests() {
   testTopMerchantsDeterminism();
   testOpeningHoursHelper();
   testClosedRestaurantsExcludedFromPipeline();
+  testResidentialDemandPromotion();
+  testSubmodularFallbackSelection();
+  testLearnedModelAgreement();
+  testLearnedModelSyntheticCalibration();
 
   log(`\n════════════════════════════════════════`);
   log(`Results: ${passed}/${total} passed`);

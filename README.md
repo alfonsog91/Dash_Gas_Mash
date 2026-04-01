@@ -1,6 +1,6 @@
 # Dash Parking Estimate Map
 
-Local, **public-data** map tool that renders a vector basemap with MapLibre GL JS and overlays a **parking opportunity-likelihood heat surface** based on transparent heuristics.
+Local, **public-data** map tool that renders a vector basemap with MapLibre GL JS and overlays a **parking opportunity-likelihood heat surface** based on transparent, bounded proxy models.
 
 This is **not affiliated with DoorDash** and does **not** use proprietary DoorDash data. It’s a strategic, tunable proxy model inspired by public DoorDash engineering writeups.
 
@@ -30,7 +30,7 @@ That creates predictable divergences:
 - Coverage gaps do not necessarily indicate profitable waiting zones
 - A reactive system map can disagree with an anticipatory hold strategy
 
-That is why this app does not treat “hot” areas as automatically better. Instead, it scores locations by public, interpretable proxies such as nearby merchant concentration, distance-decay effects, pickup cost, and a rough competition penalty. The result is a descriptive map of local positional quality, not a claim about DoorDash’s internal dispatch state.
+That is why this app does not treat “hot” areas as automatically better. Instead, it scores locations by public, interpretable proxies such as nearby merchant concentration, distance-decay effects, pickup cost, structural residential demand, and a rough competition penalty. The result is a descriptive map of local positional quality, not a claim about DoorDash’s internal dispatch state.
 
 The governing idea is simple:
 
@@ -45,12 +45,21 @@ DGM does not attempt to predict individual assignments or override platform beha
 
 - Loads **food merchant proxies** from OpenStreetMap via Overpass (amenity: restaurant / fast_food / cafe / food_court)
 - Loads **parking candidate proxies** from OpenStreetMap (amenity=parking and parking=*)
+- Loads **residential demand anchors** from OpenStreetMap (apartments / residential buildings / residential landuse) and blends them into the demand field with a user-controlled weight
 - Excludes restaurants with parseable OSM `opening_hours` tags when they are currently closed in the client’s local time
+- Uses an exact MIP selector when available, and otherwise falls back to a monotone submodular coverage selector instead of a naive top-K slice
+- Includes a default-off monotone, calibrated dual-head GLM scorer behind a code-level feature flag; legacy and softplus scoring remain the default behavior
 - Builds a heat surface over the current map view using a calibrated probability proxy:
 
-First compute a merchant "intensity":
+First compute merchant and structural-demand intensities:
 
-$$\lambda(p)=\sum_{r \in \text{restaurants}} w(r, h) \cdot e^{-d(p,r)/\tau}$$
+$$\lambda_m(p)=\sum_{r \in \text{restaurants}} w(r, h) \cdot e^{-d(p,r)/\tau_m}$$
+
+$$\lambda_{res}(p)=\sum_{a \in \text{residential}} w(a, h, day) \cdot e^{-d(p,a)/\tau_{res}}$$
+
+Then combine them with a competition denominator:
+
+$$\lambda_{eff}(p)=\frac{\alpha(h,day)\lambda_m(p)+\eta\,\rho(h,day)\lambda_{res}(p)}{1+\gamma\,\Pi(p)}$$
 
 Then map that to a probability over a horizon $T$ minutes (calibrated to the current view):
 
@@ -61,6 +70,20 @@ Optional “ML-style predictor” mode replaces the proportional rate with a pos
 $$rate(p)=softplus\left(b+\u03b2\cdot\log\left(\frac{\lambda_{eff}(p)}{\lambda_{ref}}\right)\right)$$
 $$P(\text{any order in }T)=1-\exp\left(-rate(p)\cdot T\right)$$
 
+An experimental learned predictor can also replace the hand-tuned rate and quality mapping while preserving the same output semantics:
+
+$$\hat p_{any}(x)=\mathcal{C}_{any}\left(\sigma\left(\theta^\top \phi(x)\right)\right)$$
+
+$$\hat q(x)=\mathcal{C}_{q}\left(\sigma\left(\omega^\top \psi(x)\right)\right)$$
+
+$$\tilde p(x)=(1-\alpha(x))p_{legacy}(x)+\alpha(x)\hat p_{any}(x)$$
+
+$$\tilde q(x)=(1-\alpha(x))q_{legacy}(x)+\alpha(x)\hat q(x)$$
+
+$$P(\text{good in }T)=\tilde p(x) \cdot (0.25 + 0.75\tilde q(x))$$
+
+Here $\phi(x)$ and $\psi(x)$ are built only from existing runtime signals and context: $I,M,R,D$, support, residential share, horizon, and time-bucket indicators. $\mathcal{C}$ denotes beta-style calibration, and $\alpha(x)$ is an uncertainty-aware shrinkage weight that keeps the learned model close to the legacy scorer in weak regimes.
+
 And a “good order” proxy adds a transparent quality factor for **short pickup + higher-tip proxy**:
 
 $$P(\text{good in }T)=P(\text{any in }T) \cdot (0.25 + 0.75\cdot quality(p))$$
@@ -68,21 +91,59 @@ $$P(\text{good in }T)=P(\text{any in }T) \cdot (0.25 + 0.75\cdot quality(p))$$
 Where:
 - $p$ is a potential parking point
 - $r$ is a merchant point
+- $a$ is a residential demand anchor
 - $d(\cdot)$ is great-circle distance (Haversine)
-- $\tau$ is a tunable distance-decay parameter (meters)
+- $\tau_m, \tau_{res}$ are tunable distance-decay parameters (meters)
 - $w(r,h)$ is a simple time-of-night weighting (late-night: fast_food up, cafes down)
+- $w(a,h,day)$ is a structural residential weighting by building type and time bucket
+- $\eta$ is the residential demand blend slider
+- $\gamma\Pi(p)$ is the parking-density competition proxy
 
 It also ranks parking lots in the current view using the same score.
+
+When the CDN MIP solver is unavailable or disabled, DGM now uses a greedy weighted facility-location selector:
+
+$$F(S)=\sum_{q \in Q} w_q \max_{p \in S} \left[u(p)\,e^{-d(p,q)/\sigma}\right]$$
+
+Here $Q$ contains merchant and residential demand nodes, and $u(p)$ is a conservative parking utility derived from the score and its stability band. This objective is monotone submodular, so greedy selection under a pure cardinality constraint achieves the classic $(1-1/e)$ approximation guarantee on the supplied candidate pool.
 
 ## What “probability” means here
 
 This app **does not** have real DoorDash order arrivals, courier supply, acceptance rates, batching, zones, or dispatch constraints.
 So the “probability” is a **calibrated, view-relative estimate** driven by public proxies:
 - More nearby merchants (and late-night weighting) ⇒ higher modeled arrival opportunity
+- More nearby residential anchors (when the blend is above 0) ⇒ more structural delivery support around a hold point
 - Optional “competition strength” applies a penalty using nearby parking density as a crude proxy (set to 0 to disable)
 - “Good order” is currently tuned to: **short pickup distance** + **higher-ticket cuisine/type proxy** (tune via “Tip emphasis”)
 
-If enabled, the **MIP optimizer** selects a *set* of $K$ suggested parking lots to maximize predicted value while keeping them spread out (minimum separation constraint).
+If enabled, the **MIP optimizer** selects a *set* of $K$ suggested parking lots to maximize predicted value while keeping them spread out (minimum separation constraint). If it is disabled or unavailable, the fallback selector maximizes diverse demand coverage instead of just taking the top few raw scores.
+
+## Experimental Learned Predictor
+
+The learned scorer is implemented but remains **off by default**. This preserves existing behavior until you explicitly promote it.
+
+To enable it, set the bootstrap flag in [index.html](index.html):
+
+```html
+<script>
+  window.DGM_PREDICTION_MODEL = "glm";
+  window.DGM_SHADOW_PREDICTION_MODEL = false;
+</script>
+```
+
+Rollback is immediate:
+
+```html
+<script>
+  window.DGM_PREDICTION_MODEL = "legacy";
+</script>
+```
+
+Notes:
+- `legacy` keeps the original proportional-rate scorer unless the UI `Use ML-style predictor` checkbox is enabled
+- `softplus` is still the original hand-tuned softplus-curve path
+- `glm` enables the learned monotone dual-head scorer
+- `window.DGM_SHADOW_PREDICTION_MODEL = true` logs learned-vs-active ranking deltas without changing visible behavior
 
 ## Why this relates to public DoorDash engineering blogs (high-level)
 
@@ -107,6 +168,16 @@ References (public):
 - Scaling a routing algorithm (DeepRed / ruin-and-recreate): https://careersatdoordash.com/blog/scaling-a-routing-algorithm-using-multithreading-and-ruin-and-recreate/
 - Reinforcement learning for on-demand logistics (assignment): https://careersatdoordash.com/blog/reinforcement-learning-for-on-demand-logistics/
 - Improving ETAs (probabilistic forecasts): https://careersatdoordash.com/blog/improving-etas-with-multi-task-models-deep-learning-and-probabilistic-forecasts/
+
+## Live web address
+
+The app is hosted on GitHub Pages and is publicly accessible at:
+
+**https://alfonsog91.github.io/Dash_Gas_Mash/**
+
+No installation or local server required — just open that URL in any modern browser.
+
+> The live site is automatically updated whenever changes are pushed to the `main` branch via the GitHub Actions workflow in `.github/workflows/deploy.yml`.
 
 ## Run locally (no Node required)
 
@@ -154,13 +225,15 @@ To enable `MapTiler`, edit [index.html](index.html) and set:
 - **Distance decay $\tau$ (meters)**: How quickly merchant influence drops with distance. Smaller $\tau$ means “only very close merchants matter”; bigger $\tau$ means “clusters can influence from farther away”.
 - **Grid step (meters)**: Heatmap resolution. Larger values are faster but less detailed.
 - **Competition strength (proxy)**: Applies a penalty using nearby parking POI density as a crude proxy for “other drivers may also be staged here”. Set to 0 to disable.
+- **Residential demand blend**: Blends in nearby housing and apartment anchors as structural demand support. Set to 0 to revert to the earlier merchant-only model.
 - **Tip emphasis (vs short pickup)**: Blends two “good order” proxies:
   - short pickup distance (expected distance to nearby merchants)
   - a higher-ticket “ticket proxy” inferred from OSM cuisine/type tags
 - **Use ML-style predictor**: Changes the rate curve shape using a softplus rate function (still a public proxy; not trained on DoorDash data).
+- **Learned predictor flag**: Separate from the UI. Set `window.DGM_PREDICTION_MODEL = "glm"` in [index.html](index.html) to enable the experimental learned scorer; default remains `legacy`.
 - **ML sensitivity (\u03b2)**: How aggressively the ML-style predictor boosts high-intensity areas.
 - **Use MIP optimizer for top parking set**: Picks a set of $K$ parking lots maximizing predicted value while enforcing a minimum separation constraint.
-- **Suggested spots (K)** and **Min separation**: How many suggestions and how spread out they should be.
+- **Suggested spots (K)** and **Min separation**: How many suggestions to show. Hard separation applies in MIP mode; the approximate fallback spreads picks through diminishing returns instead of a hard spacing rule.
 
 ## How to interpret the percentages
 
@@ -172,6 +245,7 @@ When you click a point, the popup breaks it down:
 - **P(any order)**: modeled chance of *any* order in $T$
 - **ticket proxy**: a 0–100% ticket-size proxy score (from OSM cuisine/type tags; heuristic)
 - **pickup**: estimated pickup distance (meters)
+- **demand mix**: merchant-driven versus residential-driven support at that point
 
 Use the % to compare two parking choices under the same settings: higher % means the model thinks that spot is better *relative to nearby alternatives*.
 

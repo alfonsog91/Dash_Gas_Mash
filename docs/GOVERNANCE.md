@@ -1,6 +1,6 @@
 # DGM Unified Mathematical Governance Corpus
 
-**Status:** Non-Executable Governance and Analytical Reference
+**Status:** Governance Reference with Authorized Executable Promotions
 **Authority:** Semantic, interpretive, and evolutionary constraints only
 **Runtime Impact:** None unless explicitly authorized through the process defined in §8
 **Completeness:** This corpus is complete and self-contained within its scope.
@@ -187,7 +187,7 @@ These constraints bind future evolution:
 | ID | Constraint |
 |----|-----------|
 | G-1 | No conversion to executable logic without explicit authorization per §8 |
-| G-2 | No prediction, optimization, or decision logic may be introduced that is not already present |
+| G-2 | No prediction, optimization, or decision logic may be introduced unless it replaces a named heuristic and satisfies §8 |
 | G-3 | No semantic coupling beyond what is defined in §1–§6 |
 | G-4 | All future changes must preserve §1–§6 in interpretation, documentation, and execution semantics |
 
@@ -203,8 +203,106 @@ A mathematical element from this corpus may become executable only if **all** of
 2. It is proven equivalent to existing behavior where required
 3. It preserves all invariants (§1 I-1 through I-4)
 4. It is independently reviewed
+5. Regression coverage and rollback conditions are documented
 
 Until then, all content in this corpus remains non-executable.
+
+### §8.2 — Authorized Executable Promotion: Residential Demand Field
+
+The residential demand field is now an authorized executable component in the main runtime path.
+
+Formal structure:
+
+$$\lambda_{res}(p)=\sum_{a \in \mathcal{A}} w(a,h,day) \cdot e^{-d(p,a)/\tau_{res}}$$
+
+and
+
+$$\lambda_{eff}(p)=\frac{\alpha(h,day)\lambda_m(p)+\eta\,\rho(h,day)\lambda_{res}(p)}{1+\gamma\Pi(p)}$$
+
+This promotion replaces the prior merchant-only heuristic in the app flow, where residential-demand math existed in isolation but was not wired into active loading, heatmap generation, point scoring, or parking ranking.
+
+Authorized invariant set:
+
+- Non-negativity is preserved because all component weights, kernels, and denominators remain non-negative
+- Monotonicity is preserved in merchant intensity and residential intensity for fixed competition
+- Rollback safety is preserved because setting the residential blend $\eta$ to $0$ recovers the merchant-only path
+- Advisory semantics are preserved because outputs remain descriptive only
+
+### §8.3 — Authorized Executable Promotion: Submodular Coverage Selector
+
+The non-MIP fallback selector is now an authorized executable component.
+
+Formal structure:
+
+$$F(S)=\sum_{q \in Q} w_q \max_{p \in S}\left[u(p)\,e^{-d(p,q)/\sigma}\right]$$
+
+where $Q$ is the set of merchant and residential demand nodes and $u(p)$ is a conservative utility derived from the scored parking point.
+
+This promotion replaces the prior fallback heuristic of taking the top raw parking scores with no diversity objective. The new objective is a weighted facility-location form, which is monotone submodular under a pure cardinality constraint.
+
+Authorized guarantee and guardrails:
+
+- Greedy selection on the supplied candidate pool attains the classical $(1-1/e)$ approximation guarantee for the fallback objective
+- MIP remains the primary exact path when available; the submodular selector runs in shadow mode for comparison when MIP is active
+- The selector is descriptive only and does not add decision authority
+- Rollback safety is preserved by disabling the fallback path in favor of MIP or reverting to the prior code path
+
+### §8.4 — Authorized Executable Promotion: Learned Monotone Predictor
+
+The predictive mapping from current runtime signals to $P(\text{any order in }T)$ and the conditional quality factor is now authorized as an executable, default-off learned component.
+
+Formal structure:
+
+$$\hat p_{any}(x)=\mathcal{C}_{any}\left(\sigma\left(\theta^\top \phi(x)\right)\right)$$
+
+$$\hat q(x)=\mathcal{C}_{q}\left(\sigma\left(\omega^\top \psi(x)\right)\right)$$
+
+$$\hat p_{good}(x)=\hat p_{any}(x) \cdot (0.25 + 0.75\hat q(x))$$
+
+where $\phi(x)$ and $\psi(x)$ are formed only from existing runtime signals and context: normalized $I,M,R,D$, support, residential share, horizon, and time-bucket indicators.
+
+This promotion replaces the prior fully hand-tuned rate and quality mapping only when the code-level feature flag is enabled. The optimizer, selection logic, constraints, and UI contract remain unchanged.
+
+Authorized invariant set:
+
+- Feature scope is bounded to existing runtime signals and context; no new private or external data is introduced
+- Monotonicity is preserved where encoded by sign-constrained feature effects, with demand-support terms non-negative and competition terms non-positive
+- Default behavior is preserved because the learned model is disabled unless explicitly promoted by feature flag
+- Output semantics are preserved because the learned path still emits $p_{any}$, quality, and $p_{good}$ in the same ranges and meanings expected downstream
+
+### §8.5 — Authorized Executable Promotion: Calibration Layer
+
+The learned predictor includes an executable beta-style calibration layer.
+
+Formal structure:
+
+$$\mathcal{C}(p)=\sigma\left(a\log p + b\log(1-p) + c\right)$$
+
+This layer maps raw model probabilities into the same bounded probability semantics expected by the rest of the runtime.
+
+Authorized guardrails:
+
+- Calibration preserves probability bounds in $[0,1]$
+- Calibration is local to the learned predictor and does not alter optimizer semantics
+- Calibration parameters are static until explicitly retrained and reclassified
+
+### §8.6 — Authorized Executable Promotion: Uncertainty-Aware Shrinkage
+
+The learned predictor includes an executable regime-preservation layer that shrinks learned outputs toward the legacy scorer when support is weak or predictive entropy is high.
+
+Formal structure:
+
+$$\tilde p(x)=(1-\alpha(x))p_{legacy}(x)+\alpha(x)\hat p_{any}(x)$$
+
+$$\tilde q(x)=(1-\alpha(x))q_{legacy}(x)+\alpha(x)\hat q(x)$$
+
+with $\alpha(x)$ increasing with local support and decreasing with predictive uncertainty.
+
+Authorized guardrails:
+
+- Rollback safety is immediate: setting the prediction-model flag back to `legacy` bypasses the learned path entirely
+- Regime preservation is enforced by design because low-support regions remain anchored to the legacy scorer
+- Stability bands remain compatible with existing beta-style confidence reporting by scaling support instead of replacing the banding mechanism
 
 ---
 
@@ -216,6 +314,7 @@ Each element must be classified as exactly one of:
 |---------------|-------------|
 | Non-executable governance constraint | `GOV` |
 | Analytical or bounding structure | `ABS` |
+| Authorized executable runtime component | `EXE` |
 | Potential future executable candidate | `FEC` |
 
 Each record must include: definition, location, rationale. See [CLASSIFICATION_REGISTRY.md](CLASSIFICATION_REGISTRY.md).
@@ -226,7 +325,11 @@ Each record must include: definition, location, rationale. See [CLASSIFICATION_R
 
 | Check | Status | Verified By |
 |-------|--------|-------------|
-| Runtime outputs unchanged against baseline tests | ✓ | `tests/preservation.test.js` |
+| Core invariants preserved against regression tests | ✓ | `tests/preservation.test.js` |
+| Residential demand field active in the main app flow | ✓ | `app.js`, `model.js`, `overpass.js` |
+| Non-MIP selector upgraded to submodular coverage | ✓ | `optimizer.js`, `app.js` |
+| Learned predictor remains default-off with rollback flag | ✓ | `index.html`, `app.js`, `model.js`, `learned_predictor.js` |
+| Learned predictor improves synthetic calibration while staying close on simple cases | ✓ | `tests/preservation.test.js`, `learned_predictor.js` |
 | No actionability introduced | ✓ | Code annotation review |
 | Signal independence preserved | ✓ | §2 mapping verified |
 | Temporal rules enforced | ✓ | §3 mapping verified |
@@ -238,4 +341,4 @@ Each record must include: definition, location, rationale. See [CLASSIFICATION_R
 
 ## Final Summary
 
-This corpus increases analytical clarity and constrains semantic drift while preserving runtime behavior. All mathematics herein is non-executable unless explicitly reclassified through the formal process defined in §8.
+This corpus increases analytical clarity and constrains semantic drift while allowing tightly scoped runtime promotions when they replace a named heuristic, preserve invariants, and remain rollback-safe. All mathematics herein is non-executable unless explicitly reclassified through the formal process defined in §8.

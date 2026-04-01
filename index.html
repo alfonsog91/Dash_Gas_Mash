@@ -15,6 +15,8 @@
     <script>
       window.DASH_MAPTILER_KEY = window.DASH_MAPTILER_KEY || "3fnxdfXcA9sh6SX5x78N";
       window.DASH_MAPTILER_STYLE_ID = window.DASH_MAPTILER_STYLE_ID || "basic-v2";
+      window.DGM_PREDICTION_MODEL = window.DGM_PREDICTION_MODEL || "legacy";
+      window.DGM_SHADOW_PREDICTION_MODEL = window.DGM_SHADOW_PREDICTION_MODEL || true;
     </script>
   </head>
   <body>
@@ -66,6 +68,13 @@
           </div>
 
           <div class="row">
+            <label for="residentialWeight">Residential demand blend</label>
+            <input id="residentialWeight" type="range" min="0" max="1" step="0.05" value="0.35" />
+            <span id="residentialWeightVal" class="mono"></span>
+            <div class="hint">Blends in nearby apartment and residential anchors as structural demand support. Set to 0 to revert to merchant-only demand.</div>
+          </div>
+
+          <div class="row">
             <label for="tipEmphasis">Tip emphasis (vs short pickup)</label>
             <input id="tipEmphasis" type="range" min="0" max="1" step="0.05" value="0.55" />
             <span id="tipEmphasisVal" class="mono"></span>
@@ -92,7 +101,7 @@
               <input id="useMIP" type="checkbox" checked />
               Use MIP optimizer for top parking set
             </label>
-            <div class="hint">Picks a spread-out set of K lots (falls back if solver CDN is blocked).</div>
+            <div class="hint">Picks a spread-out set of K lots with hard separation constraints. If the solver is unavailable, DGM falls back to an approximate coverage-diversity selector.</div>
           </div>
 
           <div class="row">
@@ -151,6 +160,7 @@
                 <li><b>Confidence range</b> (e.g., 25%&ndash;45%) &mdash; How much the score could realistically swing. A narrow range means the estimate is stable; a wide range means few restaurants back it up, so take it with a grain of salt.</li>
                 <li><b>Chance of <em>any</em> order</b> &mdash; Likelihood of getting any order at all (including bad ones). The main score filters this down to <em>good</em> orders.</li>
                 <li><b>Avg ticket quality</b> &mdash; How pricey nearby restaurants tend to be. Higher-ticket restaurants tend to correlate with better tips.</li>
+                <li><b>Demand mix</b> &mdash; How much of the score comes from nearby merchants versus residential demand anchors. Residential pull is structural context, not a live order feed.</li>
                 <li><b>Overall strength</b> (Composite) &mdash; Blends all four factors (ticket size, restaurant density, proximity, crowding) with weights that shift by time of day.</li>
               </ul>
 
@@ -174,9 +184,10 @@
                 <li><b>Probability horizon</b>: "Chance within the next X minutes." Longer = higher %, but that doesn't mean the spot is <em>better</em> &mdash; you're just waiting longer.</li>
                 <li><b>Distance decay</b>: How far restaurants count. Smaller = only very close restaurants matter.</li>
                 <li><b>Competition strength</b>: Penalizes spots near many parking lots (rough proxy for other drivers). Set to 0 to ignore.</li>
+                <li><b>Residential demand blend</b>: Adds nearby housing and apartment anchors as a structural demand field. Set to 0 for the pre-promotion merchant-only model.</li>
                 <li><b>Tip emphasis</b>: Slide right to favor higher-ticket restaurants. Slide left to favor short pickup distance.</li>
                 <li><b>Grid step</b>: Heatmap detail. Smaller = prettier but slower.</li>
-                <li><b>K spots / Min separation</b>: How many parking suggestions and how far apart they must be.</li>
+                <li><b>K spots / Min separation</b>: How many parking suggestions to show. Min separation applies to MIP mode; the approximate fallback spreads picks using diminishing returns instead of a hard spacing rule.</li>
               </ul>
             </div>
 
@@ -221,6 +232,6 @@
       crossorigin=""
     ></script>
 
-    <script type="module" src="./app.js?v=20260331-clearlayers"></script>
+    <script type="module" src="./app.js?v=20260401-learnedglm"></script>
   </body>
 </html>

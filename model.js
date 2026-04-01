@@ -8,6 +8,11 @@
 // See docs/GOVERNANCE.md and docs/CLASSIFICATION_REGISTRY.md.
 // ──────────────────────────────────────────────────────────────────
 
+import {
+  predictLearnedOrderModel,
+  resolvePredictionModelName,
+} from "./learned_predictor.js";
+
 function toRad(deg) {
   return (deg * Math.PI) / 180;
 }
@@ -341,6 +346,50 @@ function residentialIntensityAtPoint({ lat, lon }, residentialAnchors, tauMeters
   return sum;
 }
 
+export function buildDemandCoverageNodes(
+  restaurants,
+  {
+    hour,
+    dayOfWeek,
+    residentialAnchors = [],
+    residentialDemandWeight = 0.35,
+  } = {}
+) {
+  // Coverage nodes parameterize the fallback facility-location objective.
+  const resolvedHour = Number.isFinite(Number(hour)) ? Number(hour) : new Date().getHours();
+  const resolvedDayOfWeek = Number.isFinite(Number(dayOfWeek)) ? Number(dayOfWeek) : new Date().getDay();
+  const demandProfile = temporalDemandProfile(resolvedHour, resolvedDayOfWeek);
+  const merchantScale = Math.max(0, demandProfile.merchant);
+  const residentialScale = Math.max(0, Number(residentialDemandWeight ?? 0.35)) * Math.max(0, demandProfile.residential);
+
+  const nodes = (restaurants ?? [])
+    .map((restaurant) => ({
+      id: restaurant.id,
+      lat: restaurant.lat,
+      lon: restaurant.lon,
+      weight: merchantScale * foodWeight(restaurant.tags ?? {}, resolvedHour),
+      sourceType: "merchant",
+    }))
+    .filter((node) => node.weight > 0);
+
+  if (residentialScale <= 0) return nodes;
+
+  for (const anchor of residentialAnchors ?? []) {
+    const weight = residentialScale * residentialWeight(anchor.tags ?? {}, resolvedHour, resolvedDayOfWeek);
+    if (weight <= 0) continue;
+
+    nodes.push({
+      id: anchor.id,
+      lat: anchor.lat,
+      lon: anchor.lon,
+      weight,
+      sourceType: "residential",
+    });
+  }
+
+  return nodes;
+}
+
 // GOVERNANCE §3: Time partition {T_k} — disjoint buckets with
 // non-negative weights. Retrospective only (T-1); no extrapolation
 // (T-2); boundaries explicit (T-3). See CLASSIFICATION_REGISTRY 3.1–3.5.
@@ -399,6 +448,7 @@ export function probabilityOfGoodOrder(
     residentialDemandWeight,
     lambdaRef,
     tipEmphasis,
+    predictionModel,
     useML,
     mlBeta,
   }
@@ -422,12 +472,14 @@ export function probabilityOfGoodOrder(
     ? residentialIntensityAtPoint({ lat, lon }, residentialAnchors, residentialTau, hour, dayOfWeek ?? new Date().getDay())
     : 0;
 
-  const demandProfile = temporalDemandProfile(hour, dayOfWeek ?? new Date().getDay());
+  const resolvedDayOfWeek = dayOfWeek ?? new Date().getDay();
+  const demandProfile = temporalDemandProfile(hour, resolvedDayOfWeek);
   const residentialWeighting = Math.max(0, Number(residentialDemandWeight ?? 0.35));
 
   const comp = Math.max(0, competitionStrength ?? 0);
   const merchantDemand = demandProfile.merchant * m.total;
   const residentialDemand = residentialWeighting * demandProfile.residential * residentialIntensity;
+  const totalDemand = merchantDemand + residentialDemand;
   const lambdaEff = (merchantDemand + residentialDemand) / (1 + comp * pIntensity);
 
   const ref = Math.max(1e-9, lambdaRef ?? lambdaEff ?? 1e-9);
@@ -437,7 +489,22 @@ export function probabilityOfGoodOrder(
   const Tref = 10;
   const baseRateAtRef = Math.log(2) / Tref;
 
-  let pAny;
+  const closeness = Math.exp(-m.expectedDist / 900);
+  const isLate = hour >= 22 || hour <= 4;
+  const tipProxy = clamp01((m.ticketMean - 0.75) / 0.45);
+  const tipW = clamp01(tipEmphasis ?? 0.55);
+  const tipAdj = isLate ? clamp01(tipProxy * 0.85) : tipProxy;
+  const legacyQuality = clamp01((1 - tipW) * closeness + tipW * tipAdj);
+  const supportScore = clamp01((m.effectiveMerchants - 1) / 7);
+  const bucket = timeBucket(hour);
+  const sigI = clamp01((m.ticketMean - 0.5) / 0.8);
+  const sigM = clamp01(m.total / (2 * ref));
+  const sigR = closeness;
+  const sigD = comp > 0 ? (comp * pIntensity) / (1 + comp * pIntensity) : 0;
+  const selectedPredictionModel = resolvePredictionModelName(predictionModel, useML);
+  const isWeekend = resolvedDayOfWeek === 0 || resolvedDayOfWeek === 6;
+
+  let baselinePAny;
   if (useML) {
     // “ML-style” predictor: learnable-shaped rate function (positive via softplus).
     // We keep the bias fixed so ref corresponds to baseRateAtRef.
@@ -445,40 +512,55 @@ export function probabilityOfGoodOrder(
     const bias = Math.log(Math.exp(baseRateAtRef) - 1); // softplus^{-1}(baseRateAtRef)
     const logRatio = Math.log(Math.max(1e-9, lambdaEff) / ref);
     const rate = softplus(bias + beta * logRatio);
-    pAny = 1 - Math.exp(-rate * T);
+    baselinePAny = 1 - Math.exp(-rate * T);
   } else {
     // Simple proportional rate model.
-    pAny = 1 - Math.exp(-baseRateAtRef * (lambdaEff / ref) * T);
+    baselinePAny = 1 - Math.exp(-baseRateAtRef * (lambdaEff / ref) * T);
   }
 
-  // “Good order” proxy for this project: short pickup distance + higher-tip proxy.
-  const total = m.total + 1e-9;
-  const closeness = Math.exp(-m.expectedDist / 900);
-  const isLate = hour >= 22 || hour <= 4;
+  let pAny = baselinePAny;
+  let quality = legacyQuality;
+  let predictionModelFamily = selectedPredictionModel === "softplus"
+    ? "softplus-rate-proxy"
+    : "legacy-rate-proxy";
+  let predictionModelVersion = null;
+  let modelConfidence = 1;
+  let modelBlend = 1;
+  let stabilitySupport = m.effectiveMerchants;
 
-  // Normalize ticket index ~[0.5..1.3] to [0..1] with mid around 0.9-1.0.
-  const tipProxy = clamp01((m.ticketMean - 0.75) / 0.45);
-  const tipW = clamp01(tipEmphasis ?? 0.55);
+  if (selectedPredictionModel === "glm") {
+    const learned = predictLearnedOrderModel({
+      sigI,
+      sigM,
+      sigR,
+      sigD,
+      supportScore,
+      residentialShare: totalDemand > 0 ? residentialDemand / totalDemand : 0,
+      horizonMin: T,
+      timeBucketName: bucket.name,
+      isWeekend,
+      baselinePAny,
+      baselineQuality: legacyQuality,
+    });
 
-  // Late-night: tips tend to be lower on average; nudge tip proxy down a bit.
-  const tipAdj = isLate ? clamp01(tipProxy * 0.85) : tipProxy;
-  const quality = clamp01((1 - tipW) * closeness + tipW * tipAdj);
+    pAny = learned.pAny;
+    quality = learned.quality;
+    predictionModelFamily = learned.family;
+    predictionModelVersion = learned.version;
+    modelConfidence = learned.confidence;
+    modelBlend = learned.blend;
+    stabilitySupport = m.effectiveMerchants * learned.supportScale;
+  }
 
   // Ensure “good” is always <= “any” and never collapses too low.
   const pGood = clamp01(pAny * (0.25 + 0.75 * quality));
-  const band = betaStabilityBand(pGood, m.effectiveMerchants);
-  const supportScore = clamp01((m.effectiveMerchants - 1) / 7);
+  const band = betaStabilityBand(pGood, stabilitySupport);
 
   // --- Four-signal decomposition ---
   // GOVERNANCE §2: Signals {I, M, R, D} are semantically independent
   // (S-1), individually normalized to [0,1] (S-2), with no cross-signal
   // inference (S-3). Aggregation A is monotone per component.
   // S(p) = w_I·I + w_M·M + w_R·R − w_D·D
-  const bucket = timeBucket(hour);
-  const sigI = clamp01((m.ticketMean - 0.5) / 0.8);
-  const sigM = clamp01(m.total / (2 * ref));
-  const sigR = closeness;
-  const sigD = comp > 0 ? (comp * pIntensity) / (1 + comp * pIntensity) : 0;
 
   const composite = clamp01(
     bucket.wI * sigI + bucket.wM * sigM + bucket.wR * sigR - bucket.wD * sigD
@@ -497,7 +579,10 @@ export function probabilityOfGoodOrder(
     lambdaRef: ref,
     expectedDistMeters: Math.round(m.expectedDist),
     merchantIntensity: m.total,
+    merchantDemand,
     residentialIntensity,
+    residentialDemand,
+    residentialShare: totalDemand > 0 ? residentialDemand / totalDemand : 0,
     competitionIntensity: pIntensity,
     ticketMean: m.ticketMean,
     effectiveMerchants: m.effectiveMerchants,
@@ -507,6 +592,13 @@ export function probabilityOfGoodOrder(
     stabilityLow: band.low,
     stabilityHigh: band.high,
     stabilityWidth: band.high - band.low,
+    baselinePAny,
+    baselineQuality: legacyQuality,
+    predictionModel: selectedPredictionModel,
+    predictionModelFamily,
+    predictionModelVersion,
+    modelConfidence,
+    modelBlend,
     useML: Boolean(useML),
     mlBeta: Number(mlBeta ?? 2.0),
     signals: { I: sigI, M: sigM, R: sigR, D: sigD },
@@ -543,6 +635,7 @@ export function buildGridProbabilityHeat(bounds, restaurants, parkingCandidates,
   const residentialTauMeters = Number(params.residentialTauMeters ?? Math.max(400, tauMeters * 1.6));
   const residentialDemandWeight = Number(params.residentialDemandWeight ?? 0.35);
   const tipEmphasis = Number(params.tipEmphasis ?? 0.55);
+  const predictionModel = String(params.predictionModel ?? "legacy");
   const useML = Boolean(params.useML);
   const mlBeta = Number(params.mlBeta ?? 2.0);
   const competitionTauMeters = Number(params.competitionTauMeters ?? Math.round(tauMeters * 0.8));
@@ -588,6 +681,7 @@ export function buildGridProbabilityHeat(bounds, restaurants, parkingCandidates,
         residentialTauMeters,
         residentialDemandWeight,
         tipEmphasis,
+        predictionModel,
         lambdaRef,
         useML,
         mlBeta,
@@ -622,6 +716,7 @@ export function buildGridProbabilityHeat(bounds, restaurants, parkingCandidates,
       residentialTauMeters,
       residentialDemandWeight,
       competitionTauMeters,
+      predictionModel,
       timeBucketName: bucket.name,
       timeBucketLabel: bucket.label,
     },

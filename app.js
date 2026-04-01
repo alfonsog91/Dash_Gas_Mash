@@ -9,8 +9,13 @@
 //
 // ──────────────────────────────────────────────────────────────────
 
-import { fetchFoodPlaces, fetchParkingCandidates } from "./overpass.js?v=20260331-clearlayers";
 import {
+  fetchFoodPlaces,
+  fetchParkingCandidates,
+  fetchResidentialAnchors,
+} from "./overpass.js?v=20260401-learnedglm";
+import {
+  buildDemandCoverageNodes,
   buildGridProbabilityHeat,
   filterOpenRestaurants,
   haversineMeters,
@@ -18,12 +23,20 @@ import {
   rankParking,
   topLikelyMerchantsForParking,
   timeBucket,
-} from "./model.js?v=20260331-clearlayers";
-import { renderModelDiagram } from "./diagram.js?v=20260331-clearlayers";
-import { isMipAvailable, optimizeParkingSet } from "./optimizer.js?v=20260331-clearlayers";
+} from "./model.js?v=20260401-learnedglm";
+import { renderModelDiagram } from "./diagram.js?v=20260401-learnedglm";
+import {
+  evaluateParkingCoverage,
+  isMipAvailable,
+  optimizeParkingSet,
+  selectParkingSetSubmodular,
+} from "./optimizer.js?v=20260401-learnedglm";
 
-const APP_BUILD_ID = "20260331-clearlayers";
+const APP_BUILD_ID = "20260401-learnedglm";
 console.info("[DGM] app build", APP_BUILD_ID);
+
+const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
+const SHADOW_LEARNED_MODEL = Boolean(window.DGM_SHADOW_PREDICTION_MODEL);
 
 if (window.location.protocol === "file:") {
   alert(
@@ -76,6 +89,7 @@ const parkingById = new Map();
 
 let lastRestaurants = [];
 let lastParkingCandidates = [];
+let lastResidentialAnchors = [];
 let lastStats = null;
 let lastLoadedBounds = null; // tracks the bounds used for the last successful load
 
@@ -84,7 +98,9 @@ let lastParams = {
   tauMeters: 1200,
   horizonMin: 10,
   competitionStrength: 0.35,
+  residentialDemandWeight: 0.35,
   tipEmphasis: 0.55,
+  predictionModel: PREDICTION_MODEL,
 };
 
 const elHour = document.getElementById("hour");
@@ -97,6 +113,8 @@ const elHorizon = document.getElementById("horizon");
 const elHorizonVal = document.getElementById("horizonVal");
 const elCompetition = document.getElementById("competition");
 const elCompetitionVal = document.getElementById("competitionVal");
+const elResidentialWeight = document.getElementById("residentialWeight");
+const elResidentialWeightVal = document.getElementById("residentialWeightVal");
 const elTipEmphasis = document.getElementById("tipEmphasis");
 const elTipEmphasisVal = document.getElementById("tipEmphasisVal");
 const elUseML = document.getElementById("useML");
@@ -411,6 +429,7 @@ function updateLabels() {
   elGridVal.textContent = `${elGrid.value} m`;
   elHorizonVal.textContent = `${elHorizon.value} min`;
   elCompetitionVal.textContent = `${Number(elCompetition.value).toFixed(2)}`;
+  elResidentialWeightVal.textContent = `${Number(elResidentialWeight.value).toFixed(2)}`;
   elTipEmphasisVal.textContent = `${Number(elTipEmphasis.value).toFixed(2)}`;
   elMlBetaVal.textContent = `${Number(elMlBeta.value).toFixed(1)}`;
   elKSpotsVal.textContent = `${Number(elKSpots.value)}`;
@@ -425,6 +444,7 @@ elTau.addEventListener("input", updateLabels);
 elGrid.addEventListener("input", updateLabels);
 elHorizon.addEventListener("input", updateLabels);
 elCompetition.addEventListener("input", updateLabels);
+elResidentialWeight.addEventListener("input", updateLabels);
 elTipEmphasis.addEventListener("input", updateLabels);
 elUseML.addEventListener("change", updateLabels);
 elMlBeta.addEventListener("input", updateLabels);
@@ -486,6 +506,7 @@ function checkDataFreshness() {
 function clearLayers() {
   restaurantById.clear();
   parkingById.clear();
+  lastResidentialAnchors = [];
 
   setSourceData(SOURCE_RESTAURANTS, featureCollection());
   setSourceData(SOURCE_PARKING, featureCollection());
@@ -727,11 +748,11 @@ function percentileFromSorted(value, sorted) {
 }
 
 function describeSignal(score) {
-  if (score >= 0.75) return "Excellent area — dense, high-quality merchants nearby";
-  if (score >= 0.58) return "Good area — solid merchant coverage";
-  if (score >= 0.42) return "Decent area — moderate merchant presence";
-  if (score >= 0.25) return "Sparse area — few merchants in range";
-  return "Weak area — very little merchant coverage";
+  if (score >= 0.75) return "Excellent area — strong local demand support";
+  if (score >= 0.58) return "Good area — solid nearby demand";
+  if (score >= 0.42) return "Decent area — moderate demand support";
+  if (score >= 0.25) return "Thin area — demand support is limited";
+  return "Weak area — very little nearby demand support";
 }
 
 function describePickup(distanceMeters) {
@@ -774,6 +795,17 @@ function describeAdvisory(advisory) {
     : "↻ Rotate — try a different spot";
 }
 
+function renderDemandMixDetail(score) {
+  const residentialShare = clamp01(score?.residentialShare ?? 0);
+  const merchantShare = clamp01(1 - residentialShare);
+
+  if (residentialShare <= 0.02) {
+    return `Demand mix: ${formatPercent(merchantShare)} merchant-driven · negligible residential pull`;
+  }
+
+  return `Demand mix: ${formatPercent(merchantShare)} merchant-driven · ${formatPercent(residentialShare)} residential pull`;
+}
+
 function renderSignalBarsHtml(signals, bucketLabel) {
   const bars = [
     { key: "I", label: "Avg ticket size", tip: "How expensive nearby restaurants tend to be (correlates with tips)", value: signals.I, color: "#7fe8b0" },
@@ -789,7 +821,7 @@ function renderSignalBarsHtml(signals, bucketLabel) {
   return `<div class="sig-bars"><div class="sig-header">What makes this spot score the way it does (${escapeHtml(bucketLabel)})</div>${rows}</div>`;
 }
 
-function renderSummaryCards(rankedParking, restaurants, parking) {
+function renderSummaryCards(rankedParking, restaurants, parking, residentialAnchors) {
   if (!elSummaryCards) return;
 
   if (!rankedParking.length) {
@@ -824,8 +856,8 @@ function renderSummaryCards(rankedParking, restaurants, parking) {
 
 <article class="summary-card">
   <span class="summary-label">Data loaded</span>
-  <strong>${restaurants.length} restaurants · ${parking.length} parking lots</strong>
-  <p>Scores are based on ${restaurants.length} restaurants and ${parking.length} parking lots visible on the map. Zoom in for more accurate results.</p>
+  <strong>${restaurants.length} restaurants · ${residentialAnchors.length} residential anchors · ${parking.length} parking lots</strong>
+  <p>Scores are based on ${restaurants.length} restaurants, ${residentialAnchors.length} residential demand anchors, and ${parking.length} parking lots visible on the map. Zoom in for more accurate results.</p>
 </article>
 `;
 }
@@ -888,6 +920,7 @@ function renderParkingPopupHtml(p, name, restaurants, tauMeters, hour) {
   <div class="popup-detail" title="We're ${formatPercent(p.stabilityLow)}–${formatPercent(p.stabilityHigh)} confident in this score">Confidence range: ${formatPercent(p.stabilityLow)} – ${formatPercent(p.stabilityHigh)} · ${escapeHtml(describeStability(p))}</div>
   <div class="popup-detail">${escapeHtml(describePickup(p.expectedDistMeters))}</div>
   <div class="popup-detail">Chance of <i>any</i> order: ${formatPercent(p.pAny)} · Avg ticket quality: ${formatPercent(p.tipProxy)}</div>
+  <div class="popup-detail">${escapeHtml(renderDemandMixDetail(p))}</div>
   <div class="popup-advisory">Overall strength: ${formatPercent(p.composite)} · ${describeAdvisory(p.advisory)}</div>
 
   ${renderSignalBarsHtml(p.signals, p.timeBucketLabel)}
@@ -906,7 +939,10 @@ function renderSpotPopupHtml(latlng, restaurants, tauMeters, hour) {
     hour,
     horizonMin: lastParams.horizonMin,
     competitionStrength: lastParams.competitionStrength,
+    residentialAnchors: lastResidentialAnchors,
+    residentialDemandWeight: lastParams.residentialDemandWeight,
     tipEmphasis: lastParams.tipEmphasis,
+    predictionModel: lastParams.predictionModel,
     lambdaRef: lastStats?.lambdaRef,
     useML: lastParams.useML,
     mlBeta: lastParams.mlBeta,
@@ -941,6 +977,7 @@ function renderSpotPopupHtml(latlng, restaurants, tauMeters, hour) {
   <div class="popup-detail" title="We're ${formatPercent(r.stabilityLow)}–${formatPercent(r.stabilityHigh)} confident in this score">Confidence range: ${formatPercent(r.stabilityLow)} – ${formatPercent(r.stabilityHigh)} · ${escapeHtml(describeStability(r))}</div>
   <div class="popup-detail">${escapeHtml(describePickup(r.expectedDistMeters))}</div>
   <div class="popup-detail">Chance of <i>any</i> order: ${formatPercent(r.pAny)} · Avg ticket quality: ${formatPercent(r.tipProxy)}</div>
+  <div class="popup-detail">${escapeHtml(renderDemandMixDetail(r))}</div>
   <div class="popup-advisory">Overall strength: ${formatPercent(r.composite)} · ${describeAdvisory(r.advisory)}</div>
 
   ${renderSignalBarsHtml(r.signals, r.timeBucketLabel)}
@@ -1023,6 +1060,7 @@ async function loadForView() {
     const gridStepMeters = Number(elGrid.value);
     const horizonMin = Number(elHorizon.value);
     const competitionStrength = Number(elCompetition.value);
+    const residentialDemandWeight = Number(elResidentialWeight.value);
     const tipEmphasis = Number(elTipEmphasis.value);
     const useML = Boolean(elUseML.checked);
     const mlBeta = Number(elMlBeta.value);
@@ -1034,10 +1072,10 @@ async function loadForView() {
       useMIP = false;
       elUseMIP.checked = false;
 
-      console.warn("MIP solver not available; falling back to non-MIP ranking.");
+      console.warn("MIP solver not available; falling back to the coverage-diversity selector.");
 
       alert(
-        "MIP solver couldn’t load (CDN blocked/offline). Falling back to non-MIP ranking.\n\nIf you want MIP, allow loading: https://unpkg.com/javascript-lp-solver@0.4.24/prod/solver.js"
+        "MIP solver couldn’t load (CDN blocked/offline). Falling back to the coverage-diversity selector.\n\nIf you want MIP, allow loading: https://unpkg.com/javascript-lp-solver@0.4.24/prod/solver.js"
       );
     }
 
@@ -1046,7 +1084,9 @@ async function loadForView() {
       tauMeters,
       horizonMin,
       competitionStrength,
+      residentialDemandWeight,
       tipEmphasis,
+      predictionModel: PREDICTION_MODEL,
       useML,
       mlBeta,
       useMIP,
@@ -1057,9 +1097,10 @@ async function loadForView() {
     const bbox = mapBoundsToAdapter(map.getBounds());
     const queryBounds = clampQueryBounds(bbox);
 
-    const [allRestaurants, parking] = await Promise.all([
+    const [allRestaurants, parking, residentialAnchors] = await Promise.all([
       fetchFoodPlaces(queryBounds, activeAbort.signal),
       fetchParkingCandidates(queryBounds, activeAbort.signal),
+      fetchResidentialAnchors(queryBounds, activeAbort.signal),
     ]);
 
     // Freeze local time once so hours-based eligibility stays consistent for this refresh.
@@ -1067,6 +1108,7 @@ async function loadForView() {
 
     lastRestaurants = restaurants;
     lastParkingCandidates = parking;
+    lastResidentialAnchors = residentialAnchors;
 
     addRestaurantMarkers(restaurants);
 
@@ -1079,7 +1121,10 @@ async function loadForView() {
         tauMeters,
         horizonMin,
         competitionStrength,
+        residentialAnchors,
+        residentialDemandWeight,
         tipEmphasis,
+        predictionModel: PREDICTION_MODEL,
         useML,
         mlBeta,
       },
@@ -1108,18 +1153,91 @@ async function loadForView() {
       parking,
       restaurants,
       parking,
-      { hour, tauMeters, horizonMin, competitionStrength, tipEmphasis, useML, mlBeta },
+      {
+        hour,
+        tauMeters,
+        horizonMin,
+        competitionStrength,
+        residentialAnchors,
+        residentialDemandWeight,
+        tipEmphasis,
+        predictionModel: PREDICTION_MODEL,
+        useML,
+        mlBeta,
+      },
       lastStats,
-      40
+      Math.max(parking.length, 1)
     );
+
+    const coverageTauMeters = Math.max(300, tauMeters);
+    const demandNodes = buildDemandCoverageNodes(restaurants, {
+      hour,
+      dayOfWeek: lastStats?.dayOfWeek,
+      residentialAnchors,
+      residentialDemandWeight,
+    });
 
     const ranked = useMIP
       ? optimizeParkingSet(rankedAll, { k: kSpots, minSepMeters, maxCandidates: 40 })
-      : rankedAll.slice(0, 12);
+      : selectParkingSetSubmodular(rankedAll, {
+        k: kSpots,
+        demandNodes,
+        coverageTauMeters,
+      });
+
+    if (SHADOW_LEARNED_MODEL && PREDICTION_MODEL !== "glm") {
+      const shadowRankedAll = rankParking(
+        parking,
+        restaurants,
+        parking,
+        {
+          hour,
+          tauMeters,
+          horizonMin,
+          competitionStrength,
+          residentialAnchors,
+          residentialDemandWeight,
+          tipEmphasis,
+          predictionModel: "glm",
+          useML,
+          mlBeta,
+        },
+        lastStats,
+        Math.max(parking.length, 1)
+      );
+
+      console.info("[DGM] learned-model shadow audit", {
+        activeModel: PREDICTION_MODEL,
+        topLegacyIds: rankedAll.slice(0, 5).map((candidate) => candidate.id),
+        topShadowIds: shadowRankedAll.slice(0, 5).map((candidate) => candidate.id),
+        meanAbsTopDelta: rankedAll.slice(0, 10).reduce((sum, candidate, index) => {
+          const shadowCandidate = shadowRankedAll[index];
+          return sum + Math.abs((candidate?.pGood ?? 0) - (shadowCandidate?.pGood ?? 0));
+        }, 0) / Math.max(1, Math.min(10, rankedAll.length, shadowRankedAll.length)),
+      });
+    }
+
+    if (useMIP) {
+      const shadowRanked = selectParkingSetSubmodular(rankedAll, {
+        k: kSpots,
+        demandNodes,
+        coverageTauMeters,
+        maxCandidates: 60,
+      });
+
+      console.info("[DGM] selection shadow audit", {
+        activeMode: "mip",
+        activeCoverage: evaluateParkingCoverage(ranked, demandNodes, { coverageTauMeters }),
+        shadowMode: "submodular",
+        shadowCoverage: evaluateParkingCoverage(shadowRanked, demandNodes, { coverageTauMeters }),
+        activeUtility: ranked.reduce((sum, candidate) => sum + (candidate.pGood ?? 0), 0),
+        shadowUtility: shadowRanked.reduce((sum, candidate) => sum + (candidate.pGood ?? 0), 0),
+      });
+    }
 
     addParkingMarkers(ranked, restaurants, tauMeters, hour);
     renderParkingList(ranked);
-    renderSummaryCards(ranked, restaurants, parking);
+    renderSummaryCards(ranked, restaurants, parking, residentialAnchors);
 
     setLayerVisibility(LAYER_RESTAURANTS, elShowRestaurants.checked);
     setLayerVisibility(LAYER_PARKING, elShowParking.checked);
