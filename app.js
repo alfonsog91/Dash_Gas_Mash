@@ -32,12 +32,11 @@ import {
   selectParkingSetSubmodular,
 } from "./optimizer.js?v=20260401-learnedglm";
 
-const APP_BUILD_ID = "20260401-heatmap-search";
+const APP_BUILD_ID = "20260401-learnedglm";
 console.info("[DGM] app build", APP_BUILD_ID);
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
 const SHADOW_LEARNED_MODEL = Boolean(window.DGM_SHADOW_PREDICTION_MODEL);
-const NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search";
 
 if (window.location.protocol === "file:") {
   alert(
@@ -62,7 +61,6 @@ const SOURCE_CURRENT_LOCATION = "current-location";
 const SOURCE_CURRENT_LOCATION_ACCURACY = "current-location-accuracy";
 
 const LAYER_HEAT = "heat-layer";
-const LAYER_HEAT_DETAIL = "heat-detail-layer";
 const LAYER_RESTAURANTS = "restaurants-layer";
 const LAYER_PARKING = "parking-layer";
 const LAYER_SPOT = "spot-layer";
@@ -85,9 +83,6 @@ let activePopup = null;
 let activeAbort = null;
 let lastCurrentLocation = null;
 let lastCurrentLocationAccuracyMeters = null;
-let activeSearchAbort = null;
-let searchSequence = 0;
-let searchDebounceTimer = null;
 
 const restaurantById = new Map();
 const parkingById = new Map();
@@ -138,10 +133,6 @@ const elSummaryCards = document.getElementById("summaryCards");
 const menuButton = document.getElementById("menuToggle");
 const panel = document.getElementById("panel");
 const elLocateMe = document.getElementById("locateMe");
-const elSearchForm = document.getElementById("searchForm");
-const elSearchInput = document.getElementById("searchInput");
-const elSearchButton = document.getElementById("searchButton");
-const elSearchResults = document.getElementById("searchResults");
 
 const LOCATION_TARGET_ZOOM = 16;
 const LOCATION_ANIMATION_MIN_START_ZOOM = 14;
@@ -263,129 +254,6 @@ function setSourceData(sourceId, data) {
   }
 }
 
-function clamp01(value) {
-  return Math.max(0, Math.min(1, Number(value) || 0));
-}
-
-function clearSearchResults() {
-  if (!elSearchResults) return;
-  elSearchResults.innerHTML = "";
-  elSearchResults.classList.remove("has-results");
-}
-
-function renderSearchResults(results) {
-  if (!elSearchResults) return;
-  if (!results?.length) {
-    clearSearchResults();
-    return;
-  }
-
-  elSearchResults.innerHTML = results
-    .map((result, index) => `
-      <button class="search-result" type="button" data-index="${index}" role="option">
-        <span class="search-result-title">${escapeHtml(result.title)}</span>
-        <span class="search-result-meta">${escapeHtml(result.subtitle)}</span>
-      </button>
-    `)
-    .join("");
-  elSearchResults.classList.add("has-results");
-
-  for (const button of elSearchResults.querySelectorAll(".search-result")) {
-    button.addEventListener("click", () => {
-      const match = results[Number(button.dataset.index)];
-      if (match) {
-        clearSearchResults();
-        elSearchInput.value = match.title;
-        focusSearchMatch(match);
-      }
-    });
-  }
-}
-
-function normalizeSearchMatch(rawMatch) {
-  const displayName = String(rawMatch?.display_name ?? "").trim();
-  const pieces = displayName.split(",").map((part) => part.trim()).filter(Boolean);
-  return {
-    lat: Number(rawMatch?.lat),
-    lng: Number(rawMatch?.lon),
-    title: pieces[0] || displayName || "Search result",
-    subtitle: pieces.slice(1).join(", ") || displayName || "Mapped location",
-  };
-}
-
-async function fetchSearchMatches(query, { limit = 5, signal } = {}) {
-  const searchUrl = new URL(NOMINATIM_SEARCH_URL);
-  searchUrl.searchParams.set("format", "jsonv2");
-  searchUrl.searchParams.set("limit", String(limit));
-  searchUrl.searchParams.set("q", query);
-
-  const response = await fetch(searchUrl, {
-    headers: { Accept: "application/json" },
-    signal,
-  });
-
-  if (!response.ok) {
-    throw new Error(`Search failed (${response.status})`);
-  }
-
-  const payload = await response.json();
-  return Array.isArray(payload) ? payload.map(normalizeSearchMatch).filter((match) => Number.isFinite(match.lat) && Number.isFinite(match.lng)) : [];
-}
-
-async function updateSearchSuggestions(query) {
-  const trimmed = String(query || "").trim();
-  if (trimmed.length < 3) {
-    if (activeSearchAbort) activeSearchAbort.abort();
-    clearSearchResults();
-    return;
-  }
-
-  if (activeSearchAbort) activeSearchAbort.abort();
-  activeSearchAbort = new AbortController();
-  const requestId = ++searchSequence;
-
-  try {
-    const matches = await fetchSearchMatches(trimmed, { limit: 5, signal: activeSearchAbort.signal });
-    if (requestId !== searchSequence) return;
-    renderSearchResults(matches);
-  } catch (error) {
-    if (error?.name === "AbortError") return;
-    console.error(error);
-    clearSearchResults();
-  }
-}
-
-function scheduleSearchSuggestions(query) {
-  if (searchDebounceTimer) {
-    clearTimeout(searchDebounceTimer);
-  }
-  searchDebounceTimer = setTimeout(() => {
-    updateSearchSuggestions(query).catch((error) => console.error(error));
-  }, 180);
-}
-
-function focusSearchMatch(match) {
-  const lat = Number(match.lat);
-  const lng = Number(match.lng);
-
-  map.easeTo({
-    center: [lng, lat],
-    zoom: Math.max(map.getZoom(), 15),
-    duration: 700,
-  });
-
-  if (lastRestaurants?.length) {
-    openStatsPopupAtLatLng({ lat, lng }, { heading: "Search result", subtitle: `${match.title} · ${match.subtitle}` });
-  } else {
-    setSpotMarker({ lat, lng });
-    openPopupAtLngLat(
-      { lat, lng },
-      `<div class="popup-friendly"><b>Search result</b><div class="popup-detail">${escapeHtml(match.title)}</div><div class="popup-detail">${escapeHtml(match.subtitle)}</div><div class="popup-detail">Load data to score this spot for the current view.</div></div>`,
-      { closeButton: true }
-    );
-  }
-}
-
 function setLayerVisibility(layerId, visible) {
   if (!map.getLayer(layerId)) return;
   map.setLayoutProperty(layerId, "visibility", visible ? "visible" : "none");
@@ -429,12 +297,12 @@ function ensureMapSourcesAndLayers() {
     id: LAYER_HEAT,
     type: "heatmap",
     source: SOURCE_HEAT,
-    maxzoom: 15,
+    maxzoom: 17,
     paint: {
-      "heatmap-weight": ["coalesce", ["get", "intensityScaled"], 0],
-      "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 8, 0.9, 12, 1.1, 15, 1.35],
-      "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 8, 18, 11, 24, 15, 34],
-      "heatmap-opacity": ["interpolate", ["linear"], ["zoom"], 8, 0.78, 14, 0.92, 15, 0.45],
+      "heatmap-weight": ["coalesce", ["get", "intensity"], 0],
+      "heatmap-intensity": 1,
+      "heatmap-radius": 22,
+      "heatmap-opacity": 0.85,
       "heatmap-color": [
         "interpolate", ["linear"], ["heatmap-density"],
         0, "rgba(45,108,223,0)",
@@ -444,33 +312,6 @@ function ensureMapSourcesAndLayers() {
         0.75, "#ff9b3d",
         1, "#ff3b3b",
       ],
-    },
-  });
-
-  map.addLayer({
-    id: LAYER_HEAT_DETAIL,
-    type: "circle",
-    source: SOURCE_HEAT,
-    minzoom: 13.5,
-    paint: {
-      "circle-radius": [
-        "interpolate", ["linear"], ["zoom"],
-        13.5, ["interpolate", ["linear"], ["coalesce", ["get", "intensityScaled"], 0], 0, 10, 1, 20],
-        17, ["interpolate", ["linear"], ["coalesce", ["get", "intensityScaled"], 0], 0, 14, 1, 28],
-      ],
-      "circle-color": [
-        "interpolate", ["linear"], ["coalesce", ["get", "intensityScaled"], 0],
-        0, "rgba(45,108,223,0.18)",
-        0.2, "#2d6cdf",
-        0.45, "#00d4ff",
-        0.65, "#fff1a8",
-        0.82, "#ff9b3d",
-        1, "#ff3b3b",
-      ],
-      "circle-opacity": ["interpolate", ["linear"], ["zoom"], 13.5, 0.12, 15.5, 0.35, 18, 0.55],
-      "circle-blur": ["interpolate", ["linear"], ["zoom"], 13.5, 0.45, 18, 0.22],
-      "circle-stroke-width": ["interpolate", ["linear"], ["zoom"], 13.5, 0, 16, 0.5, 18, 1],
-      "circle-stroke-color": "rgba(255,255,255,0.18)",
     },
   });
 
@@ -868,17 +709,7 @@ async function locateUser() {
   }
 }
 
-async function searchAddress(query) {
-  const trimmed = String(query || "").trim();
-  if (!trimmed) return;
-  const [match] = await fetchSearchMatches(trimmed, { limit: 1 });
-  if (!match) {
-    throw new Error("No matching address found.");
-  }
-  focusSearchMatch(match);
-}
-
-function openStatsPopupAtLatLng(latlng, options = {}) {
+function openStatsPopupAtLatLng(latlng) {
   if (!latlng) return;
 
   if (closePanelIfOpen()) {
@@ -894,7 +725,7 @@ function openStatsPopupAtLatLng(latlng, options = {}) {
   setSpotMarker(latlng);
   openPopupAtLngLat(
     latlng,
-    renderSpotPopupHtml(latlngToObject(latlng), lastRestaurants, tauMeters, hour, options),
+    renderSpotPopupHtml(latlngToObject(latlng), lastRestaurants, tauMeters, hour),
     { closeButton: true }
   );
 }
@@ -1116,7 +947,7 @@ function renderParkingPopupHtml(p, name, restaurants, tauMeters, hour) {
 `;
 }
 
-function renderSpotPopupHtml(latlng, restaurants, tauMeters, hour, options = {}) {
+function renderSpotPopupHtml(latlng, restaurants, tauMeters, hour) {
   const params = {
     tauMeters,
     hour,
@@ -1152,8 +983,7 @@ function renderSpotPopupHtml(latlng, restaurants, tauMeters, hour, options = {})
 
   return `
 <div class="popup-friendly">
-  <b>${escapeHtml(options.heading || "Spot you clicked")}</b>${lastStats === null ? ' <span style="color:#f5c542">(load data first for accurate scores)</span>' : ""}
-  ${options.subtitle ? `<div class="popup-detail">${escapeHtml(options.subtitle)}</div>` : ""}
+  <b>Spot you clicked</b>${lastStats === null ? ' <span style="color:#f5c542">(load data first for accurate scores)</span>' : ""}
 
   <div class="popup-score">${formatPercent(r.pGood)}<span class="popup-score-label"> chance of a good order in ${lastParams.horizonMin} min</span></div>
   <div class="popup-explain">${escapeHtml(describeSignal(r.pGood))}</div>
@@ -1320,7 +1150,6 @@ async function loadForView() {
 
     checkDataFreshness();
 
-    const intensityCap = Math.max(1e-6, heatResult.stats.topDecileScore || heatResult.stats.medianScore || 1e-6);
     const heatFeatures = heatResult.heatPoints.map(([lat, lon, intensity]) => ({
       type: "Feature",
       geometry: {
@@ -1329,7 +1158,6 @@ async function loadForView() {
       },
       properties: {
         intensity,
-        intensityScaled: clamp01(intensity / intensityCap),
       },
     }));
 
@@ -1442,49 +1270,6 @@ elLoad.addEventListener("click", () => {
 
 if (elLocateMe) {
   elLocateMe.addEventListener("click", locateUser);
-}
-
-if (elSearchForm && elSearchInput && elSearchButton) {
-  elSearchForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    clearSearchResults();
-    const query = elSearchInput.value;
-    if (!String(query).trim()) return;
-
-    elSearchButton.disabled = true;
-    elSearchButton.textContent = "Searching…";
-
-    try {
-      await searchAddress(query);
-    } catch (error) {
-      console.error(error);
-      alert(error?.message ?? String(error));
-    } finally {
-      elSearchButton.disabled = false;
-      elSearchButton.textContent = "Search";
-    }
-  });
-
-  elSearchInput.addEventListener("input", () => {
-    scheduleSearchSuggestions(elSearchInput.value);
-  });
-
-  elSearchInput.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      clearSearchResults();
-      elSearchInput.blur();
-    }
-  });
-
-  elSearchInput.addEventListener("blur", () => {
-    window.setTimeout(() => clearSearchResults(), 120);
-  });
-
-  elSearchInput.addEventListener("focus", () => {
-    if (elSearchResults?.innerHTML.trim()) {
-      elSearchResults.classList.add("has-results");
-    }
-  });
 }
 
 map.on("moveend", checkDataFreshness);
