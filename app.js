@@ -267,6 +267,46 @@ function setSourceData(sourceId, data) {
   }
 }
 
+function isIOSDevice() {
+  const userAgent = String(navigator.userAgent || "");
+  const platform = String(navigator.platform || "");
+  const maxTouchPoints = Number(navigator.maxTouchPoints || 0);
+  return /iPad|iPhone|iPod/i.test(userAgent) || (platform === "MacIntel" && maxTouchPoints > 1);
+}
+
+function buildGoogleMapsNavigationUrl(lat, lon) {
+  const destination = `${Number(lat).toFixed(6)},${Number(lon).toFixed(6)}`;
+  const base = new URL("https://www.google.com/maps/dir/");
+  base.searchParams.set("api", "1");
+  base.searchParams.set("destination", destination);
+  base.searchParams.set("travelmode", "driving");
+  if (lastCurrentLocation) {
+    base.searchParams.set("origin", `${lastCurrentLocation.lat.toFixed(6)},${lastCurrentLocation.lng.toFixed(6)}`);
+  }
+  return base.toString();
+}
+
+function buildAppleMapsNavigationUrl(lat, lon) {
+  const destination = `${Number(lat).toFixed(6)},${Number(lon).toFixed(6)}`;
+  const base = new URL("https://maps.apple.com/");
+  base.searchParams.set("daddr", destination);
+  base.searchParams.set("dirflg", "d");
+  if (lastCurrentLocation) {
+    base.searchParams.set("saddr", `${lastCurrentLocation.lat.toFixed(6)},${lastCurrentLocation.lng.toFixed(6)}`);
+  }
+  return base.toString();
+}
+
+function buildNavigationUrl(lat, lon) {
+  return isIOSDevice()
+    ? buildAppleMapsNavigationUrl(lat, lon)
+    : buildGoogleMapsNavigationUrl(lat, lon);
+}
+
+function renderNavigationAction(lat, lon, label = "Navigate") {
+  return `<div class="popup-actions"><a class="popup-action" href="${escapeHtml(buildNavigationUrl(lat, lon))}" rel="noopener noreferrer">${escapeHtml(label)}</a></div>`;
+}
+
 function setSearchResultsExpanded(isExpanded) {
   if (!elSearchResults) return;
   elSearchResults.classList.toggle("has-results", Boolean(isExpanded));
