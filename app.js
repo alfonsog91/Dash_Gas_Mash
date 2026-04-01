@@ -472,7 +472,7 @@ function renderSearchPopupHtml(match) {
     ? `<div class="popup-detail">${escapeHtml(match.subtitle)}</div>`
     : "";
 
-  return `<div class="popup-friendly"><b>${escapeHtml(match.title)}</b>${subtitle}</div>`;
+  return `<div class="popup-friendly"><b>${escapeHtml(match.title)}</b>${subtitle}${renderNavigationAction(match.lat, match.lng, "Navigate here")}</div>`;
 }
 
 function focusSearchMatch(match) {
