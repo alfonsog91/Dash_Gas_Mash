@@ -108,6 +108,16 @@ References (public):
 - Reinforcement learning for on-demand logistics (assignment): https://careersatdoordash.com/blog/reinforcement-learning-for-on-demand-logistics/
 - Improving ETAs (probabilistic forecasts): https://careersatdoordash.com/blog/improving-etas-with-multi-task-models-deep-learning-and-probabilistic-forecasts/
 
+## Live web address
+
+The app is hosted on GitHub Pages and is publicly accessible at:
+
+**https://alfonsog91.github.io/Dash_Gas_Mash/**
+
+No installation or local server required — just open that URL in any modern browser.
+
+> The live site is automatically updated whenever changes are pushed to the `main` branch via the GitHub Actions workflow in `.github/workflows/deploy.yml`.
+
 ## Run locally (no Node required)
 
 This is a static site. You just need Python.
