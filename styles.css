@@ -138,6 +138,27 @@ button:hover {
   color: rgba(169, 181, 199, 0.8);
 }
 
+.map-mode-toggle {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 6px;
+  width: fit-content;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 14px;
+  background: rgba(16, 26, 43, 0.92);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+}
+
+.map-mode-button {
+  min-width: 110px;
+  background: rgba(255,255,255,0.04);
+}
+
+.map-mode-button.is-active {
+  background: linear-gradient(180deg, var(--btn), var(--btn2));
+}
+
 .search-results {
   display: block;
   max-height: 0;
@@ -735,6 +756,14 @@ summary {
 
   .search-results.has-results {
     max-height: min(34vh, 260px);
+  }
+
+  .map-mode-toggle {
+    width: 100%;
+  }
+
+  .map-mode-button {
+    min-width: 0;
   }
 
   .navigation-card {

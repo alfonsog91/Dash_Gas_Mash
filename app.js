@@ -57,6 +57,28 @@ const MAPTILER_STYLE_ID = String(window.DASH_MAPTILER_STYLE_ID || "basic-v2").tr
 const MAP_STYLE_URL = MAPTILER_API_KEY
   ? `https://api.maptiler.com/maps/${encodeURIComponent(MAPTILER_STYLE_ID)}/style.json?key=${encodeURIComponent(MAPTILER_API_KEY)}`
   : "https://demotiles.maplibre.org/style.json";
+const SATELLITE_STYLE = {
+  version: 8,
+  sources: {
+    satellite: {
+      type: "raster",
+      tiles: [
+        "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      ],
+      tileSize: 256,
+      attribution: "Imagery © Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+    },
+  },
+  layers: [
+    {
+      id: "satellite-base",
+      type: "raster",
+      source: "satellite",
+      minzoom: 0,
+      maxzoom: 22,
+    },
+  ],
+};
 
 const SOURCE_RESTAURANTS = "restaurants";
 const SOURCE_PARKING = "parking";
@@ -91,6 +113,10 @@ let activePopup = null;
 let activeAbort = null;
 let lastCurrentLocation = null;
 let lastCurrentLocationAccuracyMeters = null;
+let lastHeatFeatures = [];
+let lastSpotPoint = null;
+let currentBaseStyle = "map";
+let hasBoundLayerEvents = false;
 let activeSearchAbort = null;
 let activeSearchMarker = null;
 let searchSequence = 0;
@@ -159,6 +185,8 @@ const elSearchForm = document.getElementById("searchForm");
 const elSearchInput = document.getElementById("searchInput");
 const elSearchButton = document.getElementById("searchButton");
 const elSearchResults = document.getElementById("searchResults");
+const elStreetMode = document.getElementById("streetMode");
+const elSatelliteMode = document.getElementById("satelliteMode");
 const elNavigationCard = document.getElementById("navigationCard");
 const elNavigationBanner = document.getElementById("navigationBanner");
 const elNavigationBannerInstruction = document.getElementById("navigationBannerInstruction");
@@ -309,6 +337,98 @@ function setSourceData(sourceId, data) {
   if (source) {
     source.setData(data);
   }
+}
+
+function syncModeButtons() {
+  if (elStreetMode) {
+    const isActive = currentBaseStyle === "map";
+    elStreetMode.classList.toggle("is-active", isActive);
+    elStreetMode.setAttribute("aria-pressed", String(isActive));
+  }
+
+  if (elSatelliteMode) {
+    const isActive = currentBaseStyle === "satellite";
+    elSatelliteMode.classList.toggle("is-active", isActive);
+    elSatelliteMode.setAttribute("aria-pressed", String(isActive));
+  }
+}
+
+function restoreMapDataSources() {
+  setSourceData(SOURCE_RESTAURANTS, featureCollection(Array.from(restaurantById.values()).map((restaurant) => ({
+    type: "Feature",
+    geometry: {
+      type: "Point",
+      coordinates: [restaurant.lon, restaurant.lat],
+    },
+    properties: { id: restaurant.id },
+  }))));
+
+  setSourceData(SOURCE_PARKING, featureCollection(Array.from(parkingById.values()).map((parking) => ({
+    type: "Feature",
+    geometry: {
+      type: "Point",
+      coordinates: [parking.lon, parking.lat],
+    },
+    properties: { id: parking.id },
+  }))));
+
+  setSourceData(SOURCE_HEAT, featureCollection(lastHeatFeatures));
+
+  if (lastSpotPoint) {
+    setSourceData(SOURCE_SPOT, featureCollection([{
+      type: "Feature",
+      geometry: {
+        type: "Point",
+        coordinates: [lastSpotPoint.lng, lastSpotPoint.lat],
+      },
+      properties: {},
+    }]));
+  } else {
+    setSourceData(SOURCE_SPOT, featureCollection());
+  }
+
+  if (lastCurrentLocation) {
+    const accuracyRadius = Math.max(Number(lastCurrentLocationAccuracyMeters) || 0, 12);
+    if (accuracyRadius <= MAX_VISIBLE_ACCURACY_RADIUS_METERS) {
+      const accuracyFeature = createCirclePolygonFeature(lastCurrentLocation, accuracyRadius);
+      accuracyFeature.properties = { accuracyMeters: accuracyRadius };
+      setSourceData(SOURCE_CURRENT_LOCATION_ACCURACY, featureCollection([accuracyFeature]));
+    } else {
+      setSourceData(SOURCE_CURRENT_LOCATION_ACCURACY, featureCollection());
+    }
+
+    setSourceData(SOURCE_CURRENT_LOCATION, featureCollection([{
+      type: "Feature",
+      geometry: {
+        type: "Point",
+        coordinates: [lastCurrentLocation.lng, lastCurrentLocation.lat],
+      },
+      properties: { accuracyMeters: accuracyRadius },
+    }]));
+  } else {
+    setSourceData(SOURCE_CURRENT_LOCATION, featureCollection());
+    setSourceData(SOURCE_CURRENT_LOCATION_ACCURACY, featureCollection());
+  }
+
+  if (activeRoute?.geometry?.coordinates?.length) {
+    setSourceData(SOURCE_ROUTE, featureCollection([{
+      type: "Feature",
+      geometry: activeRoute.geometry,
+      properties: {},
+    }]));
+  } else {
+    setSourceData(SOURCE_ROUTE, featureCollection());
+  }
+
+  setLayerVisibility(LAYER_RESTAURANTS, elShowRestaurants.checked);
+  setLayerVisibility(LAYER_PARKING, elShowParking.checked);
+}
+
+function applyBaseStyle(mode) {
+  if (mode === currentBaseStyle) return;
+  currentBaseStyle = mode;
+  syncModeButtons();
+  map.setStyle(mode === "satellite" ? SATELLITE_STYLE : MAP_STYLE_URL);
 }
 
 function renderNavigationAction(lat, lon, label = "Start route", destinationTitle = "Destination") {
@@ -1164,42 +1284,46 @@ function ensureMapSourcesAndLayers() {
     },
   });
 
-  for (const layerId of [LAYER_RESTAURANTS, LAYER_PARKING, LAYER_CURRENT_LOCATION_DOT]) {
-    map.on("mouseenter", layerId, () => {
-      map.getCanvas().style.cursor = "pointer";
+  if (!hasBoundLayerEvents) {
+    hasBoundLayerEvents = true;
+
+    for (const layerId of [LAYER_RESTAURANTS, LAYER_PARKING, LAYER_CURRENT_LOCATION_DOT]) {
+      map.on("mouseenter", layerId, () => {
+        map.getCanvas().style.cursor = "pointer";
+      });
+      map.on("mouseleave", layerId, () => {
+        map.getCanvas().style.cursor = "";
+      });
+    }
+
+    map.on("click", LAYER_RESTAURANTS, (event) => {
+      const feature = event.features?.[0];
+      if (!feature) return;
+
+      const restaurant = restaurantById.get(feature.properties?.id);
+      if (!restaurant) return;
+
+      const name = restaurant.tags?.name || restaurant.tags?.brand || "Food place";
+      const amenity = restaurant.tags?.amenity || "";
+      openPopupAtLngLat(event.lngLat, `<div class="popup-friendly"><b>${escapeHtml(name)}</b><div class="popup-detail">${escapeHtml(amenity)}</div>${renderNavigationAction(restaurant.lat, restaurant.lon, "Route here", name)}</div>`, { closeButton: true });
     });
-    map.on("mouseleave", layerId, () => {
-      map.getCanvas().style.cursor = "";
+
+    map.on("click", LAYER_PARKING, (event) => {
+      const feature = event.features?.[0];
+      if (!feature) return;
+
+      const parking = parkingById.get(feature.properties?.id);
+      if (!parking) return;
+
+      const name = parking.tags?.name || parking.tags?.operator || "Parking";
+      openPopupAtLngLat(event.lngLat, renderParkingPopupHtml(parking, name, lastRestaurants, lastParams.tauMeters, lastParams.hour));
+    });
+
+    map.on("click", LAYER_CURRENT_LOCATION_DOT, () => {
+      if (!lastCurrentLocation) return;
+      openPopupAtLngLat(lastCurrentLocation, `You are here<br/><span class="mono">Accuracy ±${Math.round(Number(lastCurrentLocationAccuracyMeters) || 0)} m</span>`);
     });
   }
-
-  map.on("click", LAYER_RESTAURANTS, (event) => {
-    const feature = event.features?.[0];
-    if (!feature) return;
-
-    const restaurant = restaurantById.get(feature.properties?.id);
-    if (!restaurant) return;
-
-    const name = restaurant.tags?.name || restaurant.tags?.brand || "Food place";
-    const amenity = restaurant.tags?.amenity || "";
-    openPopupAtLngLat(event.lngLat, `<div class="popup-friendly"><b>${escapeHtml(name)}</b><div class="popup-detail">${escapeHtml(amenity)}</div>${renderNavigationAction(restaurant.lat, restaurant.lon, "Route here", name)}</div>`, { closeButton: true });
-  });
-
-  map.on("click", LAYER_PARKING, (event) => {
-    const feature = event.features?.[0];
-    if (!feature) return;
-
-    const parking = parkingById.get(feature.properties?.id);
-    if (!parking) return;
-
-    const name = parking.tags?.name || parking.tags?.operator || "Parking";
-    openPopupAtLngLat(event.lngLat, renderParkingPopupHtml(parking, name, lastRestaurants, lastParams.tauMeters, lastParams.hour));
-  });
-
-  map.on("click", LAYER_CURRENT_LOCATION_DOT, () => {
-    if (!lastCurrentLocation) return;
-    openPopupAtLngLat(lastCurrentLocation, `You are here<br/><span class="mono">Accuracy ±${Math.round(Number(lastCurrentLocationAccuracyMeters) || 0)} m</span>`);
-  });
 }
 
 function setHourDefaults() {
@@ -1294,6 +1418,8 @@ function clearLayers() {
   restaurantById.clear();
   parkingById.clear();
   lastResidentialAnchors = [];
+  lastHeatFeatures = [];
+  lastSpotPoint = null;
 
   setSourceData(SOURCE_RESTAURANTS, featureCollection());
   setSourceData(SOURCE_PARKING, featureCollection());
@@ -1768,6 +1894,7 @@ function renderSpotPopupHtml(latlng, restaurants, tauMeters, hour) {
 
 function setSpotMarker(latlng) {
   const point = latlngToObject(latlng);
+  lastSpotPoint = point;
 
   setSourceData(SOURCE_SPOT, featureCollection([{
     type: "Feature",
@@ -1923,6 +2050,7 @@ async function loadForView() {
       },
     }));
 
+    lastHeatFeatures = heatFeatures;
     setSourceData(SOURCE_HEAT, featureCollection(heatFeatures));
 
     const rankedAll = rankParking(
@@ -2034,6 +2162,14 @@ if (elLocateMe) {
   elLocateMe.addEventListener("click", locateUser);
 }
 
+if (elStreetMode) {
+  elStreetMode.addEventListener("click", () => applyBaseStyle("map"));
+}
+
+if (elSatelliteMode) {
+  elSatelliteMode.addEventListener("click", () => applyBaseStyle("satellite"));
+}
+
 if (elSearchForm && elSearchInput && elSearchButton) {
   elSearchForm.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -2126,6 +2262,8 @@ map.on("click", (event) => {
 
 map.on("load", () => {
   ensureMapSourcesAndLayers();
+  restoreMapDataSources();
+  syncModeButtons();
 
   if (menuButton && panel) {
     menuButton.addEventListener("click", () => {
@@ -2151,4 +2289,10 @@ map.on("load", () => {
       alert(`Failed to load map data: ${err?.message ?? String(err)}`);
     });
   }, 250);
+});
+
+map.on("style.load", () => {
+  ensureMapSourcesAndLayers();
+  restoreMapDataSources();
+  syncModeButtons();
 });
