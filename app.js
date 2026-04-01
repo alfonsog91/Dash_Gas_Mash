@@ -221,18 +221,28 @@ function closeActivePopup() {
   }
 }
 
-function openPopupAtLngLat(lngLat, html) {
+function openPopupAtLngLat(lngLat, html, popupOptions = {}) {
   closeActivePopup();
-  activePopup = new maplibregl.Popup({
+
+  const popup = new maplibregl.Popup({
     closeButton: false,
     closeOnClick: false,
     className: "dgm-popup",
     maxWidth: "360px",
     offset: 12,
+    ...popupOptions,
   })
     .setLngLat(lngLatToArray(lngLat))
     .setHTML(html)
     .addTo(map);
+
+  popup.on("close", () => {
+    if (activePopup === popup) {
+      activePopup = null;
+    }
+  });
+
+  activePopup = popup;
 
   return activePopup;
 }
@@ -707,13 +717,17 @@ function openStatsPopupAtLatLng(latlng) {
   }
 
   if (!lastRestaurants || lastRestaurants.length === 0) {
-    openPopupAtLngLat(latlng, "Load data first (click ‘Load / Refresh for current view’).");
+    openPopupAtLngLat(latlng, "Load data first (click ‘Load / Refresh for current view’).", { closeButton: true });
     return;
   }
 
   const { hour, tauMeters } = lastParams;
   setSpotMarker(latlng);
-  openPopupAtLngLat(latlng, renderSpotPopupHtml(latlngToObject(latlng), lastRestaurants, tauMeters, hour));
+  openPopupAtLngLat(
+    latlng,
+    renderSpotPopupHtml(latlngToObject(latlng), lastRestaurants, tauMeters, hour),
+    { closeButton: true }
+  );
 }
 
 function latlngToObject(value) {
