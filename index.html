@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Dash Parking Estimate Map</title>
+    <title>Dash Gas Mash Probability Field</title>
 
     <link
       rel="stylesheet"
@@ -25,9 +25,9 @@
 
       <aside id="panel">
         <header>
-          <h1>Dash Parking Estimate Map</h1>
+          <h1>Dash Gas Mash Probability Field</h1>
           <p class="sub">
-            Public, heuristic model using OpenStreetMap + Overpass POIs. Not affiliated with DoorDash.
+            A spatial probability field for good-order likelihood under current modeled conditions, built from public OpenStreetMap data. Not affiliated with DoorDash.
           </p>
         </header>
 
@@ -54,10 +54,10 @@
           </div>
 
           <div class="row">
-            <label for="horizon">Probability horizon (minutes)</label>
-            <input id="horizon" type="range" min="2" max="30" step="1" value="10" />
+            <label for="horizon">Probability horizon contract</label>
+            <input id="horizon" type="range" min="10" max="10" step="1" value="10" disabled />
             <span id="horizonVal" class="mono"></span>
-            <div class="hint">Shown % means “chance within the next T minutes”. Bigger T ⇒ higher %.</div>
+            <div class="hint">DGM's core output is fixed: <b>pGood</b> means the probability of a good order within the next 10 minutes at this location under current modeled conditions.</div>
           </div>
 
           <div class="row">
@@ -72,6 +72,13 @@
             <input id="residentialWeight" type="range" min="0" max="1" step="0.05" value="0.35" />
             <span id="residentialWeightVal" class="mono"></span>
             <div class="hint">Blends in nearby apartment and residential anchors as structural demand support. Set to 0 to revert to merchant-only demand.</div>
+          </div>
+
+          <div class="row">
+            <label for="rainBoost">Rain demand lift</label>
+            <input id="rainBoost" type="range" min="0" max="0.25" step="0.01" value="0" />
+            <span id="rainBoostVal" class="mono"></span>
+            <div class="hint">Simple bounded weather proxy. Higher rain lift nudges modeled demand upward, with a slightly stronger effect on residential demand.</div>
           </div>
 
           <div class="row">
@@ -127,7 +134,7 @@
           <section id="summary" class="summary" aria-live="polite">
             <div class="summary-head">
               <h2>Quick read</h2>
-              <p>Friendly summaries for the current view. These stay view-relative and advisory.</p>
+              <p>Friendly summaries for the current view. These stay view-relative and descriptive.</p>
             </div>
             <div id="summaryCards" class="summary-grid"></div>
           </section>
@@ -156,35 +163,21 @@
             <div class="help">
               <h3 class="help-heading">What the percentages mean</h3>
               <ul>
-                <li><b>"X% chance"</b> &mdash; Estimated probability of getting a worthwhile order if you wait at this spot for the time you set (the "horizon" slider). Higher = better spot. This is <em>not</em> a guarantee &mdash; it's a heuristic guess from public map data.</li>
-                <li><b>Confidence range</b> (e.g., 25%&ndash;45%) &mdash; How much the score could realistically swing. A narrow range means the estimate is stable; a wide range means few restaurants back it up, so take it with a grain of salt.</li>
-                <li><b>Chance of <em>any</em> order</b> &mdash; Likelihood of getting any order at all (including bad ones). The main score filters this down to <em>good</em> orders.</li>
-                <li><b>Avg ticket quality</b> &mdash; How pricey nearby restaurants tend to be. Higher-ticket restaurants tend to correlate with better tips.</li>
-                <li><b>Demand mix</b> &mdash; How much of the score comes from nearby merchants versus residential demand anchors. Residential pull is structural context, not a live order feed.</li>
-                <li><b>Overall strength</b> (Composite) &mdash; Blends all four factors (ticket size, restaurant density, proximity, crowding) with weights that shift by time of day.</li>
+                <li><b>Probability range</b> (for example, 25%&ndash;45%) &mdash; DGM shows the modeled probability of receiving a good order within the next 10 minutes. The range comes from perturbing arrival intensity by &plusmn;30% so uncertainty stays explicit.</li>
+                <li><b>Merchant share</b> &mdash; How much of the 10-minute probability is being supported by nearby merchants.</li>
+                <li><b>Residential share</b> &mdash; How much of the 10-minute probability is being supported by surrounding homes and apartments. This is structural context, not a live feed.</li>
+                <li><b>Relative intensity</b> &mdash; How strong this point is compared with the current view's reference intensity.</li>
+                <li><b>Rain lift</b> &mdash; The current modeled demand lift from the rain control, if any.</li>
               </ul>
-
-              <h3 class="help-heading">The four signal bars</h3>
-              <ul>
-                <li><b class="clr-income">Avg ticket size</b> &mdash; Are nearby restaurants higher-priced? (Green bar)</li>
-                <li><b class="clr-density">Restaurant density</b> &mdash; How many restaurants are in range? (Blue bar)</li>
-                <li><b class="clr-prox">Proximity</b> &mdash; How close is the nearest restaurant? Closer = faster pickup. (Purple bar)</li>
-                <li><b class="clr-crowd">Crowding</b> &mdash; How many other parking lots are nearby? More parking = more likely other drivers are competing. (Red bar &mdash; higher is <em>worse</em>)</li>
-              </ul>
-
-              <h3 class="help-heading">Hold vs Rotate</h3>
-              <p>
-                <b>&#x2705; Hold</b> means the spot is strong enough to sit and wait.<br/>
-                <b>&#x21bb; Rotate</b> means you're probably better off driving to a different area.
-              </p>
 
               <h3 class="help-heading">Sliders</h3>
               <ul>
                 <li><b>Local hour</b>: What time of day to model. Late night boosts fast food weight.</li>
-                <li><b>Probability horizon</b>: "Chance within the next X minutes." Longer = higher %, but that doesn't mean the spot is <em>better</em> &mdash; you're just waiting longer.</li>
+                <li><b>Probability horizon</b>: Fixed at 10 minutes so every spot on the map stays directly comparable.</li>
                 <li><b>Distance decay</b>: How far restaurants count. Smaller = only very close restaurants matter.</li>
                 <li><b>Competition strength</b>: Penalizes spots near many parking lots (rough proxy for other drivers). Set to 0 to ignore.</li>
                 <li><b>Residential demand blend</b>: Adds nearby housing and apartment anchors as a structural demand field. Set to 0 for the pre-promotion merchant-only model.</li>
+                <li><b>Rain demand lift</b>: Adds a bounded weather uplift to the demand field. This is a manual proxy, not live weather ingestion.</li>
                 <li><b>Tip emphasis</b>: Slide right to favor higher-ticket restaurants. Slide left to favor short pickup distance.</li>
                 <li><b>Grid step</b>: Heatmap detail. Smaller = prettier but slower.</li>
                 <li><b>K spots / Min separation</b>: How many parking suggestions to show. Min separation applies to MIP mode; the approximate fallback spreads picks using diminishing returns instead of a hard spacing rule.</li>
@@ -263,6 +256,6 @@
       crossorigin=""
     ></script>
 
-    <script type="module" src="./app.js?v=20260401-inapp-nav"></script>
+    <script type="module" src="./app.js?v=20260401-probability-contract"></script>
   </body>
 </html>

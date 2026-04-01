@@ -542,6 +542,14 @@ summary {
   color: #e9eef7;
 }
 
+.heat-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
 .popup-actions {
   display: flex;
   gap: 8px;
@@ -711,7 +719,6 @@ summary {
   font-size: 11px;
   color: var(--muted);
 }
-
 .menu-toggle {
   display: none;
 }
@@ -793,7 +800,6 @@ summary {
   .navigation-steps {
     max-height: min(22vh, 180px);
   }
-
   /* Keep primary navigation high and move zoom to the thumb zone to avoid stacked map controls on phones. */
   html, body {
     height: 100%;

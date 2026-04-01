@@ -13,26 +13,27 @@ import {
   fetchFoodPlaces,
   fetchParkingCandidates,
   fetchResidentialAnchors,
-} from "./overpass.js?v=20260401-learnedglm";
+} from "./overpass.js?v=20260401-probability-contract";
 import {
   buildDemandCoverageNodes,
   buildGridProbabilityHeat,
   filterOpenRestaurants,
   haversineMeters,
+  PROBABILITY_HORIZON_MINUTES,
   probabilityOfGoodOrder,
   rankParking,
   topLikelyMerchantsForParking,
   timeBucket,
-} from "./model.js?v=20260401-learnedglm";
-import { renderModelDiagram } from "./diagram.js?v=20260401-learnedglm";
+} from "./model.js?v=20260401-probability-contract";
+import { renderModelDiagram } from "./diagram.js?v=20260401-probability-contract";
 import {
   evaluateParkingCoverage,
   isMipAvailable,
   optimizeParkingSet,
   selectParkingSetSubmodular,
-} from "./optimizer.js?v=20260401-learnedglm";
+} from "./optimizer.js?v=20260401-probability-contract";
 
-const APP_BUILD_ID = "20260401-inapp-nav";
+const APP_BUILD_ID = "20260401-probability-contract";
 console.info("[DGM] app build", APP_BUILD_ID);
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
@@ -53,9 +54,9 @@ const DEFAULT_CENTER = [-117.5931, 34.1064]; // [lng, lat] Rancho Cucamonga
 const DEFAULT_ZOOM = 12;
 
 const MAPTILER_API_KEY = String(window.DASH_MAPTILER_KEY || "").trim();
-const MAPTILER_STYLE_ID = String(window.DASH_MAPTILER_STYLE_ID || "basic-v2").trim();
+const STREET_STYLE_ID = String(window.DASH_MAPTILER_STYLE_ID || "basic-v2").trim();
 const MAP_STYLE_URL = MAPTILER_API_KEY
-  ? `https://api.maptiler.com/maps/${encodeURIComponent(MAPTILER_STYLE_ID)}/style.json?key=${encodeURIComponent(MAPTILER_API_KEY)}`
+  ? `https://api.maptiler.com/maps/${encodeURIComponent(STREET_STYLE_ID)}/style.json?key=${encodeURIComponent(MAPTILER_API_KEY)}`
   : "https://demotiles.maplibre.org/style.json";
 const SATELLITE_STYLE = {
   version: 8,
@@ -144,9 +145,10 @@ let lastLoadedBounds = null; // tracks the bounds used for the last successful l
 let lastParams = {
   hour: 0,
   tauMeters: 1200,
-  horizonMin: 10,
+  horizonMin: PROBABILITY_HORIZON_MINUTES,
   competitionStrength: 0.35,
   residentialDemandWeight: 0.35,
+  rainBoost: 0,
   tipEmphasis: 0.55,
   predictionModel: PREDICTION_MODEL,
 };
@@ -163,6 +165,8 @@ const elCompetition = document.getElementById("competition");
 const elCompetitionVal = document.getElementById("competitionVal");
 const elResidentialWeight = document.getElementById("residentialWeight");
 const elResidentialWeightVal = document.getElementById("residentialWeightVal");
+const elRainBoost = document.getElementById("rainBoost");
+const elRainBoostVal = document.getElementById("rainBoostVal");
 const elTipEmphasis = document.getElementById("tipEmphasis");
 const elTipEmphasisVal = document.getElementById("tipEmphasisVal");
 const elUseML = document.getElementById("useML");
@@ -211,6 +215,12 @@ const INITIAL_LOCATION_TIMEOUT_MS = 8000;
 
 const diagramContainer = document.getElementById("diagram");
 renderModelDiagram(diagramContainer);
+
+if (elHorizon) {
+  elHorizon.value = String(PROBABILITY_HORIZON_MINUTES);
+  elHorizon.disabled = true;
+  elHorizon.setAttribute("aria-disabled", "true");
+}
 
 let isLocating = false;
 let hasRequestedInitialLocation = false;
@@ -1338,9 +1348,10 @@ function updateLabels() {
   elHourVal.textContent = `${hour}:00 · ${bucket.label}`;
   elTauVal.textContent = `${elTau.value} m`;
   elGridVal.textContent = `${elGrid.value} m`;
-  elHorizonVal.textContent = `${elHorizon.value} min`;
+  elHorizonVal.textContent = `${PROBABILITY_HORIZON_MINUTES} min fixed`;
   elCompetitionVal.textContent = `${Number(elCompetition.value).toFixed(2)}`;
   elResidentialWeightVal.textContent = `${Number(elResidentialWeight.value).toFixed(2)}`;
+  elRainBoostVal.textContent = `${Math.round(Number(elRainBoost.value) * 100)}%`;
   elTipEmphasisVal.textContent = `${Number(elTipEmphasis.value).toFixed(2)}`;
   elMlBetaVal.textContent = `${Number(elMlBeta.value).toFixed(1)}`;
   elKSpotsVal.textContent = `${Number(elKSpots.value)}`;
@@ -1356,6 +1367,7 @@ elGrid.addEventListener("input", updateLabels);
 elHorizon.addEventListener("input", updateLabels);
 elCompetition.addEventListener("input", updateLabels);
 elResidentialWeight.addEventListener("input", updateLabels);
+elRainBoost.addEventListener("input", updateLabels);
 elTipEmphasis.addEventListener("input", updateLabels);
 elUseML.addEventListener("change", updateLabels);
 elMlBeta.addEventListener("input", updateLabels);
@@ -1626,6 +1638,22 @@ function formatPercent(value) {
   return `${Math.round(clamp01(value) * 100)}%`;
 }
 
+function getProbabilityLow(score) {
+  return clamp01(score?.pGood_low ?? score?.pGood ?? 0);
+}
+
+function getProbabilityMid(score) {
+  return clamp01(score?.pGood_mid ?? score?.pGood ?? 0);
+}
+
+function getProbabilityHigh(score) {
+  return clamp01(score?.pGood_high ?? score?.pGood ?? 0);
+}
+
+function formatProbabilityRange(low, high) {
+  return `${formatPercent(low)} - ${formatPercent(high)}`;
+}
+
 function upperBound(sorted, value) {
   let lo = 0;
   let hi = sorted.length;
@@ -1679,7 +1707,7 @@ function describeStability(score) {
 }
 
 function formatRelativeRank(score) {
-  const percentile = percentileFromSorted(score.pGood, lastStats?.scoreSamplesSorted);
+  const percentile = percentileFromSorted(getProbabilityMid(score), lastStats?.scoreSamplesSorted);
   if (percentile === null) return "Rank unavailable — load data first";
   if (percentile >= 90) return `Top ${100 - percentile}% — one of the best spots on the map`;
   if (percentile >= 70) return `Better than ${percentile}% of spots — above average`;
@@ -1693,15 +1721,32 @@ function describeAdvisory(advisory) {
     : "↻ Rotate — try a different spot";
 }
 
-function renderDemandMixDetail(score) {
-  const residentialShare = clamp01(score?.residentialShare ?? 0);
-  const merchantShare = clamp01(1 - residentialShare);
+function describeProbabilityBand(score) {
+  const merchantCount = Math.round(score?.effectiveMerchants ?? 0);
+  const width = Math.max(0, getProbabilityHigh(score) - getProbabilityLow(score));
 
-  if (residentialShare <= 0.02) {
-    return `Demand mix: ${formatPercent(merchantShare)} merchant-driven · negligible residential pull`;
+  if (merchantCount < 2 || width >= 0.28) {
+    return `Wide range — limited support behind this estimate (about ${merchantCount} effective merchants).`;
   }
 
-  return `Demand mix: ${formatPercent(merchantShare)} merchant-driven · ${formatPercent(residentialShare)} residential pull`;
+  if (merchantCount < 4 || width >= 0.18) {
+    return "Moderate range — the estimate has some support, but conditions can still move it.";
+  }
+
+  return "Tighter range — the visible merchant field is giving a steadier estimate.";
+}
+
+function renderExplainabilityDetails(score) {
+  const explain = score?.explain ?? {};
+  return [
+    explain.merchantShare,
+    explain.residentialShare,
+    explain.relativeIntensity,
+    explain.rainLiftPercent,
+  ]
+    .filter(Boolean)
+    .map((text) => `<div class="popup-detail">${escapeHtml(text)}</div>`)
+    .join("");
 }
 
 function renderSignalBarsHtml(signals, bucketLabel) {
@@ -1728,34 +1773,40 @@ function renderSummaryCards(rankedParking, restaurants, parking, residentialAnch
   }
 
   const best = rankedParking[0];
-  const medianScore = lastStats?.medianScore ?? 0;
-  const topDecileScore = lastStats?.topDecileScore ?? 0;
+  const bestRange = formatProbabilityRange(getProbabilityLow(best), getProbabilityHigh(best));
+  const typicalRange = formatProbabilityRange(
+    lastStats?.medianProbabilityLow ?? lastStats?.medianScore ?? 0,
+    lastStats?.medianProbabilityHigh ?? lastStats?.medianScore ?? 0,
+  );
+  const hotRange = formatProbabilityRange(
+    lastStats?.topDecileProbabilityLow ?? lastStats?.topDecileScore ?? 0,
+    lastStats?.topDecileProbabilityHigh ?? lastStats?.topDecileScore ?? 0,
+  );
   const bucketLabel = lastStats?.timeBucketLabel ?? timeBucket(lastParams.hour).label;
-  const holdCount = rankedParking.filter(p => p.advisory === "hold").length;
 
   elSummaryCards.innerHTML = `
 <article class="summary-card">
-  <span class="summary-label">Best spot found</span>
-  <strong>${formatPercent(best.pGood)} chance</strong>
-  <p>The top-ranked parking spot has a <b>${formatPercent(best.pGood)}</b> estimated chance of getting a good order within ${lastParams.horizonMin} minutes. ${describeSignal(best.pGood)}.</p>
+  <span class="summary-label">Best visible 10-minute field</span>
+  <strong>${bestRange}</strong>
+  <p>The strongest visible waiting point is modeled at <b>${bestRange}</b> for a good order in the next ${PROBABILITY_HORIZON_MINUTES} minutes. ${describeSignal(getProbabilityMid(best))}.</p>
 </article>
 
 <article class="summary-card">
-  <span class="summary-label">How this area compares</span>
-  <strong>${formatPercent(medianScore)} typical · ${formatPercent(topDecileScore)} best zones</strong>
-  <p>A typical spot on this map scores ${formatPercent(medianScore)}. The hottest 10% of the map scores ${formatPercent(topDecileScore)} or higher. Bigger gap = more variation to exploit.</p>
+  <span class="summary-label">Field spread in this view</span>
+  <strong>${typicalRange} typical · ${hotRange} hot zones</strong>
+  <p>A typical point in this view sits around ${typicalRange}. The strongest visible zones sit around ${hotRange}, which tells you how separated the current probability field is.</p>
 </article>
 
 <article class="summary-card">
-  <span class="summary-label">Time of day: ${escapeHtml(bucketLabel)}</span>
-  <strong>${holdCount} of ${rankedParking.length} spots worth holding</strong>
-  <p>The model shifts what matters by time of day. Right now (${escapeHtml(bucketLabel)}), ${holdCount > 0 ? holdCount + " spot(s) are strong enough to wait at" : "no spots are strong enough to just wait — consider moving between areas"}.</p>
+  <span class="summary-label">Why the best spot rates well</span>
+  <strong>${escapeHtml(best.explain?.merchantShare ?? `${bucketLabel} probability read`)}</strong>
+  <p>${escapeHtml(best.explain?.residentialShare ?? "")}${best.explain?.relativeIntensity ? ` ${escapeHtml(best.explain.relativeIntensity)}` : ""}${best.explain?.rainLiftPercent ? ` ${escapeHtml(best.explain.rainLiftPercent)}` : ""}</p>
 </article>
 
 <article class="summary-card">
   <span class="summary-label">Data loaded</span>
   <strong>${restaurants.length} restaurants · ${residentialAnchors.length} residential anchors · ${parking.length} parking lots</strong>
-  <p>Scores are based on ${restaurants.length} restaurants, ${residentialAnchors.length} residential demand anchors, and ${parking.length} parking lots visible on the map. Zoom in for more accurate results.</p>
+  <p>This probability field is built from ${restaurants.length} restaurants, ${residentialAnchors.length} residential anchors, and ${parking.length} parking lots visible on the map. Zoom in for a tighter local read.</p>
 </article>
 `;
 }
@@ -1812,18 +1863,14 @@ function renderParkingPopupHtml(p, name, restaurants, tauMeters, hour) {
   return `
 <div class="popup-friendly">
   <b>${escapeHtml(name)}</b>
-  <div class="popup-score">${formatPercent(p.pGood)}<span class="popup-score-label"> chance of a good order in ${lastParams.horizonMin} min</span></div>
-  <div class="popup-explain">${escapeHtml(describeSignal(p.pGood))}</div>
+  <div class="popup-score">${formatProbabilityRange(getProbabilityLow(p), getProbabilityHigh(p))}<span class="popup-score-label"> 10-minute probability of a good order</span></div>
+  <div class="popup-explain">${escapeHtml(describeSignal(getProbabilityMid(p)))}</div>
   <div class="popup-rank">${escapeHtml(formatRelativeRank(p))}</div>
-  <div class="popup-detail" title="We're ${formatPercent(p.stabilityLow)}–${formatPercent(p.stabilityHigh)} confident in this score">Confidence range: ${formatPercent(p.stabilityLow)} – ${formatPercent(p.stabilityHigh)} · ${escapeHtml(describeStability(p))}</div>
+  <div class="popup-detail">Uncertainty band (λ ±30%): ${formatProbabilityRange(getProbabilityLow(p), getProbabilityHigh(p))} · ${escapeHtml(describeProbabilityBand(p))}</div>
   <div class="popup-detail">${escapeHtml(describePickup(p.expectedDistMeters))}</div>
-  <div class="popup-detail">Chance of <i>any</i> order: ${formatPercent(p.pAny)} · Avg ticket quality: ${formatPercent(p.tipProxy)}</div>
-  <div class="popup-detail">${escapeHtml(renderDemandMixDetail(p))}</div>
-  <div class="popup-advisory">Overall strength: ${formatPercent(p.composite)} · ${describeAdvisory(p.advisory)}</div>
+  ${renderExplainabilityDetails(p)}
 
   ${renderNavigationAction(p.lat, p.lon, "Route here", name)}
-
-  ${renderSignalBarsHtml(p.signals, p.timeBucketLabel)}
 
   <hr/>
 
@@ -1841,6 +1888,7 @@ function renderSpotPopupHtml(latlng, restaurants, tauMeters, hour) {
     competitionStrength: lastParams.competitionStrength,
     residentialAnchors: lastResidentialAnchors,
     residentialDemandWeight: lastParams.residentialDemandWeight,
+    rainBoost: lastParams.rainBoost,
     tipEmphasis: lastParams.tipEmphasis,
     predictionModel: lastParams.predictionModel,
     lambdaRef: lastStats?.lambdaRef,
@@ -1871,18 +1919,14 @@ function renderSpotPopupHtml(latlng, restaurants, tauMeters, hour) {
 <div class="popup-friendly">
   <b>Spot you clicked</b>${lastStats === null ? ' <span style="color:#f5c542">(load data first for accurate scores)</span>' : ""}
 
-  <div class="popup-score">${formatPercent(r.pGood)}<span class="popup-score-label"> chance of a good order in ${lastParams.horizonMin} min</span></div>
-  <div class="popup-explain">${escapeHtml(describeSignal(r.pGood))}</div>
+  <div class="popup-score">${formatProbabilityRange(getProbabilityLow(r), getProbabilityHigh(r))}<span class="popup-score-label"> 10-minute probability of a good order</span></div>
+  <div class="popup-explain">${escapeHtml(describeSignal(getProbabilityMid(r)))}</div>
   <div class="popup-rank">${escapeHtml(formatRelativeRank(r))}</div>
-  <div class="popup-detail" title="We're ${formatPercent(r.stabilityLow)}–${formatPercent(r.stabilityHigh)} confident in this score">Confidence range: ${formatPercent(r.stabilityLow)} – ${formatPercent(r.stabilityHigh)} · ${escapeHtml(describeStability(r))}</div>
+  <div class="popup-detail">Uncertainty band (λ ±30%): ${formatProbabilityRange(getProbabilityLow(r), getProbabilityHigh(r))} · ${escapeHtml(describeProbabilityBand(r))}</div>
   <div class="popup-detail">${escapeHtml(describePickup(r.expectedDistMeters))}</div>
-  <div class="popup-detail">Chance of <i>any</i> order: ${formatPercent(r.pAny)} · Avg ticket quality: ${formatPercent(r.tipProxy)}</div>
-  <div class="popup-detail">${escapeHtml(renderDemandMixDetail(r))}</div>
-  <div class="popup-advisory">Overall strength: ${formatPercent(r.composite)} · ${describeAdvisory(r.advisory)}</div>
+  ${renderExplainabilityDetails(r)}
 
   ${renderNavigationAction(latlng.lat, latlng.lng, "Route here", "Selected spot")}
-
-  ${renderSignalBarsHtml(r.signals, r.timeBucketLabel)}
 
   <hr/>
 
@@ -1918,11 +1962,12 @@ function renderParkingList(rankedParking) {
     const btn = document.createElement("button");
 
     btn.innerHTML = `
-<span class="list-title">${escapeHtml(name)} — ${formatPercent(p.pGood)} chance</span>
-<span class="list-meta">${escapeHtml(describeSignal(p.pGood))}</span>
+  <span class="list-title">${escapeHtml(name)} — ${escapeHtml(formatProbabilityRange(getProbabilityLow(p), getProbabilityHigh(p)))}</span>
+  <span class="list-meta">10-minute good-order probability range</span>
+  <span class="list-meta">${escapeHtml(describeSignal(getProbabilityMid(p)))}</span>
 <span class="list-meta">${escapeHtml(formatRelativeRank(p))}</span>
 <span class="list-meta">${escapeHtml(describePickup(p.expectedDistMeters))}</span>
-<span class="list-meta">Strength: ${formatPercent(p.composite)} · ${describeAdvisory(p.advisory)}</span>
+  <span class="list-meta">${escapeHtml(p.explain?.relativeIntensity ?? "")}</span>
 `;
 
     btn.addEventListener("click", () => {
@@ -1961,9 +2006,10 @@ async function loadForView() {
     const hour = Number(elHour.value);
     const tauMeters = Number(elTau.value);
     const gridStepMeters = Number(elGrid.value);
-    const horizonMin = Number(elHorizon.value);
+    const horizonMin = PROBABILITY_HORIZON_MINUTES;
     const competitionStrength = Number(elCompetition.value);
     const residentialDemandWeight = Number(elResidentialWeight.value);
+    const rainBoost = Number(elRainBoost.value);
     const tipEmphasis = Number(elTipEmphasis.value);
     const useML = Boolean(elUseML.checked);
     const mlBeta = Number(elMlBeta.value);
@@ -1988,6 +2034,7 @@ async function loadForView() {
       horizonMin,
       competitionStrength,
       residentialDemandWeight,
+      rainBoost,
       tipEmphasis,
       predictionModel: PREDICTION_MODEL,
       useML,
@@ -2026,6 +2073,7 @@ async function loadForView() {
         competitionStrength,
         residentialAnchors,
         residentialDemandWeight,
+        rainBoost,
         tipEmphasis,
         predictionModel: PREDICTION_MODEL,
         useML,
@@ -2064,6 +2112,7 @@ async function loadForView() {
         competitionStrength,
         residentialAnchors,
         residentialDemandWeight,
+        rainBoost,
         tipEmphasis,
         predictionModel: PREDICTION_MODEL,
         useML,
@@ -2101,6 +2150,7 @@ async function loadForView() {
           competitionStrength,
           residentialAnchors,
           residentialDemandWeight,
+          rainBoost,
           tipEmphasis,
           predictionModel: "glm",
           useML,

@@ -1,4 +1,5 @@
 import {
+  PROBABILITY_HORIZON_MINUTES,
   buildDemandCoverageNodes,
   haversineMeters,
   scorePointAgainstRestaurants,
@@ -69,6 +70,7 @@ const baseParams = {
   hour: 14,
   horizonMin: 10,
   competitionStrength: 0.35,
+  rainBoost: 0,
   tipEmphasis: 0.55,
   useML: false,
   mlBeta: 2.0,
@@ -120,6 +122,8 @@ function testNonNegativity() {
   assert(r.signals.M >= 0, `signal M >= 0`);
   assert(r.signals.R >= 0, `signal R >= 0`);
   assert(r.signals.D >= 0, `signal D >= 0`);
+  assert(r.pGood_low >= 0, `pGood_low >= 0: ${r.pGood_low}`);
+  assert(r.pGood_high >= 0, `pGood_high >= 0: ${r.pGood_high}`);
 }
 
 function testOrderPreservation() {
@@ -187,6 +191,18 @@ function testPGoodBoundedByPAny() {
   assert(r.pGood <= r.pAny + 1e-9, `pGood (${r.pGood.toFixed(4)}) <= pAny (${r.pAny.toFixed(4)})`);
 }
 
+function testProbabilityContract() {
+  log("\n--- Probability contract (10-minute field) ---");
+  const r = computeBaselineResult();
+  assert(r.horizonMin === PROBABILITY_HORIZON_MINUTES, `pGood horizon locked to ${PROBABILITY_HORIZON_MINUTES} minutes`);
+  assert(r.pGood_low <= r.pGood_mid, `pGood_low <= pGood_mid (${r.pGood_low.toFixed(4)} <= ${r.pGood_mid.toFixed(4)})`);
+  assert(r.pGood_mid <= r.pGood_high, `pGood_mid <= pGood_high (${r.pGood_mid.toFixed(4)} <= ${r.pGood_high.toFixed(4)})`);
+  assert(typeof r.explain?.merchantShare === "string", "explain.merchantShare is human-readable text");
+  assert(typeof r.explain?.residentialShare === "string", "explain.residentialShare is human-readable text");
+  assert(typeof r.explain?.relativeIntensity === "string", "explain.relativeIntensity is human-readable text");
+  assert(typeof r.explain?.rainLiftPercent === "string", "explain.rainLiftPercent is human-readable text");
+}
+
 function testGridHeatBaseline() {
   log("\n--- Grid heat baseline ---");
   // Minimal bounding box around fixtures.
@@ -202,6 +218,7 @@ function testGridHeatBaseline() {
   assert(typeof result.stats === "object", "stats object returned");
   assert(typeof result.stats.lambdaRef === "number", "lambdaRef computed");
   assert(result.stats.lambdaRef > 0, "lambdaRef > 0");
+  assert(result.stats.horizonMin === PROBABILITY_HORIZON_MINUTES, "heatmap stats report the fixed 10-minute horizon");
   // Every heat value should be non-negative (\u00a71 I-1).
   const allNonNeg = result.heatPoints.every(([, , v]) => v >= 0);
   assert(allNonNeg, "all heat values >= 0");
@@ -350,6 +367,39 @@ function testResidentialDemandPromotion() {
   assert(ranked[0].id === "node/park-east", "parking ranking reflects residential demand after promotion");
 }
 
+function testRainDemandLift() {
+  log("\n--- Rain demand lift ---");
+
+  const dry = probabilityOfGoodOrder(
+    { lat: 34.1064, lon: -117.5931 },
+    fixtureRestaurants,
+    fixtureParking,
+    { ...baseParams, lambdaRef: 1.0, rainBoost: 0 }
+  );
+  const rainy = probabilityOfGoodOrder(
+    { lat: 34.1064, lon: -117.5931 },
+    fixtureRestaurants,
+    fixtureParking,
+    { ...baseParams, lambdaRef: 1.0, rainBoost: 0.2 }
+  );
+
+  assert(rainy.pAny > dry.pAny, "rain lift increases modeled arrival probability");
+  assert(rainy.pGood > dry.pGood, "rain lift increases good-order probability at the same point");
+
+  const bounds = {
+    getSouth: () => 34.104,
+    getNorth: () => 34.109,
+    getWest: () => -117.596,
+    getEast: () => -117.590,
+  };
+  const dryHeat = buildGridProbabilityHeat(bounds, fixtureRestaurants, fixtureParking, { ...baseParams, rainBoost: 0 }, 500);
+  const rainyHeat = buildGridProbabilityHeat(bounds, fixtureRestaurants, fixtureParking, { ...baseParams, rainBoost: 0.2 }, 500);
+
+  const dryMean = dryHeat.heatPoints.reduce((sum, [, , value]) => sum + value, 0) / dryHeat.heatPoints.length;
+  const rainyMean = rainyHeat.heatPoints.reduce((sum, [, , value]) => sum + value, 0) / rainyHeat.heatPoints.length;
+  assert(rainyMean > dryMean, "rain lift raises average heatmap intensity");
+}
+
 function combinations(items, pickCount) {
   const results = [];
 
@@ -477,12 +527,14 @@ export function runPreservationTests() {
   testDeterminism();
   testNoActionabilitySemantics();
   testPGoodBoundedByPAny();
+  testProbabilityContract();
   testGridHeatBaseline();
   testRankParkingDeterminism();
   testTopMerchantsDeterminism();
   testOpeningHoursHelper();
   testClosedRestaurantsExcludedFromPipeline();
   testResidentialDemandPromotion();
+  testRainDemandLift();
   testSubmodularFallbackSelection();
   testLearnedModelAgreement();
   testLearnedModelSyntheticCalibration();

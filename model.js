@@ -36,6 +36,8 @@ function clamp01(x) {
   return Math.max(0, Math.min(1, x));
 }
 
+export const PROBABILITY_HORIZON_MINUTES = 10;
+
 const OSM_WEEKDAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
 
 function jsDayToOsmDayIndex(jsDay) {
@@ -432,6 +434,53 @@ function betaStabilityBand(p, effectiveSupport) {
   };
 }
 
+function arrivalProbabilityFromLambda(
+  lambdaEff,
+  {
+    ref,
+    horizonMin,
+    rainArrivalMultiplier,
+    useSoftplus,
+    mlBeta,
+  }
+) {
+  const safeRef = Math.max(1e-9, Number(ref ?? 0) || 1e-9);
+  const T = Math.max(1, Number(horizonMin ?? PROBABILITY_HORIZON_MINUTES) || PROBABILITY_HORIZON_MINUTES);
+  const baseRateAtRef = Math.log(2) / PROBABILITY_HORIZON_MINUTES;
+
+  if (useSoftplus) {
+    const beta = Math.max(0, Number(mlBeta ?? 2.0));
+    const bias = Math.log(Math.exp(baseRateAtRef) - 1);
+    const logRatio = Math.log(Math.max(1e-9, lambdaEff) / safeRef);
+    const rate = Math.max(0, Number(rainArrivalMultiplier ?? 1)) * softplus(bias + beta * logRatio);
+    return clamp01(1 - Math.exp(-rate * T));
+  }
+
+  return clamp01(1 - Math.exp(-Math.max(0, Number(rainArrivalMultiplier ?? 1)) * baseRateAtRef * (lambdaEff / safeRef) * T));
+}
+
+function formatExplainShare(label, share) {
+  return `${Math.round(clamp01(share) * 100)}% of this 10-minute probability comes from ${label}.`;
+}
+
+function formatExplainRelativeIntensity(relativeIntensity) {
+  const pct = Math.round(Math.max(0, Number(relativeIntensity ?? 0)) * 100);
+  if (pct >= 125) {
+    return `This spot is running well above the map's reference intensity at about ${pct}% of baseline.`;
+  }
+  if (pct >= 95) {
+    return `This spot is running near the map's reference intensity at about ${pct}% of baseline.`;
+  }
+  return `This spot is running below the map's reference intensity at about ${pct}% of baseline.`;
+}
+
+function formatExplainRainLiftPercent(rainLiftPercent) {
+  const pct = Math.max(0, Math.round(Number(rainLiftPercent ?? 0)));
+  return pct > 0
+    ? `Rain is adding about ${pct}% lift to modeled demand right now.`
+    : "Rain lift is off right now.";
+}
+
 export function probabilityOfGoodOrder(
   { lat, lon },
   restaurants,
@@ -446,6 +495,7 @@ export function probabilityOfGoodOrder(
     residentialAnchors,
     residentialTauMeters,
     residentialDemandWeight,
+    rainBoost,
     lambdaRef,
     tipEmphasis,
     predictionModel,
@@ -453,6 +503,11 @@ export function probabilityOfGoodOrder(
     mlBeta,
   }
 ) {
+  // Contract: pGood is always the probability of a good order within
+  // the next 10 minutes at this location under current modeled
+  // conditions. Public proxies shape the probability field, but the
+  // exposed horizon stays fixed for comparability across the map.
+  //
   // Interpretable probability model built from public proxies:
   // - Merchant intensity ~ demand opportunity
   // - Parking intensity ~ (very rough) competition proxy
@@ -475,18 +530,22 @@ export function probabilityOfGoodOrder(
   const resolvedDayOfWeek = dayOfWeek ?? new Date().getDay();
   const demandProfile = temporalDemandProfile(hour, resolvedDayOfWeek);
   const residentialWeighting = Math.max(0, Number(residentialDemandWeight ?? 0.35));
+  const resolvedRainBoost = Math.max(0, Math.min(0.25, Number(rainBoost ?? 0)));
+  const merchantRainMultiplier = 1 + resolvedRainBoost;
+  const residentialRainMultiplier = 1 + resolvedRainBoost * 1.35;
 
   const comp = Math.max(0, competitionStrength ?? 0);
-  const merchantDemand = demandProfile.merchant * m.total;
-  const residentialDemand = residentialWeighting * demandProfile.residential * residentialIntensity;
+  const merchantDemand = merchantRainMultiplier * demandProfile.merchant * m.total;
+  const residentialDemand = residentialRainMultiplier * residentialWeighting * demandProfile.residential * residentialIntensity;
   const totalDemand = merchantDemand + residentialDemand;
+  const rainArrivalMultiplier = 1 + resolvedRainBoost * (1.1 + 0.35 * (totalDemand > 0 ? residentialDemand / totalDemand : 0));
   const lambdaEff = (merchantDemand + residentialDemand) / (1 + comp * pIntensity);
 
   const ref = Math.max(1e-9, lambdaRef ?? lambdaEff ?? 1e-9);
-  const T = Math.max(1, horizonMin ?? 10);
+  const T = PROBABILITY_HORIZON_MINUTES;
 
   // Calibrate so that when lambdaEff==ref and T==10 min, P(any order) ≈ 50%.
-  const Tref = 10;
+  const Tref = PROBABILITY_HORIZON_MINUTES;
   const baseRateAtRef = Math.log(2) / Tref;
 
   const closeness = Math.exp(-m.expectedDist / 900);
@@ -502,21 +561,16 @@ export function probabilityOfGoodOrder(
   const sigR = closeness;
   const sigD = comp > 0 ? (comp * pIntensity) / (1 + comp * pIntensity) : 0;
   const selectedPredictionModel = resolvePredictionModelName(predictionModel, useML);
+  const usesSoftplusRate = selectedPredictionModel === "softplus";
   const isWeekend = resolvedDayOfWeek === 0 || resolvedDayOfWeek === 6;
 
-  let baselinePAny;
-  if (useML) {
-    // “ML-style” predictor: learnable-shaped rate function (positive via softplus).
-    // We keep the bias fixed so ref corresponds to baseRateAtRef.
-    const beta = Math.max(0, Number(mlBeta ?? 2.0));
-    const bias = Math.log(Math.exp(baseRateAtRef) - 1); // softplus^{-1}(baseRateAtRef)
-    const logRatio = Math.log(Math.max(1e-9, lambdaEff) / ref);
-    const rate = softplus(bias + beta * logRatio);
-    baselinePAny = 1 - Math.exp(-rate * T);
-  } else {
-    // Simple proportional rate model.
-    baselinePAny = 1 - Math.exp(-baseRateAtRef * (lambdaEff / ref) * T);
-  }
+  const baselinePAny = arrivalProbabilityFromLambda(lambdaEff, {
+    ref,
+    horizonMin: T,
+    rainArrivalMultiplier,
+    useSoftplus: usesSoftplusRate,
+    mlBeta,
+  });
 
   let pAny = baselinePAny;
   let quality = legacyQuality;
@@ -555,6 +609,33 @@ export function probabilityOfGoodOrder(
   // Ensure “good” is always <= “any” and never collapses too low.
   const pGood = clamp01(pAny * (0.25 + 0.75 * quality));
   const band = betaStabilityBand(pGood, stabilitySupport);
+  const qualityMultiplier = 0.25 + 0.75 * quality;
+  const pAnyLow = Math.min(
+    arrivalProbabilityFromLambda(lambdaEff * 0.7, {
+      ref,
+      horizonMin: T,
+      rainArrivalMultiplier,
+      useSoftplus: usesSoftplusRate,
+      mlBeta,
+    }),
+    pAny,
+  );
+  const pAnyHigh = Math.max(
+    arrivalProbabilityFromLambda(lambdaEff * 1.3, {
+      ref,
+      horizonMin: T,
+      rainArrivalMultiplier,
+      useSoftplus: usesSoftplusRate,
+      mlBeta,
+    }),
+    pAny,
+  );
+  const pGoodLow = Math.min(clamp01(pAnyLow * qualityMultiplier), pGood);
+  const pGoodHigh = Math.max(clamp01(pAnyHigh * qualityMultiplier), pGood);
+  const merchantShare = totalDemand > 0 ? merchantDemand / totalDemand : 0;
+  const residentialShare = totalDemand > 0 ? residentialDemand / totalDemand : 0;
+  const relativeIntensity = lambdaEff / ref;
+  const rainLiftPercent = resolvedRainBoost * 100;
 
   // --- Four-signal decomposition ---
   // GOVERNANCE §2: Signals {I, M, R, D} are semantically independent
@@ -572,17 +653,28 @@ export function probabilityOfGoodOrder(
 
   return {
     pGood,
+    pGood_low: pGoodLow,
+    pGood_mid: pGood,
+    pGood_high: pGoodHigh,
     pAny,
+    pAny_low: pAnyLow,
+    pAny_mid: pAny,
+    pAny_high: pAnyHigh,
     quality,
     tipProxy: tipAdj,
     lambdaEff,
     lambdaRef: ref,
+    horizonMin: T,
     expectedDistMeters: Math.round(m.expectedDist),
     merchantIntensity: m.total,
     merchantDemand,
     residentialIntensity,
     residentialDemand,
-    residentialShare: totalDemand > 0 ? residentialDemand / totalDemand : 0,
+    merchantShare,
+    residentialShare,
+    relativeIntensity,
+    rainBoost: resolvedRainBoost,
+    rainLiftPercent,
     competitionIntensity: pIntensity,
     ticketMean: m.ticketMean,
     effectiveMerchants: m.effectiveMerchants,
@@ -606,6 +698,12 @@ export function probabilityOfGoodOrder(
     timeBucketName: bucket.name,
     timeBucketLabel: bucket.label,
     advisory,
+    explain: {
+      merchantShare: formatExplainShare("nearby merchants", merchantShare),
+      residentialShare: formatExplainShare("surrounding homes and apartments", residentialShare),
+      relativeIntensity: formatExplainRelativeIntensity(relativeIntensity),
+      rainLiftPercent: formatExplainRainLiftPercent(rainLiftPercent),
+    },
   };
 }
 
@@ -634,6 +732,7 @@ export function buildGridProbabilityHeat(bounds, restaurants, parkingCandidates,
   const residentialAnchors = params.residentialAnchors ?? [];
   const residentialTauMeters = Number(params.residentialTauMeters ?? Math.max(400, tauMeters * 1.6));
   const residentialDemandWeight = Number(params.residentialDemandWeight ?? 0.35);
+  const rainBoost = Math.max(0, Math.min(0.25, Number(params.rainBoost ?? 0)));
   const tipEmphasis = Number(params.tipEmphasis ?? 0.55);
   const predictionModel = String(params.predictionModel ?? "legacy");
   const useML = Boolean(params.useML);
@@ -650,8 +749,8 @@ export function buildGridProbabilityHeat(bounds, restaurants, parkingCandidates,
       const residentialIntensity = residentialAnchors.length
         ? residentialIntensityAtPoint({ lat, lon }, residentialAnchors, residentialTauMeters, hour, dayOfWeek)
         : 0;
-      const merchantDemand = demandProfile.merchant * m.total;
-      const residentialDemand = Math.max(0, residentialDemandWeight) * demandProfile.residential * residentialIntensity;
+      const merchantDemand = (1 + rainBoost) * demandProfile.merchant * m.total;
+      const residentialDemand = (1 + rainBoost * 1.35) * Math.max(0, residentialDemandWeight) * demandProfile.residential * residentialIntensity;
       const lambdaEff = (merchantDemand + residentialDemand) / (1 + Math.max(0, competitionStrength) * pIntensity);
 
       nodes.push({ lat, lon, m, pIntensity, residentialIntensity, lambdaEff });
@@ -664,6 +763,8 @@ export function buildGridProbabilityHeat(bounds, restaurants, parkingCandidates,
 
   const pts = [];
   const pGoodValues = [];
+  const pGoodLowValues = [];
+  const pGoodHighValues = [];
   const compositeValues = [];
   for (const n of nodes) {
     const r = probabilityOfGoodOrder(
@@ -680,6 +781,7 @@ export function buildGridProbabilityHeat(bounds, restaurants, parkingCandidates,
         residentialAnchors,
         residentialTauMeters,
         residentialDemandWeight,
+        rainBoost,
         tipEmphasis,
         predictionModel,
         lambdaRef,
@@ -689,10 +791,14 @@ export function buildGridProbabilityHeat(bounds, restaurants, parkingCandidates,
     );
     pts.push([n.lat, n.lon, r.pGood]);
     pGoodValues.push(r.pGood);
+    pGoodLowValues.push(r.pGood_low);
+    pGoodHighValues.push(r.pGood_high);
     compositeValues.push(r.composite);
   }
 
   pGoodValues.sort((a, b) => a - b);
+  pGoodLowValues.sort((a, b) => a - b);
+  pGoodHighValues.sort((a, b) => a - b);
   compositeValues.sort((a, b) => a - b);
 
   const bucket = timeBucket(hour);
@@ -705,16 +811,23 @@ export function buildGridProbabilityHeat(bounds, restaurants, parkingCandidates,
       compositeSamplesSorted: compositeValues,
       medianScore: quantile(pGoodValues, 0.5),
       topDecileScore: quantile(pGoodValues, 0.9),
+      medianProbabilityLow: quantile(pGoodLowValues, 0.5),
+      medianProbabilityMid: quantile(pGoodValues, 0.5),
+      medianProbabilityHigh: quantile(pGoodHighValues, 0.5),
+      topDecileProbabilityLow: quantile(pGoodLowValues, 0.9),
+      topDecileProbabilityMid: quantile(pGoodValues, 0.9),
+      topDecileProbabilityHigh: quantile(pGoodHighValues, 0.9),
       medianComposite: quantile(compositeValues, 0.5),
       topDecileComposite: quantile(compositeValues, 0.9),
       sampleCount: pGoodValues.length,
       hour,
       dayOfWeek,
       tauMeters,
-      horizonMin,
+      horizonMin: PROBABILITY_HORIZON_MINUTES,
       competitionStrength,
       residentialTauMeters,
       residentialDemandWeight,
+      rainBoost,
       competitionTauMeters,
       predictionModel,
       timeBucketName: bucket.name,
