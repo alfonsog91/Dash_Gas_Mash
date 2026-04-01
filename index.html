@@ -224,6 +224,21 @@
           </form>
           <div id="searchResults" class="search-results" role="listbox" aria-label="Search results" aria-hidden="true"></div>
         </div>
+        <section id="navigationCard" class="navigation-card" aria-live="polite" hidden>
+          <div class="navigation-card-head">
+            <div class="navigation-card-copy">
+              <div class="navigation-card-label">DGM route</div>
+              <div id="navigationTitle" class="navigation-card-title"></div>
+              <div id="navigationMeta" class="navigation-card-meta"></div>
+            </div>
+            <div class="navigation-card-actions">
+              <button id="navigationRecenter" class="navigation-card-button" type="button">Route</button>
+              <button id="navigationClear" class="navigation-card-button is-secondary" type="button">Clear</button>
+            </div>
+          </div>
+          <div id="navigationStatus" class="navigation-status" hidden></div>
+          <ol id="navigationSteps" class="navigation-steps"></ol>
+        </section>
         <button id="locateMe" class="locate-me" type="button" aria-label="Find my current location" title="Find my current location">ME</button>
       </main>
     </div>
@@ -239,6 +254,6 @@
       crossorigin=""
     ></script>
 
-    <script type="module" src="./app.js?v=20260401-address-search"></script>
+    <script type="module" src="./app.js?v=20260401-inapp-nav"></script>
   </body>
 </html>

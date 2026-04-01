@@ -32,13 +32,14 @@ import {
   selectParkingSetSubmodular,
 } from "./optimizer.js?v=20260401-learnedglm";
 
-const APP_BUILD_ID = "20260401-address-search";
+const APP_BUILD_ID = "20260401-inapp-nav";
 console.info("[DGM] app build", APP_BUILD_ID);
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
 const SHADOW_LEARNED_MODEL = Boolean(window.DGM_SHADOW_PREDICTION_MODEL);
 const MAPTILER_GEOCODING_API_URL = "https://api.maptiler.com/geocoding";
 const NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search";
+const OSRM_ROUTE_API_URL = "https://router.project-osrm.org/route/v1/driving";
 
 if (window.location.protocol === "file:") {
   alert(
@@ -61,6 +62,7 @@ const SOURCE_HEAT = "heat";
 const SOURCE_SPOT = "spot";
 const SOURCE_CURRENT_LOCATION = "current-location";
 const SOURCE_CURRENT_LOCATION_ACCURACY = "current-location-accuracy";
+const SOURCE_ROUTE = "route";
 
 const LAYER_HEAT = "heat-layer";
 const LAYER_RESTAURANTS = "restaurants-layer";
@@ -69,6 +71,8 @@ const LAYER_SPOT = "spot-layer";
 const LAYER_CURRENT_LOCATION_ACCURACY_FILL = "current-location-accuracy-fill";
 const LAYER_CURRENT_LOCATION_ACCURACY_LINE = "current-location-accuracy-line";
 const LAYER_CURRENT_LOCATION_DOT = "current-location-dot";
+const LAYER_ROUTE_CASING = "route-casing-layer";
+const LAYER_ROUTE = "route-layer";
 
 const map = new maplibregl.Map({
   container: "map",
@@ -92,6 +96,8 @@ let searchDebounceTimer = null;
 let renderedSearchResults = [];
 let searchResultPressActive = false;
 let searchResultPressTimer = null;
+let activeRouteAbort = null;
+let activeRoute = null;
 
 const restaurantById = new Map();
 const parkingById = new Map();
@@ -146,6 +152,13 @@ const elSearchForm = document.getElementById("searchForm");
 const elSearchInput = document.getElementById("searchInput");
 const elSearchButton = document.getElementById("searchButton");
 const elSearchResults = document.getElementById("searchResults");
+const elNavigationCard = document.getElementById("navigationCard");
+const elNavigationTitle = document.getElementById("navigationTitle");
+const elNavigationMeta = document.getElementById("navigationMeta");
+const elNavigationStatus = document.getElementById("navigationStatus");
+const elNavigationSteps = document.getElementById("navigationSteps");
+const elNavigationRecenter = document.getElementById("navigationRecenter");
+const elNavigationClear = document.getElementById("navigationClear");
 
 const LOCATION_TARGET_ZOOM = 16;
 const LOCATION_ANIMATION_MIN_START_ZOOM = 14;
@@ -249,7 +262,27 @@ function openPopupAtLngLat(lngLat, html, popupOptions = {}) {
     .setHTML(html)
     .addTo(map);
 
+  const popupElement = popup.getElement();
+  const popupActionHandler = (event) => {
+    const routeButton = event.target.closest("[data-route-lat][data-route-lng]");
+    if (!routeButton || !popupElement.contains(routeButton)) return;
+
+    event.preventDefault();
+
+    startInAppNavigation({
+      lat: Number(routeButton.dataset.routeLat),
+      lng: Number(routeButton.dataset.routeLng),
+      title: routeButton.dataset.routeTitle || "Destination",
+    }).catch((error) => {
+      console.error(error);
+      setNavigationStatus(error?.message ?? String(error), "error");
+    });
+  };
+
+  popupElement.addEventListener("click", popupActionHandler);
+
   popup.on("close", () => {
+    popupElement.removeEventListener("click", popupActionHandler);
     if (activePopup === popup) {
       activePopup = null;
     }
@@ -267,44 +300,251 @@ function setSourceData(sourceId, data) {
   }
 }
 
-function isIOSDevice() {
-  const userAgent = String(navigator.userAgent || "");
-  const platform = String(navigator.platform || "");
-  const maxTouchPoints = Number(navigator.maxTouchPoints || 0);
-  return /iPad|iPhone|iPod/i.test(userAgent) || (platform === "MacIntel" && maxTouchPoints > 1);
+function renderNavigationAction(lat, lon, label = "Start route", destinationTitle = "Destination") {
+  return `<div class="popup-actions"><button class="popup-action" type="button" data-route-lat="${Number(lat).toFixed(6)}" data-route-lng="${Number(lon).toFixed(6)}" data-route-title="${escapeHtml(destinationTitle)}">${escapeHtml(label)}</button></div>`;
 }
 
-function buildGoogleMapsNavigationUrl(lat, lon) {
-  const destination = `${Number(lat).toFixed(6)},${Number(lon).toFixed(6)}`;
-  const base = new URL("https://www.google.com/maps/dir/");
-  base.searchParams.set("api", "1");
-  base.searchParams.set("destination", destination);
-  base.searchParams.set("travelmode", "driving");
-  if (lastCurrentLocation) {
-    base.searchParams.set("origin", `${lastCurrentLocation.lat.toFixed(6)},${lastCurrentLocation.lng.toFixed(6)}`);
+function formatRouteDistance(distanceMeters) {
+  const meters = Math.max(0, Number(distanceMeters) || 0);
+  if (meters >= 1609.344) {
+    return `${(meters / 1609.344).toFixed(meters >= 16093 ? 0 : 1)} mi`;
   }
-  return base.toString();
+  return `${Math.round(meters)} m`;
 }
 
-function buildAppleMapsNavigationUrl(lat, lon) {
-  const destination = `${Number(lat).toFixed(6)},${Number(lon).toFixed(6)}`;
-  const base = new URL("https://maps.apple.com/");
-  base.searchParams.set("daddr", destination);
-  base.searchParams.set("dirflg", "d");
-  if (lastCurrentLocation) {
-    base.searchParams.set("saddr", `${lastCurrentLocation.lat.toFixed(6)},${lastCurrentLocation.lng.toFixed(6)}`);
+function formatRouteDuration(durationSeconds) {
+  const totalMinutes = Math.max(1, Math.round((Number(durationSeconds) || 0) / 60));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours <= 0) return `${totalMinutes} min`;
+  if (minutes === 0) return `${hours} hr`;
+  return `${hours} hr ${minutes} min`;
+}
+
+function buildRouteBounds(coordinates) {
+  if (!coordinates?.length) return null;
+  const bounds = new maplibregl.LngLatBounds(coordinates[0], coordinates[0]);
+  for (const coordinate of coordinates) {
+    bounds.extend(coordinate);
   }
-  return base.toString();
+  return bounds;
 }
 
-function buildNavigationUrl(lat, lon) {
-  return isIOSDevice()
-    ? buildAppleMapsNavigationUrl(lat, lon)
-    : buildGoogleMapsNavigationUrl(lat, lon);
+function fitRouteToView(route) {
+  const bounds = buildRouteBounds(route?.geometry?.coordinates);
+  if (!bounds) return;
+
+  map.fitBounds(bounds, {
+    padding: { top: 96, right: 32, bottom: 220, left: 32 },
+    duration: 850,
+    maxZoom: 16,
+  });
 }
 
-function renderNavigationAction(lat, lon, label = "Navigate") {
-  return `<div class="popup-actions"><a class="popup-action" href="${escapeHtml(buildNavigationUrl(lat, lon))}" rel="noopener noreferrer">${escapeHtml(label)}</a></div>`;
+function clearRouteOverlay() {
+  setSourceData(SOURCE_ROUTE, featureCollection());
+}
+
+function setNavigationCardVisible(isVisible) {
+  if (!elNavigationCard) return;
+  elNavigationCard.hidden = !isVisible;
+  elNavigationCard.classList.toggle("is-active", Boolean(isVisible));
+}
+
+function setNavigationStatus(message, tone = "info") {
+  if (!elNavigationStatus) return;
+  const text = String(message || "").trim();
+  elNavigationStatus.textContent = text;
+  elNavigationStatus.dataset.tone = tone;
+  elNavigationStatus.hidden = !text;
+}
+
+function buildRouteStepInstruction(step) {
+  const maneuver = step?.maneuver || {};
+  const type = String(maneuver.type || "continue");
+  const modifier = String(maneuver.modifier || "").replace(/_/g, " ");
+  const road = step?.name ? ` on ${step.name}` : "";
+
+  if (maneuver.instruction) return maneuver.instruction;
+
+  switch (type) {
+    case "depart":
+      return `Head ${modifier || "out"}${road}`.trim();
+    case "arrive":
+      return "Arrive at your destination";
+    case "turn":
+      return `Turn ${modifier}${road}`.trim();
+    case "merge":
+      return `Merge${road}`.trim();
+    case "fork":
+      return `Keep ${modifier || "ahead"}${road}`.trim();
+    case "roundabout":
+    case "rotary":
+      return `Enter the roundabout${road}`.trim();
+    case "end of road":
+      return `At the end of the road, turn ${modifier}${road}`.trim();
+    default:
+      return `Continue ${modifier}${road}`.trim();
+  }
+}
+
+function renderNavigationCard(route) {
+  if (!elNavigationCard || !elNavigationTitle || !elNavigationMeta || !elNavigationSteps) return;
+
+  elNavigationTitle.textContent = route.destination.title || "Route";
+  elNavigationMeta.textContent = `${formatRouteDistance(route.distanceMeters)} · ${formatRouteDuration(route.durationSeconds)}`;
+  elNavigationSteps.innerHTML = route.steps.length
+    ? route.steps.map((step, index) => `
+      <li class="navigation-step">
+        <span class="navigation-step-index">${index + 1}</span>
+        <div class="navigation-step-body">
+          <div class="navigation-step-text">${escapeHtml(buildRouteStepInstruction(step))}</div>
+          <div class="navigation-step-meta">${escapeHtml(formatRouteDistance(step.distance))}</div>
+        </div>
+      </li>
+    `).join("")
+    : `<li class="navigation-step navigation-step--empty"><div class="navigation-step-body"><div class="navigation-step-text">Route ready.</div></div></li>`;
+
+  setNavigationCardVisible(true);
+  setNavigationStatus("", "info");
+}
+
+async function fetchDrivingRoute(origin, destination, { signal } = {}) {
+  const routeUrl = new URL(`${OSRM_ROUTE_API_URL}/${origin.lng.toFixed(6)},${origin.lat.toFixed(6)};${destination.lng.toFixed(6)},${destination.lat.toFixed(6)}`);
+  routeUrl.searchParams.set("alternatives", "false");
+  routeUrl.searchParams.set("overview", "full");
+  routeUrl.searchParams.set("steps", "true");
+  routeUrl.searchParams.set("geometries", "geojson");
+
+  const response = await fetch(routeUrl, {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+
+  if (!response.ok) {
+    throw new Error(`Route request failed (${response.status})`);
+  }
+
+  const payload = await response.json();
+  const route = payload?.routes?.[0];
+  if (!route?.geometry?.coordinates?.length) {
+    throw new Error("No drivable route was returned for that destination.");
+  }
+
+  return {
+    geometry: route.geometry,
+    distanceMeters: Number(route.distance) || 0,
+    durationSeconds: Number(route.duration) || 0,
+    steps: Array.isArray(route.legs)
+      ? route.legs.flatMap((leg) => Array.isArray(leg.steps) ? leg.steps : [])
+      : [],
+  };
+}
+
+function setCurrentLocationState(latlng, accuracyMeters, { openPopup = true } = {}) {
+  const currentLngLat = lngLatToObject(latlng);
+
+  const accuracyRadius = Math.max(Number(accuracyMeters) || 0, 12);
+  lastCurrentLocation = currentLngLat;
+  lastCurrentLocationAccuracyMeters = accuracyRadius;
+
+  if (accuracyRadius <= MAX_VISIBLE_ACCURACY_RADIUS_METERS) {
+    const accuracyFeature = createCirclePolygonFeature(currentLngLat, accuracyRadius);
+    accuracyFeature.properties = { accuracyMeters: accuracyRadius };
+    setSourceData(SOURCE_CURRENT_LOCATION_ACCURACY, featureCollection([accuracyFeature]));
+  } else {
+    setSourceData(SOURCE_CURRENT_LOCATION_ACCURACY, featureCollection());
+  }
+
+  setSourceData(SOURCE_CURRENT_LOCATION, featureCollection([{
+    type: "Feature",
+    geometry: {
+      type: "Point",
+      coordinates: [currentLngLat.lng, currentLngLat.lat],
+    },
+    properties: { accuracyMeters: accuracyRadius },
+  }]));
+
+  if (openPopup) {
+    openPopupAtLngLat(currentLngLat, `You are here<br/><span class="mono">Accuracy ±${Math.round(accuracyRadius)} m</span>`);
+  }
+
+  return currentLngLat;
+}
+
+async function ensureNavigationOrigin() {
+  if (lastCurrentLocation) return lastCurrentLocation;
+  if (!navigator.geolocation) {
+    throw new Error("Enable location to start an in-app route.");
+  }
+
+  const position = await getCurrentPosition();
+  return setCurrentLocationState(
+    { lat: position.coords.latitude, lng: position.coords.longitude },
+    position.coords.accuracy,
+    { openPopup: false }
+  );
+}
+
+async function startInAppNavigation(destination, options = {}) {
+  const resolvedDestination = {
+    lat: Number(destination?.lat),
+    lng: Number(destination?.lng),
+    title: String(destination?.title || "Destination"),
+  };
+
+  if (!Number.isFinite(resolvedDestination.lat) || !Number.isFinite(resolvedDestination.lng)) {
+    throw new Error("Destination coordinates are invalid.");
+  }
+
+  setNavigationCardVisible(true);
+  if (elNavigationTitle) elNavigationTitle.textContent = resolvedDestination.title;
+  if (elNavigationMeta) elNavigationMeta.textContent = "";
+  if (elNavigationSteps) elNavigationSteps.innerHTML = "";
+  setNavigationStatus(lastCurrentLocation ? "Calculating route…" : "Locating you…", "info");
+
+  const origin = await ensureNavigationOrigin();
+
+  if (activeRouteAbort) {
+    activeRouteAbort.abort();
+  }
+
+  activeRouteAbort = new AbortController();
+  const routeResult = await fetchDrivingRoute(origin, resolvedDestination, { signal: activeRouteAbort.signal });
+
+  activeRoute = {
+    ...routeResult,
+    origin,
+    destination: resolvedDestination,
+  };
+
+  setSourceData(SOURCE_ROUTE, featureCollection([{
+    type: "Feature",
+    geometry: routeResult.geometry,
+    properties: {},
+  }]));
+
+  renderNavigationCard(activeRoute);
+
+  if (options.fitToRoute !== false) {
+    fitRouteToView(activeRoute);
+  }
+
+  return activeRoute;
+}
+
+function clearInAppNavigation() {
+  if (activeRouteAbort) {
+    activeRouteAbort.abort();
+    activeRouteAbort = null;
+  }
+  activeRoute = null;
+  clearRouteOverlay();
+  setNavigationStatus("", "info");
+  if (elNavigationSteps) elNavigationSteps.innerHTML = "";
+  if (elNavigationMeta) elNavigationMeta.textContent = "";
+  if (elNavigationTitle) elNavigationTitle.textContent = "";
+  setNavigationCardVisible(false);
 }
 
 function setSearchResultsExpanded(isExpanded) {
@@ -512,7 +752,7 @@ function renderSearchPopupHtml(match) {
     ? `<div class="popup-detail">${escapeHtml(match.subtitle)}</div>`
     : "";
 
-  return `<div class="popup-friendly"><b>${escapeHtml(match.title)}</b>${subtitle}${renderNavigationAction(match.lat, match.lng, "Navigate here")}</div>`;
+  return `<div class="popup-friendly"><b>${escapeHtml(match.title)}</b>${subtitle}${renderNavigationAction(match.lat, match.lng, lastCurrentLocation ? "Refresh route" : "Start route", match.title)}</div>`;
 }
 
 function focusSearchMatch(match) {
@@ -543,12 +783,12 @@ function focusSearchMatch(match) {
     { closeButton: true }
   );
 
-  popup.on("close", () => {
-    if (activeSearchMarker === marker) {
-      marker.remove();
-      activeSearchMarker = null;
-    }
-  });
+  if (lastCurrentLocation) {
+    startInAppNavigation({ lat, lng, title: match.title }).catch((error) => {
+      console.error(error);
+      setNavigationStatus(error?.message ?? String(error), "error");
+    });
+  }
 }
 
 async function searchAddress(query) {
@@ -615,6 +855,7 @@ function ensureMapSourcesAndLayers() {
   map.addSource(SOURCE_SPOT, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_CURRENT_LOCATION, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_CURRENT_LOCATION_ACCURACY, { type: "geojson", data: featureCollection() });
+  map.addSource(SOURCE_ROUTE, { type: "geojson", data: featureCollection() });
 
   map.addLayer({
     id: LAYER_HEAT,
@@ -635,6 +876,36 @@ function ensureMapSourcesAndLayers() {
         0.75, "#ff9b3d",
         1, "#ff3b3b",
       ],
+    },
+  });
+
+  map.addLayer({
+    id: LAYER_ROUTE_CASING,
+    type: "line",
+    source: SOURCE_ROUTE,
+    layout: {
+      "line-cap": "round",
+      "line-join": "round",
+    },
+    paint: {
+      "line-color": "rgba(11, 15, 23, 0.82)",
+      "line-width": 10,
+      "line-opacity": 0.92,
+    },
+  });
+
+  map.addLayer({
+    id: LAYER_ROUTE,
+    type: "line",
+    source: SOURCE_ROUTE,
+    layout: {
+      "line-cap": "round",
+      "line-join": "round",
+    },
+    paint: {
+      "line-color": "#7fd4f8",
+      "line-width": 6,
+      "line-opacity": 0.96,
     },
   });
 
@@ -728,7 +999,7 @@ function ensureMapSourcesAndLayers() {
 
     const name = restaurant.tags?.name || restaurant.tags?.brand || "Food place";
     const amenity = restaurant.tags?.amenity || "";
-    openPopupAtLngLat(event.lngLat, `<b>${escapeHtml(name)}</b><br/>${escapeHtml(amenity)}`);
+    openPopupAtLngLat(event.lngLat, `<div class="popup-friendly"><b>${escapeHtml(name)}</b><div class="popup-detail">${escapeHtml(amenity)}</div>${renderNavigationAction(restaurant.lat, restaurant.lon, "Route here", name)}</div>`, { closeButton: true });
   });
 
   map.on("click", LAYER_PARKING, (event) => {
@@ -895,30 +1166,11 @@ function describeGeolocationError(error) {
 }
 
 function showCurrentLocation(latlng, accuracyMeters) {
-  const currentLngLat = lngLatToObject(latlng);
-
-  const accuracyRadius = Math.max(Number(accuracyMeters) || 0, 12);
-  lastCurrentLocation = currentLngLat;
-  lastCurrentLocationAccuracyMeters = accuracyRadius;
-
-  if (accuracyRadius <= MAX_VISIBLE_ACCURACY_RADIUS_METERS) {
-    const accuracyFeature = createCirclePolygonFeature(currentLngLat, accuracyRadius);
-    accuracyFeature.properties = { accuracyMeters: accuracyRadius };
-    setSourceData(SOURCE_CURRENT_LOCATION_ACCURACY, featureCollection([accuracyFeature]));
-  } else {
-    setSourceData(SOURCE_CURRENT_LOCATION_ACCURACY, featureCollection());
+  const currentLngLat = setCurrentLocationState(latlng, accuracyMeters, { openPopup: true });
+  if (activeRoute?.destination) {
+    startInAppNavigation(activeRoute.destination, { fitToRoute: false }).catch((error) => console.error(error));
   }
-
-  setSourceData(SOURCE_CURRENT_LOCATION, featureCollection([{
-    type: "Feature",
-    geometry: {
-      type: "Point",
-      coordinates: [currentLngLat.lng, currentLngLat.lat],
-    },
-    properties: { accuracyMeters: accuracyRadius },
-  }]));
-
-  openPopupAtLngLat(currentLngLat, `You are here<br/><span class="mono">Accuracy ±${Math.round(accuracyRadius)} m</span>`);
+  return currentLngLat;
 }
 
 function shouldAnimateLocate(latlng) {
@@ -1260,6 +1512,8 @@ function renderParkingPopupHtml(p, name, restaurants, tauMeters, hour) {
   <div class="popup-detail">${escapeHtml(renderDemandMixDetail(p))}</div>
   <div class="popup-advisory">Overall strength: ${formatPercent(p.composite)} · ${describeAdvisory(p.advisory)}</div>
 
+  ${renderNavigationAction(p.lat, p.lon, "Route here", name)}
+
   ${renderSignalBarsHtml(p.signals, p.timeBucketLabel)}
 
   <hr/>
@@ -1316,6 +1570,8 @@ function renderSpotPopupHtml(latlng, restaurants, tauMeters, hour) {
   <div class="popup-detail">Chance of <i>any</i> order: ${formatPercent(r.pAny)} · Avg ticket quality: ${formatPercent(r.tipProxy)}</div>
   <div class="popup-detail">${escapeHtml(renderDemandMixDetail(r))}</div>
   <div class="popup-advisory">Overall strength: ${formatPercent(r.composite)} · ${describeAdvisory(r.advisory)}</div>
+
+  ${renderNavigationAction(latlng.lat, latlng.lng, "Route here", "Selected spot")}
 
   ${renderSignalBarsHtml(r.signals, r.timeBucketLabel)}
 
@@ -1652,6 +1908,18 @@ if (elSearchResults) {
     event.preventDefault();
     selectRenderedSearchResult(button.dataset.index);
   });
+}
+
+if (elNavigationRecenter) {
+  elNavigationRecenter.addEventListener("click", () => {
+    if (activeRoute) {
+      fitRouteToView(activeRoute);
+    }
+  });
+}
+
+if (elNavigationClear) {
+  elNavigationClear.addEventListener("click", clearInAppNavigation);
 }
 
 map.on("moveend", checkDataFreshness);
