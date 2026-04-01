@@ -568,6 +568,27 @@ summary {
   overflow: hidden;
 }
 
+.navigation-banner {
+  margin: -2px -2px 12px;
+  padding: 14px 16px;
+  border: 1px solid rgba(127,212,248,0.18);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(45,108,223,0.28), rgba(0,212,255,0.14));
+}
+
+.navigation-banner-instruction {
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1.25;
+  color: var(--text);
+}
+
+.navigation-banner-meta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: rgba(233,238,247,0.78);
+}
+
 .navigation-card-head {
   display: flex;
   align-items: flex-start;
@@ -602,6 +623,7 @@ summary {
 .navigation-card-actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .navigation-card-button {
@@ -721,6 +743,10 @@ summary {
     bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
     max-width: none;
     max-height: min(36vh, 300px);
+  }
+
+  .navigation-banner-instruction {
+    font-size: 16px;
   }
 
   .navigation-card-head {

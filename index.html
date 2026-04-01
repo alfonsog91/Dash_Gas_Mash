@@ -225,6 +225,10 @@
           <div id="searchResults" class="search-results" role="listbox" aria-label="Search results" aria-hidden="true"></div>
         </div>
         <section id="navigationCard" class="navigation-card" aria-live="polite" hidden>
+          <div id="navigationBanner" class="navigation-banner" hidden>
+            <div id="navigationBannerInstruction" class="navigation-banner-instruction"></div>
+            <div id="navigationBannerMeta" class="navigation-banner-meta"></div>
+          </div>
           <div class="navigation-card-head">
             <div class="navigation-card-copy">
               <div class="navigation-card-label">DGM route</div>
@@ -232,6 +236,7 @@
               <div id="navigationMeta" class="navigation-card-meta"></div>
             </div>
             <div class="navigation-card-actions">
+              <button id="navigationVoice" class="navigation-card-button is-secondary" type="button" aria-pressed="true">Voice on</button>
               <button id="navigationRecenter" class="navigation-card-button" type="button">Route</button>
               <button id="navigationClear" class="navigation-card-button is-secondary" type="button">Clear</button>
             </div>

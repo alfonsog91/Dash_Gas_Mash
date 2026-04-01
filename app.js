@@ -40,6 +40,8 @@ const SHADOW_LEARNED_MODEL = Boolean(window.DGM_SHADOW_PREDICTION_MODEL);
 const MAPTILER_GEOCODING_API_URL = "https://api.maptiler.com/geocoding";
 const NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search";
 const OSRM_ROUTE_API_URL = "https://router.project-osrm.org/route/v1/driving";
+const NAV_REROUTE_MIN_DISTANCE_METERS = 30;
+const NAV_REROUTE_MIN_INTERVAL_MS = 4000;
 
 if (window.location.protocol === "file:") {
   alert(
@@ -98,6 +100,11 @@ let searchResultPressActive = false;
 let searchResultPressTimer = null;
 let activeRouteAbort = null;
 let activeRoute = null;
+let activeNavigationWatchId = null;
+let lastRouteOriginForRefresh = null;
+let lastRouteRefreshAt = 0;
+let navigationVoiceEnabled = true;
+let lastSpokenInstructionKey = "";
 
 const restaurantById = new Map();
 const parkingById = new Map();
@@ -153,12 +160,16 @@ const elSearchInput = document.getElementById("searchInput");
 const elSearchButton = document.getElementById("searchButton");
 const elSearchResults = document.getElementById("searchResults");
 const elNavigationCard = document.getElementById("navigationCard");
+const elNavigationBanner = document.getElementById("navigationBanner");
+const elNavigationBannerInstruction = document.getElementById("navigationBannerInstruction");
+const elNavigationBannerMeta = document.getElementById("navigationBannerMeta");
 const elNavigationTitle = document.getElementById("navigationTitle");
 const elNavigationMeta = document.getElementById("navigationMeta");
 const elNavigationStatus = document.getElementById("navigationStatus");
 const elNavigationSteps = document.getElementById("navigationSteps");
 const elNavigationRecenter = document.getElementById("navigationRecenter");
 const elNavigationClear = document.getElementById("navigationClear");
+const elNavigationVoice = document.getElementById("navigationVoice");
 
 const LOCATION_TARGET_ZOOM = 16;
 const LOCATION_ANIMATION_MIN_START_ZOOM = 14;
@@ -304,6 +315,25 @@ function renderNavigationAction(lat, lon, label = "Start route", destinationTitl
   return `<div class="popup-actions"><button class="popup-action" type="button" data-route-lat="${Number(lat).toFixed(6)}" data-route-lng="${Number(lon).toFixed(6)}" data-route-title="${escapeHtml(destinationTitle)}">${escapeHtml(label)}</button></div>`;
 }
 
+function stopNavigationSpeech() {
+  if (!("speechSynthesis" in window)) return;
+  window.speechSynthesis.cancel();
+}
+
+function updateNavigationVoiceButton() {
+  if (!elNavigationVoice) return;
+  if (!("speechSynthesis" in window)) {
+    elNavigationVoice.textContent = "Voice unavailable";
+    elNavigationVoice.disabled = true;
+    elNavigationVoice.setAttribute("aria-pressed", "false");
+    return;
+  }
+
+  elNavigationVoice.disabled = false;
+  elNavigationVoice.textContent = navigationVoiceEnabled ? "Voice on" : "Voice off";
+  elNavigationVoice.setAttribute("aria-pressed", String(navigationVoiceEnabled));
+}
+
 function formatRouteDistance(distanceMeters) {
   const meters = Math.max(0, Number(distanceMeters) || 0);
   if (meters >= 1609.344) {
@@ -335,7 +365,7 @@ function fitRouteToView(route) {
   if (!bounds) return;
 
   map.fitBounds(bounds, {
-    padding: { top: 96, right: 32, bottom: 220, left: 32 },
+    padding: { top: 180, right: 32, bottom: 220, left: 32 },
     duration: 850,
     maxZoom: 16,
   });
@@ -357,6 +387,11 @@ function setNavigationStatus(message, tone = "info") {
   elNavigationStatus.textContent = text;
   elNavigationStatus.dataset.tone = tone;
   elNavigationStatus.hidden = !text;
+}
+
+function getPrimaryRouteStep(route) {
+  if (!route?.steps?.length) return null;
+  return route.steps.find((step) => Number(step?.distance) > 15) || route.steps[0] || null;
 }
 
 function buildRouteStepInstruction(step) {
@@ -388,8 +423,58 @@ function buildRouteStepInstruction(step) {
   }
 }
 
+function speakNavigationInstruction(route, { force = false } = {}) {
+  if (!navigationVoiceEnabled || !("speechSynthesis" in window)) return;
+  const primaryStep = getPrimaryRouteStep(route);
+  if (!primaryStep) return;
+
+  const instruction = buildRouteStepInstruction(primaryStep);
+  const distanceText = formatRouteDistance(primaryStep.distance);
+  const speechKey = instruction;
+  if (!force && speechKey === lastSpokenInstructionKey) {
+    return;
+  }
+
+  lastSpokenInstructionKey = speechKey;
+  stopNavigationSpeech();
+
+  const utterance = new SpeechSynthesisUtterance(`${instruction}. In ${distanceText}.`);
+  utterance.rate = 1;
+  utterance.pitch = 1;
+  window.speechSynthesis.speak(utterance);
+}
+
+function setNavigationVoiceEnabled(isEnabled) {
+  navigationVoiceEnabled = Boolean(isEnabled);
+  updateNavigationVoiceButton();
+
+  if (!navigationVoiceEnabled) {
+    stopNavigationSpeech();
+    return;
+  }
+
+  if (activeRoute) {
+    speakNavigationInstruction(activeRoute, { force: true });
+  }
+}
+
 function renderNavigationCard(route) {
   if (!elNavigationCard || !elNavigationTitle || !elNavigationMeta || !elNavigationSteps) return;
+
+  const primaryStep = getPrimaryRouteStep(route);
+  if (elNavigationBanner) {
+    elNavigationBanner.hidden = false;
+  }
+  if (elNavigationBannerInstruction) {
+    elNavigationBannerInstruction.textContent = primaryStep
+      ? buildRouteStepInstruction(primaryStep)
+      : "Route ready";
+  }
+  if (elNavigationBannerMeta) {
+    elNavigationBannerMeta.textContent = primaryStep
+      ? `${formatRouteDistance(primaryStep.distance)} to next turn`
+      : `${formatRouteDistance(route.distanceMeters)} remaining`;
+  }
 
   elNavigationTitle.textContent = route.destination.title || "Route";
   elNavigationMeta.textContent = `${formatRouteDistance(route.distanceMeters)} · ${formatRouteDuration(route.durationSeconds)}`;
@@ -407,6 +492,8 @@ function renderNavigationCard(route) {
 
   setNavigationCardVisible(true);
   setNavigationStatus("", "info");
+  updateNavigationVoiceButton();
+  speakNavigationInstruction(route);
 }
 
 async function fetchDrivingRoute(origin, destination, { signal } = {}) {
@@ -472,6 +559,91 @@ function setCurrentLocationState(latlng, accuracyMeters, { openPopup = true } = 
   return currentLngLat;
 }
 
+function stopNavigationWatch() {
+  if (activeNavigationWatchId === null) return;
+  if (navigator.geolocation?.clearWatch) {
+    navigator.geolocation.clearWatch(activeNavigationWatchId);
+  }
+  activeNavigationWatchId = null;
+}
+
+async function refreshActiveRouteFromOrigin(origin, options = {}) {
+  if (!activeRoute?.destination) return null;
+  const now = Date.now();
+  const shouldThrottle = !options.force;
+  const movedEnough = !lastRouteOriginForRefresh
+    || haversineMeters(
+      lastRouteOriginForRefresh.lat,
+      lastRouteOriginForRefresh.lng,
+      origin.lat,
+      origin.lng
+    ) >= NAV_REROUTE_MIN_DISTANCE_METERS;
+
+  if (shouldThrottle) {
+    if (!movedEnough) return activeRoute;
+    if (now - lastRouteRefreshAt < NAV_REROUTE_MIN_INTERVAL_MS) return activeRoute;
+  }
+
+  lastRouteOriginForRefresh = origin;
+  lastRouteRefreshAt = now;
+  setNavigationStatus("Updating route…", "info");
+
+  if (activeRouteAbort) {
+    activeRouteAbort.abort();
+  }
+
+  activeRouteAbort = new AbortController();
+  const routeResult = await fetchDrivingRoute(origin, activeRoute.destination, { signal: activeRouteAbort.signal });
+
+  activeRoute = {
+    ...routeResult,
+    origin,
+    destination: activeRoute.destination,
+  };
+
+  setSourceData(SOURCE_ROUTE, featureCollection([{
+    type: "Feature",
+    geometry: routeResult.geometry,
+    properties: {},
+  }]));
+
+  renderNavigationCard(activeRoute);
+
+  if (options.fitToRoute) {
+    fitRouteToView(activeRoute);
+  }
+
+  return activeRoute;
+}
+
+function ensureNavigationWatch() {
+  if (!navigator.geolocation || activeNavigationWatchId !== null || !activeRoute?.destination) return;
+
+  activeNavigationWatchId = navigator.geolocation.watchPosition(
+    (position) => {
+      const origin = setCurrentLocationState(
+        { lat: position.coords.latitude, lng: position.coords.longitude },
+        position.coords.accuracy,
+        { openPopup: false }
+      );
+
+      refreshActiveRouteFromOrigin(origin, { fitToRoute: false }).catch((error) => {
+        if (error?.name === "AbortError") return;
+        console.error(error);
+        setNavigationStatus(error?.message ?? String(error), "error");
+      });
+    },
+    (error) => {
+      setNavigationStatus(describeGeolocationError(error), "error");
+    },
+    {
+      enableHighAccuracy: true,
+      timeout: 12000,
+      maximumAge: 2000,
+    }
+  );
+}
+
 async function ensureNavigationOrigin() {
   if (lastCurrentLocation) return lastCurrentLocation;
   if (!navigator.geolocation) {
@@ -517,6 +689,8 @@ async function startInAppNavigation(destination, options = {}) {
     origin,
     destination: resolvedDestination,
   };
+  lastRouteOriginForRefresh = origin;
+  lastRouteRefreshAt = Date.now();
 
   setSourceData(SOURCE_ROUTE, featureCollection([{
     type: "Feature",
@@ -525,6 +699,7 @@ async function startInAppNavigation(destination, options = {}) {
   }]));
 
   renderNavigationCard(activeRoute);
+  ensureNavigationWatch();
 
   if (options.fitToRoute !== false) {
     fitRouteToView(activeRoute);
@@ -538,9 +713,17 @@ function clearInAppNavigation() {
     activeRouteAbort.abort();
     activeRouteAbort = null;
   }
+  stopNavigationWatch();
+  stopNavigationSpeech();
   activeRoute = null;
+  lastRouteOriginForRefresh = null;
+  lastRouteRefreshAt = 0;
+  lastSpokenInstructionKey = "";
   clearRouteOverlay();
   setNavigationStatus("", "info");
+  if (elNavigationBanner) elNavigationBanner.hidden = true;
+  if (elNavigationBannerInstruction) elNavigationBannerInstruction.textContent = "";
+  if (elNavigationBannerMeta) elNavigationBannerMeta.textContent = "";
   if (elNavigationSteps) elNavigationSteps.innerHTML = "";
   if (elNavigationMeta) elNavigationMeta.textContent = "";
   if (elNavigationTitle) elNavigationTitle.textContent = "";
@@ -1168,7 +1351,7 @@ function describeGeolocationError(error) {
 function showCurrentLocation(latlng, accuracyMeters) {
   const currentLngLat = setCurrentLocationState(latlng, accuracyMeters, { openPopup: true });
   if (activeRoute?.destination) {
-    startInAppNavigation(activeRoute.destination, { fitToRoute: false }).catch((error) => console.error(error));
+    refreshActiveRouteFromOrigin(currentLngLat, { fitToRoute: false, force: true }).catch((error) => console.error(error));
   }
   return currentLngLat;
 }
@@ -1920,6 +2103,13 @@ if (elNavigationRecenter) {
 
 if (elNavigationClear) {
   elNavigationClear.addEventListener("click", clearInAppNavigation);
+}
+
+if (elNavigationVoice) {
+  updateNavigationVoiceButton();
+  elNavigationVoice.addEventListener("click", () => {
+    setNavigationVoiceEnabled(!navigationVoiceEnabled);
+  });
 }
 
 map.on("moveend", checkDataFreshness);
