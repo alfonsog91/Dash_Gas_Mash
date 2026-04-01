@@ -9,7 +9,7 @@
 //
 // ──────────────────────────────────────────────────────────────────
 
-import { fetchFoodPlaces, fetchParkingCandidates } from "./overpass.js";
+import { fetchFoodPlaces, fetchParkingCandidates } from "./overpass.js?v=20260331-clearlayers";
 import {
   buildGridProbabilityHeat,
   filterOpenRestaurants,
@@ -18,9 +18,12 @@ import {
   rankParking,
   topLikelyMerchantsForParking,
   timeBucket,
-} from "./model.js";
-import { renderModelDiagram } from "./diagram.js";
-import { isMipAvailable, optimizeParkingSet } from "./optimizer.js";
+} from "./model.js?v=20260331-clearlayers";
+import { renderModelDiagram } from "./diagram.js?v=20260331-clearlayers";
+import { isMipAvailable, optimizeParkingSet } from "./optimizer.js?v=20260331-clearlayers";
+
+const APP_BUILD_ID = "20260331-clearlayers";
+console.info("[DGM] app build", APP_BUILD_ID);
 
 if (window.location.protocol === "file:") {
   alert(

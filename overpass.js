@@ -15,7 +15,11 @@ const OVERPASS_URLS = [
 
 // Simple last-result cache per query type (food / parking).
 // Avoids redundant Overpass fetches when the view hasn't changed.
-const _overpassCache = { food: { key: null, data: null }, parking: { key: null, data: null } };
+const _overpassCache = {
+  food: { key: null, data: null },
+  parking: { key: null, data: null },
+  residential: { key: null, data: null },
+};
 
 function bboxToOverpass(bbox) {
   // Explicitly Number()-coerce each bound so a monkey-patched or
@@ -182,5 +186,32 @@ export async function fetchParkingCandidates(bbox, signal) {
   const json = await overpassQuery(query, signal);
   const result = extractPointElements(json);
   _overpassCache.parking = { key: ck, data: result };
+  return result;
+}
+
+export async function fetchResidentialAnchors(bbox, signal) {
+  const ck = bboxCacheKey(bbox);
+  if (_overpassCache.residential.key === ck && _overpassCache.residential.data !== null) {
+    return _overpassCache.residential.data;
+  }
+
+  const b = bboxToOverpass(bbox);
+
+  // Residential demand proxies: apartment-heavy buildings, housing footprints,
+  // and residential landuse centers. This remains heuristic public data only.
+  const query = `
+  [out:json][timeout:25];
+  (
+    node[building~"^(apartments|residential|house|detached|semidetached_house|terrace|dormitory)$"](${b});
+    way[building~"^(apartments|residential|house|detached|semidetached_house|terrace|dormitory)$"](${b});
+    node[landuse=residential](${b});
+    way[landuse=residential](${b});
+  );
+  out center tags qt;
+  `;
+
+  const json = await overpassQuery(query, signal);
+  const result = extractPointElements(json);
+  _overpassCache.residential = { key: ck, data: result };
   return result;
 }

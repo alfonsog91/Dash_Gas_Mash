@@ -183,6 +183,37 @@ function foodWeight(tags, hour) {
   return base;
 }
 
+function residentialWeight(tags, hour, dayOfWeek) {
+  const building = (tags?.building ?? "").toLowerCase();
+  const landuse = (tags?.landuse ?? "").toLowerCase();
+  const weekend = dayOfWeek === 0 || dayOfWeek === 6;
+
+  let base = 0.75;
+  if (building === "apartments") base = 1.4;
+  else if (building === "dormitory") base = 1.3;
+  else if (building === "residential") base = 1.0;
+  else if (building === "terrace" || building === "semidetached_house") base = 0.85;
+  else if (building === "house" || building === "detached") base = 0.65;
+  else if (landuse === "residential") base = 0.9;
+
+  if (hour >= 17 && hour < 22) base *= weekend ? 1.18 : 1.1;
+  else if (hour >= 11 && hour < 14) base *= weekend ? 0.95 : 0.85;
+  else if (hour >= 22 || hour < 5) base *= weekend ? 1.05 : 0.92;
+
+  return base;
+}
+
+function temporalDemandProfile(hour, dayOfWeek) {
+  const weekend = dayOfWeek === 0 || dayOfWeek === 6;
+  if (hour >= 6 && hour < 11) return { merchant: 0.75, residential: weekend ? 0.85 : 0.8 };
+  if (hour >= 11 && hour < 14) return { merchant: weekend ? 1.05 : 1.15, residential: weekend ? 0.8 : 0.72 };
+  if (hour >= 14 && hour < 17) return { merchant: 0.82, residential: weekend ? 0.9 : 0.78 };
+  if (hour >= 17 && hour < 20) return { merchant: weekend ? 1.22 : 1.15, residential: weekend ? 1.22 : 1.08 };
+  if (hour >= 20 && hour < 22) return { merchant: weekend ? 1.08 : 0.98, residential: weekend ? 1.15 : 1.02 };
+  if (hour >= 22) return { merchant: 0.82, residential: weekend ? 1.05 : 0.95 };
+  return { merchant: 0.72, residential: weekend ? 0.95 : 0.88 };
+}
+
 function cuisineList(tags) {
   const c = (tags?.cuisine ?? "").toLowerCase().trim();
   if (!c) return [];
@@ -297,6 +328,19 @@ function parkingIntensityAtPoint({ lat, lon }, parkingCandidates, tauMeters) {
   return sum;
 }
 
+function residentialIntensityAtPoint({ lat, lon }, residentialAnchors, tauMeters, hour, dayOfWeek) {
+  const tau = Math.max(1, tauMeters);
+  let sum = 0;
+
+  for (const anchor of residentialAnchors ?? []) {
+    const d = haversineMeters(lat, lon, anchor.lat, anchor.lon);
+    const weight = residentialWeight(anchor.tags ?? {}, hour, dayOfWeek);
+    sum += weight * Math.exp(-d / tau);
+  }
+
+  return sum;
+}
+
 // GOVERNANCE §3: Time partition {T_k} — disjoint buckets with
 // non-negative weights. Retrospective only (T-1); no extrapolation
 // (T-2); boundaries explicit (T-3). See CLASSIFICATION_REGISTRY 3.1–3.5.
@@ -346,9 +390,13 @@ export function probabilityOfGoodOrder(
   {
     tauMeters,
     hour,
+    dayOfWeek,
     horizonMin,
     competitionStrength,
     competitionTauMeters,
+    residentialAnchors,
+    residentialTauMeters,
+    residentialDemandWeight,
     lambdaRef,
     tipEmphasis,
     useML,
@@ -369,8 +417,18 @@ export function probabilityOfGoodOrder(
     ? parkingIntensityAtPoint({ lat, lon }, parkingCandidates, compTau)
     : 0;
 
+  const residentialTau = Math.max(250, Number(residentialTauMeters ?? Math.max(400, tauMeters * 1.6)));
+  const residentialIntensity = residentialAnchors?.length
+    ? residentialIntensityAtPoint({ lat, lon }, residentialAnchors, residentialTau, hour, dayOfWeek ?? new Date().getDay())
+    : 0;
+
+  const demandProfile = temporalDemandProfile(hour, dayOfWeek ?? new Date().getDay());
+  const residentialWeighting = Math.max(0, Number(residentialDemandWeight ?? 0.35));
+
   const comp = Math.max(0, competitionStrength ?? 0);
-  const lambdaEff = m.total / (1 + comp * pIntensity);
+  const merchantDemand = demandProfile.merchant * m.total;
+  const residentialDemand = residentialWeighting * demandProfile.residential * residentialIntensity;
+  const lambdaEff = (merchantDemand + residentialDemand) / (1 + comp * pIntensity);
 
   const ref = Math.max(1e-9, lambdaRef ?? lambdaEff ?? 1e-9);
   const T = Math.max(1, horizonMin ?? 10);
@@ -439,6 +497,7 @@ export function probabilityOfGoodOrder(
     lambdaRef: ref,
     expectedDistMeters: Math.round(m.expectedDist),
     merchantIntensity: m.total,
+    residentialIntensity,
     competitionIntensity: pIntensity,
     ticketMean: m.ticketMean,
     effectiveMerchants: m.effectiveMerchants,
@@ -476,13 +535,18 @@ export function buildGridProbabilityHeat(bounds, restaurants, parkingCandidates,
   const lambdas = [];
 
   const hour = Number(params.hour);
+  const dayOfWeek = Number(params.dayOfWeek ?? new Date().getDay());
   const tauMeters = Number(params.tauMeters);
   const horizonMin = Number(params.horizonMin);
   const competitionStrength = Number(params.competitionStrength);
+  const residentialAnchors = params.residentialAnchors ?? [];
+  const residentialTauMeters = Number(params.residentialTauMeters ?? Math.max(400, tauMeters * 1.6));
+  const residentialDemandWeight = Number(params.residentialDemandWeight ?? 0.35);
   const tipEmphasis = Number(params.tipEmphasis ?? 0.55);
   const useML = Boolean(params.useML);
   const mlBeta = Number(params.mlBeta ?? 2.0);
   const competitionTauMeters = Number(params.competitionTauMeters ?? Math.round(tauMeters * 0.8));
+  const demandProfile = temporalDemandProfile(hour, dayOfWeek);
 
   for (let lat = south; lat <= north; lat += dLat) {
     for (let lon = west; lon <= east; lon += dLon) {
@@ -490,9 +554,14 @@ export function buildGridProbabilityHeat(bounds, restaurants, parkingCandidates,
       const pIntensity = parkingCandidates?.length
         ? parkingIntensityAtPoint({ lat, lon }, parkingCandidates, Math.max(250, competitionTauMeters))
         : 0;
-      const lambdaEff = m.total / (1 + Math.max(0, competitionStrength) * pIntensity);
+      const residentialIntensity = residentialAnchors.length
+        ? residentialIntensityAtPoint({ lat, lon }, residentialAnchors, residentialTauMeters, hour, dayOfWeek)
+        : 0;
+      const merchantDemand = demandProfile.merchant * m.total;
+      const residentialDemand = Math.max(0, residentialDemandWeight) * demandProfile.residential * residentialIntensity;
+      const lambdaEff = (merchantDemand + residentialDemand) / (1 + Math.max(0, competitionStrength) * pIntensity);
 
-      nodes.push({ lat, lon, m, pIntensity, lambdaEff });
+      nodes.push({ lat, lon, m, pIntensity, residentialIntensity, lambdaEff });
       lambdas.push(lambdaEff);
     }
   }
@@ -511,9 +580,13 @@ export function buildGridProbabilityHeat(bounds, restaurants, parkingCandidates,
       {
         tauMeters,
         hour,
+        dayOfWeek,
         horizonMin,
         competitionStrength,
         competitionTauMeters,
+        residentialAnchors,
+        residentialTauMeters,
+        residentialDemandWeight,
         tipEmphasis,
         lambdaRef,
         useML,
@@ -542,9 +615,12 @@ export function buildGridProbabilityHeat(bounds, restaurants, parkingCandidates,
       topDecileComposite: quantile(compositeValues, 0.9),
       sampleCount: pGoodValues.length,
       hour,
+      dayOfWeek,
       tauMeters,
       horizonMin,
       competitionStrength,
+      residentialTauMeters,
+      residentialDemandWeight,
       competitionTauMeters,
       timeBucketName: bucket.name,
       timeBucketLabel: bucket.label,
