@@ -252,6 +252,7 @@ To enable `MapTiler`, edit [index.html](index.html) and set:
 - **ML sensitivity (\u03b2)**: How aggressively the ML-style predictor boosts high-intensity areas.
 - **Use MIP optimizer for top parking set**: Picks a set of $K$ parking lots maximizing predicted value while enforcing a minimum separation constraint.
 - **Suggested spots (K)** and **Min separation**: How many suggestions to show. Hard separation applies in MIP mode; the approximate fallback spreads picks through diminishing returns instead of a hard spacing rule.
+- **ME**: Keeps a live blue-dot location marker on the map and recenters the view on your current position when pressed. When the browser reports device heading, a subtle cone shows the current facing direction without auto-recentering during movement.
 
 ## How to interpret the percentages
 

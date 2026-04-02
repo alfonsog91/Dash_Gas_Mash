@@ -32,6 +32,10 @@ import {
   optimizeParkingSet,
   selectParkingSetSubmodular,
 } from "./optimizer.js?v=20260401-probability-contract";
+import {
+  buildHeadingConeFeature,
+  normalizeHeading,
+} from "./location-visualization.js";
 
 const APP_BUILD_ID = "20260401-probability-contract";
 console.info("[DGM] app build", APP_BUILD_ID);
@@ -87,6 +91,7 @@ const SOURCE_HEAT = "heat";
 const SOURCE_SPOT = "spot";
 const SOURCE_CURRENT_LOCATION = "current-location";
 const SOURCE_CURRENT_LOCATION_ACCURACY = "current-location-accuracy";
+const SOURCE_CURRENT_LOCATION_HEADING = "current-location-heading";
 const SOURCE_ROUTE = "route";
 
 const LAYER_HEAT = "heat-layer";
@@ -95,6 +100,7 @@ const LAYER_PARKING = "parking-layer";
 const LAYER_SPOT = "spot-layer";
 const LAYER_CURRENT_LOCATION_ACCURACY_FILL = "current-location-accuracy-fill";
 const LAYER_CURRENT_LOCATION_ACCURACY_LINE = "current-location-accuracy-line";
+const LAYER_CURRENT_LOCATION_HEADING = "current-location-heading";
 const LAYER_CURRENT_LOCATION_DOT = "current-location-dot";
 const LAYER_ROUTE_CASING = "route-casing-layer";
 const LAYER_ROUTE = "route-layer";
@@ -127,11 +133,12 @@ let searchResultPressActive = false;
 let searchResultPressTimer = null;
 let activeRouteAbort = null;
 let activeRoute = null;
-let activeNavigationWatchId = null;
+let activeLocationWatchId = null;
 let lastRouteOriginForRefresh = null;
 let lastRouteRefreshAt = 0;
 let navigationVoiceEnabled = true;
 let lastSpokenInstructionKey = "";
+let lastCurrentLocationHeading = null;
 
 const restaurantById = new Map();
 const parkingById = new Map();
@@ -209,6 +216,9 @@ const LOCATION_ANIMATION_MAX_DISTANCE_METERS = 5000;
 const LOCATION_PAN_DURATION_SECONDS = 0.9;
 const LOCATION_ZOOM_STEP = 3;
 const MAX_VISIBLE_ACCURACY_RADIUS_METERS = 45;
+const CURRENT_LOCATION_HEADING_CONE_RADIUS_METERS = 34;
+const CURRENT_LOCATION_HEADING_CONE_SPREAD_DEGREES = 34;
+const CURRENT_LOCATION_HEADING_CONE_STEP_DEGREES = 6;
 
 const INITIAL_LOCATION_ZOOM = 14;
 const INITIAL_LOCATION_TIMEOUT_MS = 8000;
@@ -415,9 +425,23 @@ function restoreMapDataSources() {
       },
       properties: { accuracyMeters: accuracyRadius },
     }]));
+    const headingFeature = buildHeadingConeFeature(
+      lastCurrentLocation,
+      lastCurrentLocationHeading,
+      {
+        radiusMeters: CURRENT_LOCATION_HEADING_CONE_RADIUS_METERS,
+        spreadDegrees: CURRENT_LOCATION_HEADING_CONE_SPREAD_DEGREES,
+        stepDegrees: CURRENT_LOCATION_HEADING_CONE_STEP_DEGREES,
+      }
+    );
+    setSourceData(
+      SOURCE_CURRENT_LOCATION_HEADING,
+      headingFeature ? featureCollection([headingFeature]) : featureCollection()
+    );
   } else {
     setSourceData(SOURCE_CURRENT_LOCATION, featureCollection());
     setSourceData(SOURCE_CURRENT_LOCATION_ACCURACY, featureCollection());
+    setSourceData(SOURCE_CURRENT_LOCATION_HEADING, featureCollection());
   }
 
   if (activeRoute?.geometry?.coordinates?.length) {
@@ -658,12 +682,13 @@ async function fetchDrivingRoute(origin, destination, { signal } = {}) {
   };
 }
 
-function setCurrentLocationState(latlng, accuracyMeters, { openPopup = true } = {}) {
+function setCurrentLocationState(latlng, accuracyMeters, { openPopup = true, heading = null } = {}) {
   const currentLngLat = lngLatToObject(latlng);
 
   const accuracyRadius = Math.max(Number(accuracyMeters) || 0, 12);
   lastCurrentLocation = currentLngLat;
   lastCurrentLocationAccuracyMeters = accuracyRadius;
+  lastCurrentLocationHeading = normalizeHeading(heading);
 
   if (accuracyRadius <= MAX_VISIBLE_ACCURACY_RADIUS_METERS) {
     const accuracyFeature = createCirclePolygonFeature(currentLngLat, accuracyRadius);
@@ -681,6 +706,19 @@ function setCurrentLocationState(latlng, accuracyMeters, { openPopup = true } = 
     },
     properties: { accuracyMeters: accuracyRadius },
   }]));
+  const headingFeature = buildHeadingConeFeature(
+    currentLngLat,
+    lastCurrentLocationHeading,
+    {
+      radiusMeters: CURRENT_LOCATION_HEADING_CONE_RADIUS_METERS,
+      spreadDegrees: CURRENT_LOCATION_HEADING_CONE_SPREAD_DEGREES,
+      stepDegrees: CURRENT_LOCATION_HEADING_CONE_STEP_DEGREES,
+    }
+  );
+  setSourceData(
+    SOURCE_CURRENT_LOCATION_HEADING,
+    headingFeature ? featureCollection([headingFeature]) : featureCollection()
+  );
 
   if (openPopup) {
     openPopupAtLngLat(currentLngLat, `You are here<br/><span class="mono">Accuracy ±${Math.round(accuracyRadius)} m</span>`);
@@ -689,12 +727,25 @@ function setCurrentLocationState(latlng, accuracyMeters, { openPopup = true } = 
   return currentLngLat;
 }
 
-function stopNavigationWatch() {
-  if (activeNavigationWatchId === null) return;
-  if (navigator.geolocation?.clearWatch) {
-    navigator.geolocation.clearWatch(activeNavigationWatchId);
+function handleTrackedPositionUpdate(position) {
+  const origin = setCurrentLocationState(
+    { lat: position.coords.latitude, lng: position.coords.longitude },
+    position.coords.accuracy,
+    {
+      openPopup: false,
+      heading: position.coords.heading,
+    }
+  );
+
+  if (activeRoute?.destination) {
+    refreshActiveRouteFromOrigin(origin, { fitToRoute: false }).catch((error) => {
+      if (error?.name === "AbortError") return;
+      console.error(error);
+      setNavigationStatus(error?.message ?? String(error), "error");
+    });
   }
-  activeNavigationWatchId = null;
+
+  return origin;
 }
 
 async function refreshActiveRouteFromOrigin(origin, options = {}) {
@@ -746,25 +797,19 @@ async function refreshActiveRouteFromOrigin(origin, options = {}) {
   return activeRoute;
 }
 
-function ensureNavigationWatch() {
-  if (!navigator.geolocation || activeNavigationWatchId !== null || !activeRoute?.destination) return;
+function ensureForegroundLocationWatch() {
+  if (!navigator.geolocation || activeLocationWatchId !== null) return;
 
-  activeNavigationWatchId = navigator.geolocation.watchPosition(
+  activeLocationWatchId = navigator.geolocation.watchPosition(
     (position) => {
-      const origin = setCurrentLocationState(
-        { lat: position.coords.latitude, lng: position.coords.longitude },
-        position.coords.accuracy,
-        { openPopup: false }
-      );
-
-      refreshActiveRouteFromOrigin(origin, { fitToRoute: false }).catch((error) => {
-        if (error?.name === "AbortError") return;
-        console.error(error);
-        setNavigationStatus(error?.message ?? String(error), "error");
-      });
+      handleTrackedPositionUpdate(position);
     },
     (error) => {
-      setNavigationStatus(describeGeolocationError(error), "error");
+      if (activeRoute?.destination) {
+        setNavigationStatus(describeGeolocationError(error), "error");
+      } else {
+        console.info("Foreground location tracking unavailable.", error);
+      }
     },
     {
       enableHighAccuracy: true,
@@ -784,7 +829,10 @@ async function ensureNavigationOrigin() {
   return setCurrentLocationState(
     { lat: position.coords.latitude, lng: position.coords.longitude },
     position.coords.accuracy,
-    { openPopup: false }
+    {
+      openPopup: false,
+      heading: position.coords.heading,
+    }
   );
 }
 
@@ -829,7 +877,7 @@ async function startInAppNavigation(destination, options = {}) {
   }]));
 
   renderNavigationCard(activeRoute);
-  ensureNavigationWatch();
+  ensureForegroundLocationWatch();
 
   if (options.fitToRoute !== false) {
     fitRouteToView(activeRoute);
@@ -843,7 +891,6 @@ function clearInAppNavigation() {
     activeRouteAbort.abort();
     activeRouteAbort = null;
   }
-  stopNavigationWatch();
   stopNavigationSpeech();
   activeRoute = null;
   lastRouteOriginForRefresh = null;
@@ -1168,6 +1215,7 @@ function ensureMapSourcesAndLayers() {
   map.addSource(SOURCE_SPOT, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_CURRENT_LOCATION, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_CURRENT_LOCATION_ACCURACY, { type: "geojson", data: featureCollection() });
+  map.addSource(SOURCE_CURRENT_LOCATION_HEADING, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_ROUTE, { type: "geojson", data: featureCollection() });
 
   map.addLayer({
@@ -1278,6 +1326,17 @@ function ensureMapSourcesAndLayers() {
     paint: {
       "line-color": "#a7e3ff",
       "line-width": 1,
+    },
+  });
+
+  map.addLayer({
+    id: LAYER_CURRENT_LOCATION_HEADING,
+    type: "fill",
+    source: SOURCE_CURRENT_LOCATION_HEADING,
+    paint: {
+      "fill-color": "#2d6cdf",
+      "fill-opacity": 0.14,
+      "fill-outline-color": "#8cd7ff",
     },
   });
 
@@ -1486,12 +1545,35 @@ function describeGeolocationError(error) {
   return error.message || "Unable to determine your location.";
 }
 
-function showCurrentLocation(latlng, accuracyMeters) {
-  const currentLngLat = setCurrentLocationState(latlng, accuracyMeters, { openPopup: true });
+function showCurrentLocation(latlng, accuracyMeters, heading = lastCurrentLocationHeading) {
+  const currentLngLat = setCurrentLocationState(latlng, accuracyMeters, { openPopup: true, heading });
   if (activeRoute?.destination) {
     refreshActiveRouteFromOrigin(currentLngLat, { fitToRoute: false, force: true }).catch((error) => console.error(error));
   }
   return currentLngLat;
+}
+
+function recenterOnCurrentLocation(latlng, accuracyMeters) {
+  const animateLocate = shouldAnimateLocate(latlng);
+  const targetZoom = clampMapZoom(LOCATION_TARGET_ZOOM);
+
+  closePanelIfOpen();
+
+  if (animateLocate) {
+    map.once("moveend", () => {
+      showCurrentLocation(latlng, accuracyMeters);
+    });
+
+    map.flyTo({ center: lngLatToArray(latlng), zoom: targetZoom, duration: 850 });
+  } else {
+    map.once("moveend", () => {
+      animateZoomToTarget(targetZoom, () => {
+        showCurrentLocation(latlng, accuracyMeters);
+      });
+    });
+
+    map.easeTo({ center: lngLatToArray(latlng), duration: LOCATION_PAN_DURATION_SECONDS * 1000 });
+  }
 }
 
 function shouldAnimateLocate(latlng) {
@@ -1550,6 +1632,14 @@ async function centerMapOnInitialLocationOnce() {
       timeout: INITIAL_LOCATION_TIMEOUT_MS,
       maximumAge: 300000,
     });
+    setCurrentLocationState(
+      { lat: position.coords.latitude, lng: position.coords.longitude },
+      position.coords.accuracy,
+      {
+        openPopup: false,
+        heading: position.coords.heading,
+      }
+    );
 
     map.jumpTo({
       center: [position.coords.longitude, position.coords.latitude],
@@ -1571,33 +1661,24 @@ async function locateUser() {
   setLocateButtonState(true);
 
   try {
-    const position = await getCurrentPosition();
-    const latlng = { lat: position.coords.latitude, lng: position.coords.longitude };
+    ensureForegroundLocationWatch();
 
-    const animateLocate = shouldAnimateLocate(latlng);
-    const targetZoom = clampMapZoom(LOCATION_TARGET_ZOOM);
-
-    closePanelIfOpen();
-    lastCurrentLocation = null;
-    lastCurrentLocationAccuracyMeters = null;
-    setSourceData(SOURCE_CURRENT_LOCATION, featureCollection());
-    setSourceData(SOURCE_CURRENT_LOCATION_ACCURACY, featureCollection());
-
-    if (animateLocate) {
-      map.once("moveend", () => {
-        showCurrentLocation(latlng, position.coords.accuracy);
-      });
-
-      map.flyTo({ center: lngLatToArray(latlng), zoom: targetZoom, duration: 850 });
-    } else {
-      map.once("moveend", () => {
-        animateZoomToTarget(targetZoom, () => {
-          showCurrentLocation(latlng, position.coords.accuracy);
-        });
-      });
-
-      map.easeTo({ center: lngLatToArray(latlng), duration: LOCATION_PAN_DURATION_SECONDS * 1000 });
+    if (lastCurrentLocation) {
+      recenterOnCurrentLocation(lastCurrentLocation, lastCurrentLocationAccuracyMeters);
+      return;
     }
+
+    const position = await getCurrentPosition();
+    const latlng = setCurrentLocationState(
+      { lat: position.coords.latitude, lng: position.coords.longitude },
+      position.coords.accuracy,
+      {
+        openPopup: false,
+        heading: position.coords.heading,
+      }
+    );
+
+    recenterOnCurrentLocation(latlng, position.coords.accuracy);
   } catch (error) {
     alert(describeGeolocationError(error));
   } finally {
@@ -2333,6 +2414,7 @@ map.on("load", () => {
     map.resize();
 
     await centerMapOnInitialLocationOnce();
+    ensureForegroundLocationWatch();
 
     loadForView().catch((err) => {
       console.error(err);

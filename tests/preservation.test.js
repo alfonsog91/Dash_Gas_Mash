@@ -20,6 +20,10 @@ import {
   expectedCalibrationError,
   generateSyntheticPredictionDataset,
 } from "../learned_predictor.js";
+import {
+  buildHeadingConeFeature,
+  normalizeHeading,
+} from "../location-visualization.js";
 
 const PASS = "\u2705";
 const FAIL = "\u274c";
@@ -513,6 +517,36 @@ function testLearnedModelSyntheticCalibration() {
   assert(learnedBrier < legacyBrier, `learned model improves Brier score on synthetic held-out data (${learnedBrier.toFixed(4)} < ${legacyBrier.toFixed(4)})`);
 }
 
+function testHeadingVisualizationHelpers() {
+  log("\n--- Heading visualization helpers ---");
+
+  assert(normalizeHeading(-10) === 350, "negative headings normalize into compass range");
+  assert(normalizeHeading(725) === 5, "overflow headings wrap into compass range");
+  assert(normalizeHeading(Number.NaN) === null, "invalid headings are ignored");
+
+  const northCone = buildHeadingConeFeature(
+    { lat: 34.1064, lng: -117.5931 },
+    0,
+    { radiusMeters: 30, spreadDegrees: 20, stepDegrees: 10 }
+  );
+  assert(northCone?.geometry?.type === "Polygon", "heading cone renders as a polygon");
+  assert(
+    northCone.geometry.coordinates[0].some(([lng, lat]) => approx(lng, -117.5931, 1e-6) && lat > 34.1064),
+    "north-facing cone projects forward of the blue dot"
+  );
+
+  const eastCone = buildHeadingConeFeature(
+    { lat: 34.1064, lng: -117.5931 },
+    90,
+    { radiusMeters: 30, spreadDegrees: 20, stepDegrees: 10 }
+  );
+  assert(
+    eastCone.geometry.coordinates[0].some(([lng, lat]) => lng > -117.5931 && approx(lat, 34.1064, 1e-4)),
+    "east-facing cone rotates with the supplied heading"
+  );
+  assert(buildHeadingConeFeature({ lat: 34.1064, lng: -117.5931 }, null) === null, "cone is omitted when heading is unavailable");
+}
+
 // ─── Run ──────────────────────────────────────────────────────
 
 export function runPreservationTests() {
@@ -538,6 +572,7 @@ export function runPreservationTests() {
   testSubmodularFallbackSelection();
   testLearnedModelAgreement();
   testLearnedModelSyntheticCalibration();
+  testHeadingVisualizationHelpers();
 
   log(`\n════════════════════════════════════════`);
   log(`Results: ${passed}/${total} passed`);
