@@ -20,6 +20,17 @@ import {
   expectedCalibrationError,
   generateSyntheticPredictionDataset,
 } from "../learned_predictor.js";
+import {
+  createStatPingGestureState,
+  noteStatPingTouchEnd,
+  noteStatPingTouchMove,
+  noteStatPingTouchStart,
+  releaseStatPingGesture,
+  shouldDelayStatPingFromTouch,
+  shouldSuppressStatPing,
+  STAT_PING_DOUBLE_TAP_THRESHOLD_MS,
+  STAT_PING_TOUCH_SUPPRESS_AFTER_GESTURE_MS,
+} from "../interaction.js";
 
 const PASS = "\u2705";
 const FAIL = "\u274c";
@@ -513,6 +524,31 @@ function testLearnedModelSyntheticCalibration() {
   assert(learnedBrier < legacyBrier, `learned model improves Brier score on synthetic held-out data (${learnedBrier.toFixed(4)} < ${legacyBrier.toFixed(4)})`);
 }
 
+function testStatPingTouchGestureGuard() {
+  log("\n--- Stat Ping touch gesture guard ---");
+
+  const singleTapState = createStatPingGestureState();
+  noteStatPingTouchStart(singleTapState, 1000, 1);
+  noteStatPingTouchEnd(singleTapState, 1030, 0);
+  assert(shouldDelayStatPingFromTouch(singleTapState, 1050), "single touch click is deferred during double-tap window");
+  assert(!shouldSuppressStatPing(singleTapState, 1050), "single touch click is not suppressed");
+
+  const doubleTapState = createStatPingGestureState();
+  noteStatPingTouchStart(doubleTapState, 2000, 1);
+  noteStatPingTouchEnd(doubleTapState, 2030, 0);
+  noteStatPingTouchStart(doubleTapState, 2030 + STAT_PING_DOUBLE_TAP_THRESHOLD_MS - 25, 1);
+  assert(shouldSuppressStatPing(doubleTapState, 2030 + STAT_PING_DOUBLE_TAP_THRESHOLD_MS - 25), "second tap inside threshold suppresses Stat Ping");
+  releaseStatPingGesture(doubleTapState, 2030 + STAT_PING_DOUBLE_TAP_THRESHOLD_MS + STAT_PING_TOUCH_SUPPRESS_AFTER_GESTURE_MS + 50);
+  assert(!shouldSuppressStatPing(doubleTapState, 2030 + STAT_PING_DOUBLE_TAP_THRESHOLD_MS + STAT_PING_TOUCH_SUPPRESS_AFTER_GESTURE_MS + 50), "suppression clears after the gesture window");
+
+  const zoomHoldState = createStatPingGestureState();
+  noteStatPingTouchStart(zoomHoldState, 3000, 1);
+  noteStatPingTouchEnd(zoomHoldState, 3030, 0);
+  noteStatPingTouchStart(zoomHoldState, 3200, 1);
+  noteStatPingTouchMove(zoomHoldState, 3300, 1);
+  assert(shouldSuppressStatPing(zoomHoldState, 3300), "double-tap-hold zoom keeps Stat Ping logic suppressed");
+}
+
 // ─── Run ──────────────────────────────────────────────────────
 
 export function runPreservationTests() {
@@ -538,6 +574,7 @@ export function runPreservationTests() {
   testSubmodularFallbackSelection();
   testLearnedModelAgreement();
   testLearnedModelSyntheticCalibration();
+  testStatPingTouchGestureGuard();
 
   log(`\n════════════════════════════════════════`);
   log(`Results: ${passed}/${total} passed`);

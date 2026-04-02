@@ -32,6 +32,18 @@ import {
   optimizeParkingSet,
   selectParkingSetSubmodular,
 } from "./optimizer.js?v=20260401-probability-contract";
+import {
+  createStatPingGestureState,
+  noteStatPingTouchCancel,
+  noteStatPingTouchEnd,
+  noteStatPingTouchMove,
+  noteStatPingTouchStart,
+  releaseStatPingGesture,
+  shouldDelayStatPingFromTouch,
+  shouldSuppressStatPing,
+  STAT_PING_DOUBLE_TAP_THRESHOLD_MS,
+  STAT_PING_TOUCH_SUPPRESS_AFTER_GESTURE_MS,
+} from "./interaction.js?v=20260402-mobile-gesture-fix";
 
 const APP_BUILD_ID = "20260401-probability-contract";
 console.info("[DGM] app build", APP_BUILD_ID);
@@ -128,10 +140,15 @@ let searchResultPressTimer = null;
 let activeRouteAbort = null;
 let activeRoute = null;
 let activeNavigationWatchId = null;
+let activeCurrentLocationWatchId = null;
 let lastRouteOriginForRefresh = null;
 let lastRouteRefreshAt = 0;
 let navigationVoiceEnabled = true;
 let lastSpokenInstructionKey = "";
+let shouldTrackCurrentLocation = false;
+let pendingStatPingTimeoutId = null;
+let pendingStatPingLatLng = null;
+const statPingGestureState = createStatPingGestureState();
 
 const restaurantById = new Map();
 const parkingById = new Map();
@@ -689,6 +706,37 @@ function setCurrentLocationState(latlng, accuracyMeters, { openPopup = true } = 
   return currentLngLat;
 }
 
+function stopCurrentLocationWatch() {
+  if (activeCurrentLocationWatchId === null) return;
+  if (navigator.geolocation?.clearWatch) {
+    navigator.geolocation.clearWatch(activeCurrentLocationWatchId);
+  }
+  activeCurrentLocationWatchId = null;
+}
+
+function ensureCurrentLocationWatch() {
+  if (!navigator.geolocation || !shouldTrackCurrentLocation || activeCurrentLocationWatchId !== null || activeNavigationWatchId !== null) return;
+
+  activeCurrentLocationWatchId = navigator.geolocation.watchPosition(
+    (position) => {
+      setCurrentLocationState(
+        { lat: position.coords.latitude, lng: position.coords.longitude },
+        position.coords.accuracy,
+        { openPopup: false }
+      );
+    },
+    (error) => {
+      console.info("Live current-location updates unavailable.", error);
+      stopCurrentLocationWatch();
+    },
+    {
+      enableHighAccuracy: true,
+      timeout: 12000,
+      maximumAge: 2000,
+    }
+  );
+}
+
 function stopNavigationWatch() {
   if (activeNavigationWatchId === null) return;
   if (navigator.geolocation?.clearWatch) {
@@ -749,6 +797,7 @@ async function refreshActiveRouteFromOrigin(origin, options = {}) {
 function ensureNavigationWatch() {
   if (!navigator.geolocation || activeNavigationWatchId !== null || !activeRoute?.destination) return;
 
+  stopCurrentLocationWatch();
   activeNavigationWatchId = navigator.geolocation.watchPosition(
     (position) => {
       const origin = setCurrentLocationState(
@@ -858,6 +907,7 @@ function clearInAppNavigation() {
   if (elNavigationMeta) elNavigationMeta.textContent = "";
   if (elNavigationTitle) elNavigationTitle.textContent = "";
   setNavigationCardVisible(false);
+  ensureCurrentLocationWatch();
 }
 
 function setSearchResultsExpanded(isExpanded) {
@@ -1578,6 +1628,8 @@ async function locateUser() {
     const targetZoom = clampMapZoom(LOCATION_TARGET_ZOOM);
 
     closePanelIfOpen();
+    shouldTrackCurrentLocation = true;
+    stopCurrentLocationWatch();
     lastCurrentLocation = null;
     lastCurrentLocationAccuracyMeters = null;
     setSourceData(SOURCE_CURRENT_LOCATION, featureCollection());
@@ -1586,6 +1638,7 @@ async function locateUser() {
     if (animateLocate) {
       map.once("moveend", () => {
         showCurrentLocation(latlng, position.coords.accuracy);
+        ensureCurrentLocationWatch();
       });
 
       map.flyTo({ center: lngLatToArray(latlng), zoom: targetZoom, duration: 850 });
@@ -1593,6 +1646,7 @@ async function locateUser() {
       map.once("moveend", () => {
         animateZoomToTarget(targetZoom, () => {
           showCurrentLocation(latlng, position.coords.accuracy);
+          ensureCurrentLocationWatch();
         });
       });
 
@@ -1624,6 +1678,69 @@ function openStatsPopupAtLatLng(latlng) {
     renderSpotPopupHtml(latlngToObject(latlng), lastRestaurants, tauMeters, hour),
     { closeButton: true }
   );
+}
+
+function clearPendingStatPing() {
+  if (pendingStatPingTimeoutId !== null) {
+    window.clearTimeout(pendingStatPingTimeoutId);
+    pendingStatPingTimeoutId = null;
+  }
+  pendingStatPingLatLng = null;
+}
+
+function scheduleTouchStatPing(latlng) {
+  clearPendingStatPing();
+  pendingStatPingLatLng = lngLatToObject(latlng);
+  pendingStatPingTimeoutId = window.setTimeout(() => {
+    const now = Date.now();
+    const nextLatLng = pendingStatPingLatLng;
+    pendingStatPingTimeoutId = null;
+    pendingStatPingLatLng = null;
+    releaseStatPingGesture(statPingGestureState, now);
+    if (!nextLatLng || shouldSuppressStatPing(statPingGestureState, now)) return;
+    openStatsPopupAtLatLng(nextLatLng);
+  }, STAT_PING_DOUBLE_TAP_THRESHOLD_MS);
+}
+
+function bindMapTouchStatPingGuard() {
+  const canvasContainer = map.getCanvasContainer();
+  if (!canvasContainer || canvasContainer.dataset.statPingGuardBound === "true") return;
+
+  canvasContainer.dataset.statPingGuardBound = "true";
+
+  const releaseGestureAfterSuppressWindow = () => {
+    window.setTimeout(() => {
+      releaseStatPingGesture(statPingGestureState, Date.now());
+    }, STAT_PING_TOUCH_SUPPRESS_AFTER_GESTURE_MS);
+  };
+
+  canvasContainer.addEventListener("touchstart", (event) => {
+    noteStatPingTouchStart(statPingGestureState, Date.now(), event.touches.length);
+    if (shouldSuppressStatPing(statPingGestureState, Date.now())) {
+      clearPendingStatPing();
+    }
+  }, { passive: true });
+
+  canvasContainer.addEventListener("touchmove", (event) => {
+    noteStatPingTouchMove(statPingGestureState, Date.now(), event.touches.length);
+    if (shouldSuppressStatPing(statPingGestureState, Date.now())) {
+      clearPendingStatPing();
+    }
+  }, { passive: true });
+
+  canvasContainer.addEventListener("touchend", (event) => {
+    noteStatPingTouchEnd(statPingGestureState, Date.now(), event.touches.length);
+    if (shouldSuppressStatPing(statPingGestureState, Date.now())) {
+      clearPendingStatPing();
+      releaseGestureAfterSuppressWindow();
+    }
+  }, { passive: true });
+
+  canvasContainer.addEventListener("touchcancel", () => {
+    noteStatPingTouchCancel(statPingGestureState, Date.now());
+    clearPendingStatPing();
+    releaseGestureAfterSuppressWindow();
+  }, { passive: true });
 }
 
 function latlngToObject(value) {
@@ -2306,12 +2423,19 @@ map.on("click", (event) => {
   });
 
   if (featuresAtPoint.length) return;
+  releaseStatPingGesture(statPingGestureState, Date.now());
+  if (shouldSuppressStatPing(statPingGestureState, Date.now())) return;
+  if (shouldDelayStatPingFromTouch(statPingGestureState, Date.now())) {
+    scheduleTouchStatPing(event.lngLat);
+    return;
+  }
 
   openStatsPopupAtLatLng(event.lngLat);
 });
 
 map.on("load", () => {
   ensureMapSourcesAndLayers();
+  bindMapTouchStatPingGuard();
   restoreMapDataSources();
   syncModeButtons();
 
