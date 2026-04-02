@@ -1545,8 +1545,9 @@ function describeGeolocationError(error) {
   return error.message || "Unable to determine your location.";
 }
 
-function showCurrentLocation(latlng, accuracyMeters, heading = lastCurrentLocationHeading) {
-  const currentLngLat = setCurrentLocationState(latlng, accuracyMeters, { openPopup: true, heading });
+function showCurrentLocation(latlng, accuracyMeters, heading) {
+  const resolvedHeading = heading === undefined ? lastCurrentLocationHeading : heading;
+  const currentLngLat = setCurrentLocationState(latlng, accuracyMeters, { openPopup: true, heading: resolvedHeading });
   if (activeRoute?.destination) {
     refreshActiveRouteFromOrigin(currentLngLat, { fitToRoute: false, force: true }).catch((error) => console.error(error));
   }
