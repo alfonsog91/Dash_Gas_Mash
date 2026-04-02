@@ -18,7 +18,10 @@ export function suppressStatPing(state, now, durationMs = STAT_PING_TOUCH_SUPPRE
 
 export function noteStatPingTouchStart(state, now, touchCount) {
   state.lastTouchStartAt = now;
-  if (touchCount > 1 || now - state.lastTouchEndAt <= STAT_PING_DOUBLE_TAP_THRESHOLD_MS) {
+  if (
+    touchCount > 1
+    || (state.lastTouchEndAt > 0 && now - state.lastTouchEndAt <= STAT_PING_DOUBLE_TAP_THRESHOLD_MS)
+  ) {
     state.zoomGestureActive = true;
     suppressStatPing(state, now);
   }

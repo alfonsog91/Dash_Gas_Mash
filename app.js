@@ -148,6 +148,7 @@ let lastSpokenInstructionKey = "";
 let shouldTrackCurrentLocation = false;
 let pendingStatPingTimeoutId = null;
 let pendingStatPingLatLng = null;
+let hasBoundMapTouchStatPingGuard = false;
 const statPingGestureState = createStatPingGestureState();
 
 const restaurantById = new Map();
@@ -1704,9 +1705,9 @@ function scheduleTouchStatPing(latlng) {
 
 function bindMapTouchStatPingGuard() {
   const canvasContainer = map.getCanvasContainer();
-  if (!canvasContainer || canvasContainer.dataset.statPingGuardBound === "true") return;
+  if (!canvasContainer || hasBoundMapTouchStatPingGuard) return;
 
-  canvasContainer.dataset.statPingGuardBound = "true";
+  hasBoundMapTouchStatPingGuard = true;
 
   const releaseGestureAfterSuppressWindow = () => {
     window.setTimeout(() => {
