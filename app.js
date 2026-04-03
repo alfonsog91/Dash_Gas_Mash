@@ -32,6 +32,14 @@ import {
   optimizeParkingSet,
   selectParkingSetSubmodular,
 } from "./optimizer.js?v=20260401-probability-contract";
+import {
+  HEADING_CONE_METERS,
+  HEADING_ORIENTATION_MIN_DELTA_DEGREES,
+  getDeviceOrientationHeading,
+  getHeadingConeHalfAngle,
+  getHeadingDeltaDegrees,
+  normalizeHeadingDegrees,
+} from "./heading_cone.js?v=20260401-probability-contract";
 
 const APP_BUILD_ID = "20260401-probability-contract";
 console.info("[DGM] app build", APP_BUILD_ID);
@@ -212,11 +220,6 @@ const LOCATION_PAN_DURATION_SECONDS = 0.9;
 const LOCATION_FLY_DURATION_MS = 850;
 const LOCATION_ZOOM_STEP = 3;
 const MAX_VISIBLE_ACCURACY_RADIUS_METERS = 45;
-const HEADING_CONE_METERS = 10;
-const HEADING_CONE_HALF_ANGLE_MOVING = 18;
-const HEADING_CONE_HALF_ANGLE_STATIONARY = 28;
-const HEADING_CONE_SPEED_FOR_FULLY_MOVING = 3;
-const HEADING_ORIENTATION_MIN_DELTA_DEGREES = 2;
 const CONTINUOUS_WATCH_TIMEOUT_MS = 30000;
 
 const INITIAL_LOCATION_ZOOM = 14;
@@ -714,44 +717,6 @@ function stopNavigationWatch() {
     navigator.geolocation.clearWatch(activeNavigationWatchId);
   }
   activeNavigationWatchId = null;
-}
-
-function normalizeHeadingDegrees(heading) {
-  if (typeof heading !== "number" || !Number.isFinite(heading)) return null;
-  const normalized = heading % 360;
-  return normalized < 0 ? normalized + 360 : normalized;
-}
-
-function getHeadingDeltaDegrees(nextHeading, previousHeading) {
-  const normalizedNext = normalizeHeadingDegrees(nextHeading);
-  const normalizedPrevious = normalizeHeadingDegrees(previousHeading);
-  if (normalizedNext === null || normalizedPrevious === null) return Infinity;
-  return Math.abs(((normalizedNext - normalizedPrevious + 540) % 360) - 180);
-}
-
-function getHeadingConeHalfAngle(speed) {
-  const normalizedSpeed = typeof speed === "number" && Number.isFinite(speed)
-    ? Math.max(0, speed)
-    : 0;
-  const movingRatio = clamp01(normalizedSpeed / HEADING_CONE_SPEED_FOR_FULLY_MOVING);
-  return HEADING_CONE_HALF_ANGLE_STATIONARY
-    + (HEADING_CONE_HALF_ANGLE_MOVING - HEADING_CONE_HALF_ANGLE_STATIONARY) * movingRatio;
-}
-
-function getDeviceOrientationHeading(event) {
-  const webkitHeading = normalizeHeadingDegrees(event?.webkitCompassHeading);
-  if (webkitHeading !== null) {
-    return webkitHeading;
-  }
-  const isAbsoluteHeading = event?.type === "deviceorientationabsolute" || event?.absolute === true;
-  if (!isAbsoluteHeading) {
-    return null;
-  }
-  const alphaHeading = normalizeHeadingDegrees(event?.alpha);
-  if (alphaHeading === null) {
-    return null;
-  }
-  return normalizeHeadingDegrees(360 - alphaHeading);
 }
 
 function updateHeadingCone(latlng, heading, speed) {
