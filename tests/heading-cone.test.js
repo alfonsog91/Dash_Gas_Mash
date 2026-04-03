@@ -1,12 +1,15 @@
 import {
+  HEADING_CONE_LENGTH_PIXELS,
   HEADING_CONE_HALF_ANGLE_MOVING,
   HEADING_CONE_HALF_ANGLE_STATIONARY,
   HEADING_CONE_SPEED_FOR_FULLY_MOVING,
   getDeviceOrientationHeading,
   getHeadingConeHalfAngle,
+  getHeadingConeLengthMeters,
   getHeadingDeltaDegrees,
+  getMetersPerPixelAtLatitude,
   normalizeHeadingDegrees,
-} from "../heading_cone.js?v=20260401-probability-contract";
+} from "../heading_cone.js?v=20260403-presence-layer";
 
 function createLogger() {
   const logEl = document.getElementById("log");
@@ -94,6 +97,28 @@ export function runHeadingConeTests() {
       getHeadingConeHalfAngle(HEADING_CONE_SPEED_FOR_FULLY_MOVING * 5),
       HEADING_CONE_HALF_ANGLE_MOVING,
       "high speeds should clamp to moving angle"
+    );
+  });
+
+  runTest("getMetersPerPixelAtLatitude shrinks as zoom increases", () => {
+    const zoom12 = getMetersPerPixelAtLatitude(34.1064, 12);
+    const zoom13 = getMetersPerPixelAtLatitude(34.1064, 13);
+    assertApprox(zoom13, zoom12 / 2, 0.0001, "one zoom step should halve meters per pixel");
+  });
+
+  runTest("getMetersPerPixelAtLatitude reflects latitude", () => {
+    const equator = getMetersPerPixelAtLatitude(0, 12);
+    const highLatitude = getMetersPerPixelAtLatitude(60, 12);
+    assertApprox(highLatitude, equator * 0.5, 0.0001, "60° latitude should use cosine scaling");
+  });
+
+  runTest("getHeadingConeLengthMeters converts fixed pixels into map meters", () => {
+    const metersPerPixel = getMetersPerPixelAtLatitude(34.1064, 15);
+    assertApprox(
+      getHeadingConeLengthMeters(34.1064, 15),
+      HEADING_CONE_LENGTH_PIXELS * metersPerPixel,
+      0.0001,
+      "default cone pixels should map into zoom-scaled meters"
     );
   });
 

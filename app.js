@@ -33,15 +33,16 @@ import {
   selectParkingSetSubmodular,
 } from "./optimizer.js?v=20260401-probability-contract";
 import {
-  HEADING_CONE_METERS,
+  HEADING_CONE_LENGTH_PIXELS,
   HEADING_ORIENTATION_MIN_DELTA_DEGREES,
   getDeviceOrientationHeading,
   getHeadingConeHalfAngle,
+  getHeadingConeLengthMeters,
   getHeadingDeltaDegrees,
   normalizeHeadingDegrees,
-} from "./heading_cone.js?v=20260401-probability-contract";
+} from "./heading_cone.js?v=20260403-presence-layer";
 
-const APP_BUILD_ID = "20260401-probability-contract";
+const APP_BUILD_ID = "20260403-presence-layer";
 console.info("[DGM] app build", APP_BUILD_ID);
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
@@ -51,6 +52,9 @@ const NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search";
 const OSRM_ROUTE_API_URL = "https://router.project-osrm.org/route/v1/driving";
 const NAV_REROUTE_MIN_DISTANCE_METERS = 30;
 const NAV_REROUTE_MIN_INTERVAL_MS = 4000;
+const BLUE_DOT_BASE_RADIUS_PX = 8;
+const BLUE_DOT_BREATHING_AMPLITUDE_PX = 0.4;
+const BLUE_DOT_BREATHING_CYCLE_MS = 2800;
 
 if (window.location.protocol === "file:") {
   alert(
@@ -240,6 +244,7 @@ let activeContinuousWatchId = null;
 let lastKnownHeading = null;
 let lastKnownHeadingSpeed = null;
 let hasStartedDeviceOrientationWatch = false;
+let hasStartedBlueDotBreathingAnimation = false;
 
 function featureCollection(features = []) {
   return { type: "FeatureCollection", features };
@@ -436,11 +441,7 @@ function restoreMapDataSources() {
     setSourceData(SOURCE_CURRENT_LOCATION_ACCURACY, featureCollection());
   }
 
-  if (lastCurrentLocation && lastKnownHeading !== null) {
-    updateHeadingCone(lastCurrentLocation, lastKnownHeading, null);
-  } else {
-    setSourceData(SOURCE_HEADING, featureCollection());
-  }
+  refreshHeadingConeFromState();
 
   if (activeRoute?.geometry?.coordinates?.length) {
     setSourceData(SOURCE_ROUTE, featureCollection([{
@@ -735,6 +736,11 @@ function updateHeadingCone(latlng, heading, speed) {
       ? speed
       : lastKnownHeadingSpeed
   );
+  const coneLengthMeters = getHeadingConeLengthMeters(latlng.lat, map.getZoom(), HEADING_CONE_LENGTH_PIXELS);
+  if (!(typeof coneLengthMeters === "number" && Number.isFinite(coneLengthMeters) && coneLengthMeters > 0)) {
+    setSourceData(SOURCE_HEADING, featureCollection());
+    return;
+  }
   const latScale = 1 / 111320;
   const lngScale = 1 / (111320 * Math.cos((latlng.lat * Math.PI) / 180));
   const origin = [latlng.lng, latlng.lat];
@@ -744,8 +750,8 @@ function updateHeadingCone(latlng, heading, speed) {
     const angleDeg = resolvedHeading - halfAngle + (2 * halfAngle * i) / numArcPoints;
     const angleRad = (angleDeg * Math.PI) / 180;
     ring.push([
-      latlng.lng + HEADING_CONE_METERS * Math.sin(angleRad) * lngScale,
-      latlng.lat + HEADING_CONE_METERS * Math.cos(angleRad) * latScale,
+      latlng.lng + coneLengthMeters * Math.sin(angleRad) * lngScale,
+      latlng.lat + coneLengthMeters * Math.cos(angleRad) * latScale,
     ]);
   }
   ring.push(origin);
@@ -754,6 +760,31 @@ function updateHeadingCone(latlng, heading, speed) {
     geometry: { type: "Polygon", coordinates: [ring] },
     properties: {},
   }]));
+}
+
+function refreshHeadingConeFromState() {
+  if (lastCurrentLocation && lastKnownHeading !== null) {
+    updateHeadingCone(lastCurrentLocation, lastKnownHeading, null);
+    return;
+  }
+  setSourceData(SOURCE_HEADING, featureCollection());
+}
+
+function getBlueDotBreathingRadius(timestampMs = 0) {
+  const phase = (timestampMs % BLUE_DOT_BREATHING_CYCLE_MS) / BLUE_DOT_BREATHING_CYCLE_MS;
+  return BLUE_DOT_BASE_RADIUS_PX + BLUE_DOT_BREATHING_AMPLITUDE_PX * Math.sin(phase * Math.PI * 2);
+}
+
+function startBlueDotBreathingAnimation() {
+  if (hasStartedBlueDotBreathingAnimation || typeof window === "undefined") return;
+  hasStartedBlueDotBreathingAnimation = true;
+  const tick = (timestampMs) => {
+    if (map.getLayer(LAYER_CURRENT_LOCATION_DOT)) {
+      map.setPaintProperty(LAYER_CURRENT_LOCATION_DOT, "circle-radius", getBlueDotBreathingRadius(timestampMs));
+    }
+    window.requestAnimationFrame(tick);
+  };
+  window.requestAnimationFrame(tick);
 }
 
 function startDeviceOrientationWatch() {
@@ -1393,7 +1424,7 @@ function ensureMapSourcesAndLayers() {
     type: "circle",
     source: SOURCE_CURRENT_LOCATION,
     paint: {
-      "circle-radius": 8,
+      "circle-radius": BLUE_DOT_BASE_RADIUS_PX,
       "circle-color": "#2d6cdf",
       "circle-stroke-color": "#f4fbff",
       "circle-stroke-width": 3,
@@ -2414,6 +2445,7 @@ if (elNavigationVoice) {
 }
 
 map.on("moveend", checkDataFreshness);
+map.on("zoom", refreshHeadingConeFromState);
 
 map.on("click", (event) => {
   const featuresAtPoint = map.queryRenderedFeatures(event.point, {
@@ -2431,6 +2463,7 @@ map.on("load", () => {
   syncModeButtons();
   startContinuousLocationWatch();
   startDeviceOrientationWatch();
+  startBlueDotBreathingAnimation();
 
   if (menuButton && panel) {
     menuButton.addEventListener("click", () => {
