@@ -774,18 +774,19 @@ function updateHeadingCone(latlng, heading, speed) {
   const features = bandStops.map(({ startRatio, endRatio, opacity }, bandIndex) => {
     const outerDistanceMeters = coneLengthMeters * endRatio;
     const innerDistanceMeters = coneLengthMeters * startRatio;
-    const outerArc = [];
-    const innerArc = [];
+    const outerArcPoints = [];
+    const innerArcPoints = [];
     for (let i = 0; i <= numArcPoints; i++) {
       const angleDeg = resolvedHeading - halfAngle + (2 * halfAngle * i) / numArcPoints;
-      outerArc.push(projectConePoint(outerDistanceMeters, angleDeg));
+      outerArcPoints.push(projectConePoint(outerDistanceMeters, angleDeg));
       if (innerDistanceMeters > 0) {
-        innerArc.push(projectConePoint(innerDistanceMeters, angleDeg));
+        innerArcPoints.push(projectConePoint(innerDistanceMeters, angleDeg));
       }
     }
+    innerArcPoints.reverse();
     const ring = innerDistanceMeters > 0
-      ? [...outerArc, ...innerArc.reverse(), outerArc[0]]
-      : [origin, ...outerArc, origin];
+      ? [...outerArcPoints, ...innerArcPoints, outerArcPoints[0]]
+      : [origin, ...outerArcPoints, origin];
     return {
       type: "Feature",
       geometry: { type: "Polygon", coordinates: [ring] },
@@ -852,15 +853,23 @@ function applyHeadingUpdate(
   return resolvedHeading;
 }
 
+function getEffectiveHeading() {
+  return lastKnownHeading ?? lastSensorHeading;
+}
+
+function refreshHeadingConeWithEffectiveHeading(latlng, speed) {
+  const effectiveHeading = getEffectiveHeading();
+  updateHeadingCone(latlng, effectiveHeading, speed);
+  return effectiveHeading;
+}
+
 function syncHeadingFromLocation(latlng, gpsHeading, speed, nowMs = getHeadingNowMs()) {
   if (lastSensorHeading !== null && hasFreshHeadingSensorData(lastSensorHeadingAt, nowMs, HEADING_SENSOR_STALE_AFTER_MS)) {
-    updateHeadingCone(latlng, lastKnownHeading ?? lastSensorHeading, speed);
-    return lastKnownHeading ?? lastSensorHeading;
+    return refreshHeadingConeWithEffectiveHeading(latlng, speed);
   }
   const normalizedGpsHeading = normalizeHeadingDegrees(gpsHeading);
   if (normalizedGpsHeading === null) {
-    updateHeadingCone(latlng, lastKnownHeading, speed);
-    return lastKnownHeading;
+    return refreshHeadingConeWithEffectiveHeading(latlng, speed);
   }
   return applyHeadingUpdate(normalizedGpsHeading, {
     latlng,

@@ -15,6 +15,13 @@ function clamp01(x) {
   return Math.max(0, Math.min(1, Number(x) || 0));
 }
 
+function resolveFiniteNumber(value, fallback, { min = -Infinity } = {}) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < min) {
+    return fallback;
+  }
+  return value;
+}
+
 function normalizeHeadingDegrees(heading) {
   if (typeof heading !== "number" || !Number.isFinite(heading)) return null;
   const normalized = heading % 360;
@@ -33,12 +40,8 @@ function getHeadingBlendFactor(
   timeConstantMs = HEADING_SENSOR_SMOOTHING_TIME_MS,
   minBlend = 0
 ) {
-  const resolvedTimeConstant = typeof timeConstantMs === "number" && Number.isFinite(timeConstantMs) && timeConstantMs > 0
-    ? timeConstantMs
-    : HEADING_SENSOR_SMOOTHING_TIME_MS;
-  const resolvedElapsedMs = typeof elapsedMs === "number" && Number.isFinite(elapsedMs)
-    ? Math.max(0, elapsedMs)
-    : resolvedTimeConstant;
+  const resolvedTimeConstant = resolveFiniteNumber(timeConstantMs, HEADING_SENSOR_SMOOTHING_TIME_MS, { min: Number.EPSILON });
+  const resolvedElapsedMs = resolveFiniteNumber(elapsedMs, resolvedTimeConstant, { min: 0 });
   return clamp01(Math.max(clamp01(minBlend), 1 - Math.exp(-resolvedElapsedMs / resolvedTimeConstant)));
 }
 
@@ -56,15 +59,9 @@ function hasFreshHeadingSensorData(
   nowMs = lastSensorHeadingAt,
   maxAgeMs = HEADING_SENSOR_STALE_AFTER_MS
 ) {
-  const resolvedLastSensorHeadingAt = typeof lastSensorHeadingAt === "number" && Number.isFinite(lastSensorHeadingAt)
-    ? lastSensorHeadingAt
-    : null;
-  const resolvedNowMs = typeof nowMs === "number" && Number.isFinite(nowMs)
-    ? nowMs
-    : null;
-  const resolvedMaxAgeMs = typeof maxAgeMs === "number" && Number.isFinite(maxAgeMs) && maxAgeMs >= 0
-    ? maxAgeMs
-    : HEADING_SENSOR_STALE_AFTER_MS;
+  const resolvedLastSensorHeadingAt = resolveFiniteNumber(lastSensorHeadingAt, null);
+  const resolvedNowMs = resolveFiniteNumber(nowMs, null);
+  const resolvedMaxAgeMs = resolveFiniteNumber(maxAgeMs, HEADING_SENSOR_STALE_AFTER_MS, { min: 0 });
   if (resolvedLastSensorHeadingAt === null || resolvedNowMs === null) {
     return false;
   }
