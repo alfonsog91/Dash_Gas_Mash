@@ -52,9 +52,11 @@ const NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search";
 const OSRM_ROUTE_API_URL = "https://router.project-osrm.org/route/v1/driving";
 const NAV_REROUTE_MIN_DISTANCE_METERS = 30;
 const NAV_REROUTE_MIN_INTERVAL_MS = 4000;
+// Subtle pulsing animation for the current-location marker.
 const BLUE_DOT_BASE_RADIUS_PX = 8;
 const BLUE_DOT_BREATHING_AMPLITUDE_PX = 0.4;
 const BLUE_DOT_BREATHING_CYCLE_MS = 2800;
+const FULL_CYCLE_RADIANS = Math.PI * 2;
 
 if (window.location.protocol === "file:") {
   alert(
@@ -772,7 +774,7 @@ function refreshHeadingConeFromState() {
 
 function getBlueDotBreathingRadius(timestampMs = 0) {
   const phase = (timestampMs % BLUE_DOT_BREATHING_CYCLE_MS) / BLUE_DOT_BREATHING_CYCLE_MS;
-  return BLUE_DOT_BASE_RADIUS_PX + BLUE_DOT_BREATHING_AMPLITUDE_PX * Math.sin(phase * Math.PI * 2);
+  return BLUE_DOT_BASE_RADIUS_PX + BLUE_DOT_BREATHING_AMPLITUDE_PX * Math.sin(phase * FULL_CYCLE_RADIANS);
 }
 
 function startBlueDotBreathingAnimation() {
