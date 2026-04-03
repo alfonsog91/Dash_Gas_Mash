@@ -87,6 +87,7 @@ const SOURCE_HEAT = "heat";
 const SOURCE_SPOT = "spot";
 const SOURCE_CURRENT_LOCATION = "current-location";
 const SOURCE_CURRENT_LOCATION_ACCURACY = "current-location-accuracy";
+const SOURCE_HEADING = "heading";
 const SOURCE_ROUTE = "route";
 
 const LAYER_HEAT = "heat-layer";
@@ -95,6 +96,7 @@ const LAYER_PARKING = "parking-layer";
 const LAYER_SPOT = "spot-layer";
 const LAYER_CURRENT_LOCATION_ACCURACY_FILL = "current-location-accuracy-fill";
 const LAYER_CURRENT_LOCATION_ACCURACY_LINE = "current-location-accuracy-line";
+const LAYER_HEADING = "heading-layer";
 const LAYER_CURRENT_LOCATION_DOT = "current-location-dot";
 const LAYER_ROUTE_CASING = "route-casing-layer";
 const LAYER_ROUTE = "route-layer";
@@ -207,8 +209,11 @@ const LOCATION_TARGET_ZOOM = 16;
 const LOCATION_ANIMATION_MIN_START_ZOOM = 14;
 const LOCATION_ANIMATION_MAX_DISTANCE_METERS = 5000;
 const LOCATION_PAN_DURATION_SECONDS = 0.9;
+const LOCATION_FLY_DURATION_MS = 850;
 const LOCATION_ZOOM_STEP = 3;
 const MAX_VISIBLE_ACCURACY_RADIUS_METERS = 45;
+const HEADING_LINE_METERS = 80;
+const CONTINUOUS_WATCH_TIMEOUT_MS = 30000;
 
 const INITIAL_LOCATION_ZOOM = 14;
 const INITIAL_LOCATION_TIMEOUT_MS = 8000;
@@ -224,6 +229,8 @@ if (elHorizon) {
 
 let isLocating = false;
 let hasRequestedInitialLocation = false;
+let activeContinuousWatchId = null;
+let lastKnownHeading = null;
 
 function featureCollection(features = []) {
   return { type: "FeatureCollection", features };
@@ -418,6 +425,12 @@ function restoreMapDataSources() {
   } else {
     setSourceData(SOURCE_CURRENT_LOCATION, featureCollection());
     setSourceData(SOURCE_CURRENT_LOCATION_ACCURACY, featureCollection());
+  }
+
+  if (lastCurrentLocation && lastKnownHeading !== null) {
+    updateHeadingLine(lastCurrentLocation, lastKnownHeading);
+  } else {
+    setSourceData(SOURCE_HEADING, featureCollection());
   }
 
   if (activeRoute?.geometry?.coordinates?.length) {
@@ -695,6 +708,48 @@ function stopNavigationWatch() {
     navigator.geolocation.clearWatch(activeNavigationWatchId);
   }
   activeNavigationWatchId = null;
+}
+
+function updateHeadingLine(latlng, heading) {
+  if (typeof heading !== "number" || !Number.isFinite(heading)) {
+    setSourceData(SOURCE_HEADING, featureCollection());
+    lastKnownHeading = null;
+    return;
+  }
+  lastKnownHeading = heading;
+  const headingRad = (heading * Math.PI) / 180;
+  const dLat = (HEADING_LINE_METERS * Math.cos(headingRad)) / 111320;
+  const dLng = (HEADING_LINE_METERS * Math.sin(headingRad)) / (111320 * Math.cos((latlng.lat * Math.PI) / 180));
+  setSourceData(SOURCE_HEADING, featureCollection([{
+    type: "Feature",
+    geometry: {
+      type: "LineString",
+      coordinates: [
+        [latlng.lng, latlng.lat],
+        [latlng.lng + dLng, latlng.lat + dLat],
+      ],
+    },
+    properties: {},
+  }]));
+}
+
+function startContinuousLocationWatch() {
+  if (activeContinuousWatchId !== null || !navigator.geolocation) return;
+  activeContinuousWatchId = navigator.geolocation.watchPosition(
+    (position) => {
+      const latlng = { lat: position.coords.latitude, lng: position.coords.longitude };
+      setCurrentLocationState(latlng, position.coords.accuracy, { openPopup: false });
+      updateHeadingLine(latlng, position.coords.heading);
+    },
+    (error) => {
+      console.warn("[DGM] Continuous location watch error:", error.code, error.message);
+    },
+    {
+      enableHighAccuracy: true,
+      timeout: CONTINUOUS_WATCH_TIMEOUT_MS,
+      maximumAge: 2000,
+    }
+  );
 }
 
 async function refreshActiveRouteFromOrigin(origin, options = {}) {
@@ -1168,6 +1223,7 @@ function ensureMapSourcesAndLayers() {
   map.addSource(SOURCE_SPOT, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_CURRENT_LOCATION, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_CURRENT_LOCATION_ACCURACY, { type: "geojson", data: featureCollection() });
+  map.addSource(SOURCE_HEADING, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_ROUTE, { type: "geojson", data: featureCollection() });
 
   map.addLayer({
@@ -1278,6 +1334,21 @@ function ensureMapSourcesAndLayers() {
     paint: {
       "line-color": "#a7e3ff",
       "line-width": 1,
+    },
+  });
+
+  map.addLayer({
+    id: LAYER_HEADING,
+    type: "line",
+    source: SOURCE_HEADING,
+    layout: {
+      "line-cap": "round",
+      "line-join": "round",
+    },
+    paint: {
+      "line-color": "#f4fbff",
+      "line-width": 3,
+      "line-opacity": 0.85,
     },
   });
 
@@ -1563,6 +1634,23 @@ async function centerMapOnInitialLocationOnce() {
 async function locateUser() {
   if (isLocating) return;
 
+  // If continuous tracking already has a known position, just recenter — no new GPS call needed.
+  if (lastCurrentLocation) {
+    closePanelIfOpen();
+    const latlng = { lat: lastCurrentLocation.lat, lng: lastCurrentLocation.lng };
+    const targetZoom = clampMapZoom(LOCATION_TARGET_ZOOM);
+    const animateLocate = shouldAnimateLocate(latlng);
+    if (animateLocate) {
+      map.flyTo({ center: [latlng.lng, latlng.lat], zoom: targetZoom, duration: LOCATION_FLY_DURATION_MS });
+    } else {
+      map.once("moveend", () => {
+        animateZoomToTarget(targetZoom, () => {});
+      });
+      map.easeTo({ center: [latlng.lng, latlng.lat], duration: LOCATION_PAN_DURATION_SECONDS * 1000 });
+    }
+    return;
+  }
+
   if (!navigator.geolocation) {
     alert("Geolocation is not supported in this browser.");
     return;
@@ -1578,24 +1666,15 @@ async function locateUser() {
     const targetZoom = clampMapZoom(LOCATION_TARGET_ZOOM);
 
     closePanelIfOpen();
-    lastCurrentLocation = null;
-    lastCurrentLocationAccuracyMeters = null;
-    setSourceData(SOURCE_CURRENT_LOCATION, featureCollection());
-    setSourceData(SOURCE_CURRENT_LOCATION_ACCURACY, featureCollection());
+    setCurrentLocationState(latlng, position.coords.accuracy, { openPopup: false });
+    updateHeadingLine(latlng, position.coords.heading);
 
     if (animateLocate) {
-      map.once("moveend", () => {
-        showCurrentLocation(latlng, position.coords.accuracy);
-      });
-
-      map.flyTo({ center: lngLatToArray(latlng), zoom: targetZoom, duration: 850 });
+      map.flyTo({ center: lngLatToArray(latlng), zoom: targetZoom, duration: LOCATION_FLY_DURATION_MS });
     } else {
       map.once("moveend", () => {
-        animateZoomToTarget(targetZoom, () => {
-          showCurrentLocation(latlng, position.coords.accuracy);
-        });
+        animateZoomToTarget(targetZoom, () => {});
       });
-
       map.easeTo({ center: lngLatToArray(latlng), duration: LOCATION_PAN_DURATION_SECONDS * 1000 });
     }
   } catch (error) {
@@ -2314,6 +2393,7 @@ map.on("load", () => {
   ensureMapSourcesAndLayers();
   restoreMapDataSources();
   syncModeButtons();
+  startContinuousLocationWatch();
 
   if (menuButton && panel) {
     menuButton.addEventListener("click", () => {
