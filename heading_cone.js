@@ -3,11 +3,23 @@ const HEADING_CONE_HALF_ANGLE_MOVING = 18;
 const HEADING_CONE_HALF_ANGLE_STATIONARY = 28;
 const HEADING_CONE_SPEED_FOR_FULLY_MOVING = 3;
 const HEADING_ORIENTATION_MIN_DELTA_DEGREES = 2;
+const HEADING_SENSOR_STALE_AFTER_MS = 2200;
+const HEADING_SENSOR_SMOOTHING_TIME_MS = 90;
+const HEADING_SENSOR_SMOOTHING_MIN_BLEND = 0.42;
+const HEADING_GPS_FALLBACK_SMOOTHING_TIME_MS = 900;
+const HEADING_CONE_BAND_OPACITIES = Object.freeze([0.22, 0.14, 0.08, 0.04]);
 const WEB_MERCATOR_MAX_LATITUDE = 85.05112878; // Web Mercator approaches infinity past this latitude.
 const WEB_MERCATOR_METERS_PER_PIXEL_AT_ZOOM_0 = 40075016.68557849 / 512; // Earth's equatorial circumference / 512px world.
 
 function clamp01(x) {
   return Math.max(0, Math.min(1, Number(x) || 0));
+}
+
+function resolveFiniteNumber(value, fallback, { min = -Infinity } = {}) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < min) {
+    return fallback;
+  }
+  return value;
 }
 
 function normalizeHeadingDegrees(heading) {
@@ -21,6 +33,39 @@ function getHeadingDeltaDegrees(nextHeading, previousHeading) {
   const normalizedPrevious = normalizeHeadingDegrees(previousHeading);
   if (normalizedNext === null || normalizedPrevious === null) return Infinity;
   return Math.abs(((normalizedNext - normalizedPrevious + 540) % 360) - 180);
+}
+
+function getHeadingBlendFactor(
+  elapsedMs,
+  timeConstantMs = HEADING_SENSOR_SMOOTHING_TIME_MS,
+  minBlend = 0
+) {
+  const resolvedTimeConstant = resolveFiniteNumber(timeConstantMs, HEADING_SENSOR_SMOOTHING_TIME_MS, { min: Number.EPSILON });
+  const resolvedElapsedMs = resolveFiniteNumber(elapsedMs, resolvedTimeConstant, { min: 0 });
+  return clamp01(Math.max(clamp01(minBlend), 1 - Math.exp(-resolvedElapsedMs / resolvedTimeConstant)));
+}
+
+function interpolateHeadingDegrees(previousHeading, nextHeading, blend = 1) {
+  const normalizedPrevious = normalizeHeadingDegrees(previousHeading);
+  const normalizedNext = normalizeHeadingDegrees(nextHeading);
+  if (normalizedNext === null) return normalizedPrevious;
+  if (normalizedPrevious === null) return normalizedNext;
+  const delta = ((normalizedNext - normalizedPrevious + 540) % 360) - 180;
+  return normalizeHeadingDegrees(normalizedPrevious + delta * clamp01(blend));
+}
+
+function hasFreshHeadingSensorData(
+  lastSensorHeadingAt,
+  nowMs = lastSensorHeadingAt,
+  maxAgeMs = HEADING_SENSOR_STALE_AFTER_MS
+) {
+  const resolvedLastSensorHeadingAt = resolveFiniteNumber(lastSensorHeadingAt, null);
+  const resolvedNowMs = resolveFiniteNumber(nowMs, null);
+  const resolvedMaxAgeMs = resolveFiniteNumber(maxAgeMs, HEADING_SENSOR_STALE_AFTER_MS, { min: 0 });
+  if (resolvedLastSensorHeadingAt === null || resolvedNowMs === null) {
+    return false;
+  }
+  return resolvedNowMs - resolvedLastSensorHeadingAt <= resolvedMaxAgeMs;
 }
 
 function getHeadingConeHalfAngle(speed) {
@@ -58,6 +103,17 @@ function getHeadingConeLengthMeters(latitude, zoom, pixelLength = HEADING_CONE_L
   return metersPerPixel * resolvedPixelLength;
 }
 
+function getHeadingConeBandStops(opacities = HEADING_CONE_BAND_OPACITIES) {
+  const resolvedOpacities = Array.isArray(opacities) && opacities.length
+    ? opacities
+    : HEADING_CONE_BAND_OPACITIES;
+  return resolvedOpacities.map((opacity, index) => ({
+    startRatio: index / resolvedOpacities.length,
+    endRatio: (index + 1) / resolvedOpacities.length,
+    opacity: clamp01(opacity),
+  }));
+}
+
 function getDeviceOrientationHeading(event) {
   const webkitHeading = normalizeHeadingDegrees(event?.webkitCompassHeading);
   if (webkitHeading !== null) {
@@ -80,10 +136,19 @@ export {
   HEADING_CONE_HALF_ANGLE_STATIONARY,
   HEADING_CONE_SPEED_FOR_FULLY_MOVING,
   HEADING_ORIENTATION_MIN_DELTA_DEGREES,
+  HEADING_SENSOR_STALE_AFTER_MS,
+  HEADING_SENSOR_SMOOTHING_TIME_MS,
+  HEADING_SENSOR_SMOOTHING_MIN_BLEND,
+  HEADING_GPS_FALLBACK_SMOOTHING_TIME_MS,
+  HEADING_CONE_BAND_OPACITIES,
   normalizeHeadingDegrees,
   getHeadingDeltaDegrees,
+  getHeadingBlendFactor,
+  interpolateHeadingDegrees,
+  hasFreshHeadingSensorData,
   getHeadingConeHalfAngle,
   getMetersPerPixelAtLatitude,
   getHeadingConeLengthMeters,
+  getHeadingConeBandStops,
   getDeviceOrientationHeading,
 };

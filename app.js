@@ -34,15 +34,22 @@ import {
 } from "./optimizer.js?v=20260401-probability-contract";
 import {
   HEADING_CONE_LENGTH_PIXELS,
-  HEADING_ORIENTATION_MIN_DELTA_DEGREES,
+  HEADING_CONE_BAND_OPACITIES,
+  HEADING_GPS_FALLBACK_SMOOTHING_TIME_MS,
+  HEADING_SENSOR_SMOOTHING_MIN_BLEND,
+  HEADING_SENSOR_SMOOTHING_TIME_MS,
+  HEADING_SENSOR_STALE_AFTER_MS,
   getDeviceOrientationHeading,
+  getHeadingBlendFactor,
+  getHeadingConeBandStops,
   getHeadingConeHalfAngle,
   getHeadingConeLengthMeters,
-  getHeadingDeltaDegrees,
+  hasFreshHeadingSensorData,
+  interpolateHeadingDegrees,
   normalizeHeadingDegrees,
-} from "./heading_cone.js?v=20260403-presence-layer";
+} from "./heading_cone.js?v=20260403-sensor-presence";
 
-const APP_BUILD_ID = "20260403-presence-layer";
+const APP_BUILD_ID = "20260403-sensor-presence";
 console.info("[DGM] app build", APP_BUILD_ID);
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
@@ -246,6 +253,9 @@ let hasRequestedInitialLocation = false;
 let activeContinuousWatchId = null;
 let lastKnownHeading = null;
 let lastKnownHeadingSpeed = null;
+let lastSensorHeading = null;
+let lastSensorHeadingAt = null;
+let lastHeadingRenderAt = null;
 let hasStartedDeviceOrientationWatch = false;
 let hasStartedBlueDotBreathingAnimation = false;
 let blueDotBreathingAnimationFrame = null;
@@ -744,6 +754,7 @@ function updateHeadingCone(latlng, heading, speed) {
       ? speed
       : lastKnownHeadingSpeed
   );
+  const bandStops = getHeadingConeBandStops(HEADING_CONE_BAND_OPACITIES);
   const coneLengthMeters = getCachedHeadingConeLengthMeters(latlng.lat);
   if (!(typeof coneLengthMeters === "number" && Number.isFinite(coneLengthMeters) && coneLengthMeters > 0)) {
     setSourceData(SOURCE_HEADING, featureCollection());
@@ -753,21 +764,36 @@ function updateHeadingCone(latlng, heading, speed) {
   const lngScale = 1 / (111320 * Math.cos((latlng.lat * Math.PI) / 180));
   const origin = [latlng.lng, latlng.lat];
   const numArcPoints = 12;
-  const ring = [origin];
-  for (let i = 0; i <= numArcPoints; i++) {
-    const angleDeg = resolvedHeading - halfAngle + (2 * halfAngle * i) / numArcPoints;
+  const projectConePoint = (distanceMeters, angleDeg) => {
     const angleRad = (angleDeg * Math.PI) / 180;
-    ring.push([
-      latlng.lng + coneLengthMeters * Math.sin(angleRad) * lngScale,
-      latlng.lat + coneLengthMeters * Math.cos(angleRad) * latScale,
-    ]);
-  }
-  ring.push(origin);
-  setSourceData(SOURCE_HEADING, featureCollection([{
-    type: "Feature",
-    geometry: { type: "Polygon", coordinates: [ring] },
-    properties: {},
-  }]));
+    return [
+      latlng.lng + distanceMeters * Math.sin(angleRad) * lngScale,
+      latlng.lat + distanceMeters * Math.cos(angleRad) * latScale,
+    ];
+  };
+  const features = bandStops.map(({ startRatio, endRatio, opacity }, bandIndex) => {
+    const outerDistanceMeters = coneLengthMeters * endRatio;
+    const innerDistanceMeters = coneLengthMeters * startRatio;
+    const outerArcPoints = [];
+    const innerArcPoints = [];
+    for (let i = 0; i <= numArcPoints; i++) {
+      const angleDeg = resolvedHeading - halfAngle + (2 * halfAngle * i) / numArcPoints;
+      outerArcPoints.push(projectConePoint(outerDistanceMeters, angleDeg));
+      if (innerDistanceMeters > 0) {
+        innerArcPoints.push(projectConePoint(innerDistanceMeters, angleDeg));
+      }
+    }
+    innerArcPoints.reverse();
+    const ring = innerDistanceMeters > 0
+      ? [...outerArcPoints, ...innerArcPoints, outerArcPoints[0]]
+      : [origin, ...outerArcPoints, origin];
+    return {
+      type: "Feature",
+      geometry: { type: "Polygon", coordinates: [ring] },
+      properties: { bandIndex, opacity },
+    };
+  });
+  setSourceData(SOURCE_HEADING, featureCollection(features));
 }
 
 function getCachedHeadingConeLengthMeters(latitude) {
@@ -786,6 +812,71 @@ function refreshHeadingConeFromState() {
     return;
   }
   setSourceData(SOURCE_HEADING, featureCollection());
+}
+
+function getHeadingNowMs() {
+  if (typeof performance !== "undefined" && typeof performance.now === "function") {
+    return performance.now();
+  }
+  return Date.now();
+}
+
+function applyHeadingUpdate(
+  nextHeading,
+  {
+    latlng = lastCurrentLocation,
+    speed = lastKnownHeadingSpeed,
+    nowMs = getHeadingNowMs(),
+    timeConstantMs = HEADING_SENSOR_SMOOTHING_TIME_MS,
+    minBlend = 0,
+  } = {}
+) {
+  const normalizedHeading = normalizeHeadingDegrees(nextHeading);
+  if (normalizedHeading === null) return null;
+  const elapsedMs = lastHeadingRenderAt === null
+    ? timeConstantMs
+    : Math.max(0, nowMs - lastHeadingRenderAt);
+  const resolvedHeading = interpolateHeadingDegrees(
+    lastKnownHeading,
+    normalizedHeading,
+    getHeadingBlendFactor(elapsedMs, timeConstantMs, minBlend)
+  );
+  lastHeadingRenderAt = nowMs;
+  if (latlng) {
+    updateHeadingCone(latlng, resolvedHeading, speed);
+  } else {
+    lastKnownHeading = resolvedHeading;
+    if (typeof speed === "number" && Number.isFinite(speed)) {
+      lastKnownHeadingSpeed = Math.max(0, speed);
+    }
+  }
+  return resolvedHeading;
+}
+
+function getEffectiveHeading() {
+  return lastKnownHeading ?? lastSensorHeading;
+}
+
+function refreshHeadingConeWithEffectiveHeading(latlng, speed) {
+  const effectiveHeading = getEffectiveHeading();
+  updateHeadingCone(latlng, effectiveHeading, speed);
+  return effectiveHeading;
+}
+
+function syncHeadingFromLocation(latlng, gpsHeading, speed, nowMs = getHeadingNowMs()) {
+  if (lastSensorHeading !== null && hasFreshHeadingSensorData(lastSensorHeadingAt, nowMs, HEADING_SENSOR_STALE_AFTER_MS)) {
+    return refreshHeadingConeWithEffectiveHeading(latlng, speed);
+  }
+  const normalizedGpsHeading = normalizeHeadingDegrees(gpsHeading);
+  if (normalizedGpsHeading === null) {
+    return refreshHeadingConeWithEffectiveHeading(latlng, speed);
+  }
+  return applyHeadingUpdate(normalizedGpsHeading, {
+    latlng,
+    speed,
+    nowMs,
+    timeConstantMs: HEADING_GPS_FALLBACK_SMOOTHING_TIME_MS,
+  });
 }
 
 function getBlueDotBreathingRadius(timestampMs = 0) {
@@ -828,13 +919,14 @@ function startDeviceOrientationWatch() {
   const onOrientationChange = (event) => {
     const nextHeading = getDeviceOrientationHeading(event);
     if (nextHeading === null) return;
-    if (getHeadingDeltaDegrees(nextHeading, lastKnownHeading) < HEADING_ORIENTATION_MIN_DELTA_DEGREES) {
-      return;
-    }
-    lastKnownHeading = nextHeading;
-    if (lastCurrentLocation) {
-      updateHeadingCone(lastCurrentLocation, nextHeading, lastKnownHeadingSpeed);
-    }
+    const nowMs = getHeadingNowMs();
+    lastSensorHeading = nextHeading;
+    lastSensorHeadingAt = nowMs;
+    applyHeadingUpdate(nextHeading, {
+      nowMs,
+      timeConstantMs: HEADING_SENSOR_SMOOTHING_TIME_MS,
+      minBlend: HEADING_SENSOR_SMOOTHING_MIN_BLEND,
+    });
   };
   window.addEventListener("deviceorientationabsolute", onOrientationChange);
   window.addEventListener("deviceorientation", onOrientationChange);
@@ -846,7 +938,7 @@ function startContinuousLocationWatch() {
     (position) => {
       const latlng = { lat: position.coords.latitude, lng: position.coords.longitude };
       setCurrentLocationState(latlng, position.coords.accuracy, { openPopup: false });
-      updateHeadingCone(latlng, position.coords.heading, position.coords.speed);
+      syncHeadingFromLocation(latlng, position.coords.heading, position.coords.speed);
     },
     (error) => {
       console.warn("[DGM] Continuous location watch error:", error.code, error.message);
@@ -1450,7 +1542,7 @@ function ensureMapSourcesAndLayers() {
     source: SOURCE_HEADING,
     paint: {
       "fill-color": "#4da3ff",
-      "fill-opacity": 0.25,
+      "fill-opacity": ["coalesce", ["get", "opacity"], 0],
     },
   });
 
@@ -1769,7 +1861,7 @@ async function locateUser() {
 
     closePanelIfOpen();
     setCurrentLocationState(latlng, position.coords.accuracy, { openPopup: false });
-    updateHeadingCone(latlng, position.coords.heading, position.coords.speed);
+    syncHeadingFromLocation(latlng, position.coords.heading, position.coords.speed);
 
     if (animateLocate) {
       map.flyTo({ center: lngLatToArray(latlng), zoom: targetZoom, duration: LOCATION_FLY_DURATION_MS });
