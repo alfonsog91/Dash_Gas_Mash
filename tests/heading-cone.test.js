@@ -1,15 +1,24 @@
 import {
   HEADING_CONE_LENGTH_PIXELS,
+  HEADING_CONE_BAND_OPACITIES,
+  HEADING_GPS_FALLBACK_SMOOTHING_TIME_MS,
   HEADING_CONE_HALF_ANGLE_MOVING,
   HEADING_CONE_HALF_ANGLE_STATIONARY,
   HEADING_CONE_SPEED_FOR_FULLY_MOVING,
+  HEADING_SENSOR_SMOOTHING_MIN_BLEND,
+  HEADING_SENSOR_SMOOTHING_TIME_MS,
+  HEADING_SENSOR_STALE_AFTER_MS,
   getDeviceOrientationHeading,
+  getHeadingBlendFactor,
+  getHeadingConeBandStops,
   getHeadingConeHalfAngle,
   getHeadingConeLengthMeters,
   getHeadingDeltaDegrees,
+  hasFreshHeadingSensorData,
+  interpolateHeadingDegrees,
   getMetersPerPixelAtLatitude,
   normalizeHeadingDegrees,
-} from "../heading_cone.js?v=20260403-presence-layer";
+} from "../heading_cone.js?v=20260403-sensor-presence";
 
 function createLogger() {
   const logEl = document.getElementById("log");
@@ -79,6 +88,23 @@ export function runHeadingConeTests() {
     assertEqual(getHeadingDeltaDegrees(5, 355), 10, "reverse wraparound delta should stay small");
   });
 
+  runTest("interpolateHeadingDegrees follows the shortest turn", () => {
+    assertEqual(interpolateHeadingDegrees(350, 10, 0.5), 0, "half blend should cross the seam cleanly");
+    assertEqual(interpolateHeadingDegrees(null, 95, 0.2), 95, "missing previous heading should use next heading");
+  });
+
+  runTest("getHeadingBlendFactor stays time-based and lightly responsive", () => {
+    const immediateSensorBlend = getHeadingBlendFactor(16, HEADING_SENSOR_SMOOTHING_TIME_MS, HEADING_SENSOR_SMOOTHING_MIN_BLEND);
+    const slowerGpsBlend = getHeadingBlendFactor(16, HEADING_GPS_FALLBACK_SMOOTHING_TIME_MS, 0);
+    assert(immediateSensorBlend >= HEADING_SENSOR_SMOOTHING_MIN_BLEND, "sensor smoothing should keep a minimum response");
+    assert(immediateSensorBlend > slowerGpsBlend, "sensor updates should respond faster than GPS fallback");
+  });
+
+  runTest("hasFreshHeadingSensorData expires stale sensor authority", () => {
+    assert(hasFreshHeadingSensorData(1000, 1000 + HEADING_SENSOR_STALE_AFTER_MS - 1), "recent sensor data should stay authoritative");
+    assert(!hasFreshHeadingSensorData(1000, 1000 + HEADING_SENSOR_STALE_AFTER_MS + 1), "stale sensor data should expire");
+  });
+
   runTest("getHeadingConeHalfAngle returns stationary width at zero speed", () => {
     assertEqual(getHeadingConeHalfAngle(0), HEADING_CONE_HALF_ANGLE_STATIONARY, "stationary speed uses stationary angle");
   });
@@ -120,6 +146,14 @@ export function runHeadingConeTests() {
       0.0001,
       "default cone pixels should map into zoom-scaled meters"
     );
+  });
+
+  runTest("getHeadingConeBandStops fade toward the cone tip", () => {
+    const stops = getHeadingConeBandStops();
+    assertEqual(stops.length, HEADING_CONE_BAND_OPACITIES.length, "one stop per opacity band");
+    assertEqual(stops[0].startRatio, 0, "first band begins at the blue dot");
+    assertEqual(stops.at(-1).endRatio, 1, "last band reaches the cone tip");
+    assert(stops[0].opacity > stops.at(-1).opacity, "near band should be more opaque than the tip band");
   });
 
   runTest("getDeviceOrientationHeading prefers iOS webkit compass heading", () => {
