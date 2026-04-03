@@ -251,6 +251,7 @@ let isLocating = false;
 let hasRequestedInitialLocation = false;
 let activeContinuousWatchId = null;
 let lastKnownHeading = null;
+let lastKnownHeadingSource = null;
 let lastKnownHeadingSpeed = null;
 let lastSensorHeading = null;
 let lastSensorHeadingAt = null;
@@ -722,6 +723,8 @@ function setCurrentLocationState(latlng, accuracyMeters, { openPopup = true } = 
     properties: { accuracyMeters: accuracyRadius },
   }]));
 
+  refreshHeadingConeFromState();
+
   if (openPopup) {
     openPopupAtLngLat(currentLngLat, `You are here<br/><span class="mono">Accuracy ±${Math.round(accuracyRadius)} m</span>`);
   }
@@ -744,7 +747,6 @@ function updateHeadingCone(latlng, heading, speed) {
     return;
   }
 
-  lastKnownHeading = resolvedHeading;
   if (typeof speed === "number" && Number.isFinite(speed)) {
     lastKnownHeadingSpeed = Math.max(0, speed);
   }
@@ -818,6 +820,49 @@ function getHeadingNowMs() {
   return Date.now();
 }
 
+function getMapBearingHeading() {
+  if (!map || typeof map.getBearing !== "function") {
+    return null;
+  }
+
+  return normalizeHeadingDegrees(map.getBearing());
+}
+
+function getHeadingState(nowMs = getHeadingNowMs()) {
+  const storedHeading = normalizeHeadingDegrees(lastKnownHeading);
+  const sensorHeading = normalizeHeadingDegrees(lastSensorHeading);
+  const sensorFresh = hasFreshHeadingSensorData(lastSensorHeadingAt, nowMs, HEADING_SENSOR_STALE_AFTER_MS);
+  const mapBearing = getMapBearingHeading();
+
+  let effectiveHeading = null;
+  let source = null;
+
+  if (sensorFresh && sensorHeading !== null) {
+    effectiveHeading = sensorHeading;
+    source = "sensor";
+  } else if (storedHeading !== null && lastKnownHeadingSource !== "sensor") {
+    effectiveHeading = storedHeading;
+    source = lastKnownHeadingSource || "stored";
+  } else if (mapBearing !== null) {
+    effectiveHeading = mapBearing;
+    source = "map-bearing";
+  }
+
+  return {
+    effectiveHeading,
+    source,
+    mapBearing,
+    storedHeading,
+    storedHeadingSource: lastKnownHeadingSource,
+    storedSpeed: lastKnownHeadingSpeed,
+    sensorHeading,
+    sensorFresh,
+    sensorAgeMs: typeof lastSensorHeadingAt === "number"
+      ? Math.max(0, nowMs - lastSensorHeadingAt)
+      : null,
+  };
+}
+
 function applyHeadingUpdate(
   nextHeading,
   {
@@ -826,6 +871,7 @@ function applyHeadingUpdate(
     nowMs = getHeadingNowMs(),
     timeConstantMs = HEADING_SENSOR_SMOOTHING_TIME_MS,
     minBlend = 0,
+    source = lastKnownHeadingSource || "stored",
   } = {}
 ) {
   const normalizedHeading = normalizeHeadingDegrees(nextHeading);
@@ -840,6 +886,8 @@ function applyHeadingUpdate(
     getHeadingBlendFactor(elapsedMs, timeConstantMs, minBlend)
   );
 
+  lastKnownHeading = resolvedHeading;
+  lastKnownHeadingSource = source;
   lastHeadingRenderAt = nowMs;
   if (latlng) {
     updateHeadingCone(latlng, resolvedHeading, speed);
@@ -853,17 +901,8 @@ function applyHeadingUpdate(
   return resolvedHeading;
 }
 
-function getEffectiveHeading(nowMs) {
-  const resolvedKnownHeading = normalizeHeadingDegrees(lastKnownHeading);
-  if (resolvedKnownHeading !== null) {
-    return resolvedKnownHeading;
-  }
-
-  if (hasFreshHeadingSensorData(lastSensorHeadingAt, nowMs, HEADING_SENSOR_STALE_AFTER_MS)) {
-    return normalizeHeadingDegrees(lastSensorHeading);
-  }
-
-  return null;
+function getEffectiveHeading(nowMs = getHeadingNowMs()) {
+  return getHeadingState(nowMs).effectiveHeading;
 }
 
 function refreshHeadingConeWithEffectiveHeading(latlng, speed, nowMs = getHeadingNowMs()) {
@@ -881,6 +920,35 @@ function refreshHeadingConeFromState(nowMs = getHeadingNowMs()) {
   setSourceData(SOURCE_HEADING, featureCollection());
 }
 
+function getRuntimeDebugState(nowMs = getHeadingNowMs()) {
+  return {
+    appBuildId: APP_BUILD_ID,
+    currentLocation: lastCurrentLocation ? { ...lastCurrentLocation } : null,
+    currentLocationAccuracyMeters: lastCurrentLocationAccuracyMeters,
+    heading: getHeadingState(nowMs),
+    baseStyle: currentBaseStyle,
+    routeActive: Boolean(activeRoute),
+    dataLoaded: Boolean(lastLoadedBounds && lastStats),
+  };
+}
+
+function installRuntimeDebugSurface() {
+  if (typeof window === "undefined") return;
+
+  window.DGM_RUNTIME = {
+    map,
+    getState: () => getRuntimeDebugState(),
+    getHeadingState: () => getHeadingState(getHeadingNowMs()),
+    refreshHeadingCone: () => {
+      refreshHeadingConeFromState();
+      return getHeadingState(getHeadingNowMs());
+    },
+    loadForView,
+    locateUser,
+    startDeviceOrientationWatch,
+  };
+}
+
 function syncHeadingFromLocation(latlng, gpsHeading, speed, nowMs = getHeadingNowMs()) {
   if (lastSensorHeading !== null && hasFreshHeadingSensorData(lastSensorHeadingAt, nowMs, HEADING_SENSOR_STALE_AFTER_MS)) {
     return refreshHeadingConeWithEffectiveHeading(latlng, speed, nowMs);
@@ -888,6 +956,8 @@ function syncHeadingFromLocation(latlng, gpsHeading, speed, nowMs = getHeadingNo
 
   const normalizedGpsHeading = normalizeHeadingDegrees(gpsHeading);
   if (normalizedGpsHeading === null) {
+    lastKnownHeading = null;
+    lastKnownHeadingSource = null;
     return refreshHeadingConeWithEffectiveHeading(latlng, speed, nowMs);
   }
 
@@ -896,6 +966,7 @@ function syncHeadingFromLocation(latlng, gpsHeading, speed, nowMs = getHeadingNo
     speed,
     nowMs,
     timeConstantMs: HEADING_GPS_FALLBACK_SMOOTHING_TIME_MS,
+    source: "gps",
   });
 }
 
@@ -948,6 +1019,7 @@ function startDeviceOrientationWatch() {
       nowMs,
       timeConstantMs: HEADING_SENSOR_SMOOTHING_TIME_MS,
       minBlend: HEADING_SENSOR_SMOOTHING_MIN_BLEND,
+      source: "sensor",
     });
   };
 
@@ -2498,6 +2570,8 @@ async function loadForView() {
   }
 }
 
+installRuntimeDebugSurface();
+
 elLoad.addEventListener("click", () => {
   loadForView().catch((err) => {
     console.error(err);
@@ -2597,6 +2671,7 @@ if (elNavigationVoice) {
 
 map.on("moveend", checkDataFreshness);
 map.on("zoom", refreshHeadingConeFromState);
+map.on("rotate", refreshHeadingConeFromState);
 
 map.on("click", (event) => {
   const featuresAtPoint = map.queryRenderedFeatures(event.point, {

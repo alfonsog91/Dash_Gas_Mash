@@ -191,8 +191,7 @@ References (public):
 
 The app is hosted on GitHub Pages and is publicly accessible at:
 
-[https://alfonsog91.github.io/Dash_Gas_Mash/](https://alfonsog91.github.io/Dash_Gas_Mash/)
-
+[https://alfonsog91.github.io/Dash_Gas_Mash/] https://alfonsog91.github.io/Dash_Gas_Mash/
 No installation or local server required — just open that URL in any modern browser.
 
 > The live site is automatically updated whenever changes are pushed to the `main` branch via the GitHub Actions workflow in `.github/workflows/deploy.yml`.
