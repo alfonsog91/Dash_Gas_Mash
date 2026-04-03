@@ -212,7 +212,10 @@ const LOCATION_PAN_DURATION_SECONDS = 0.9;
 const LOCATION_FLY_DURATION_MS = 850;
 const LOCATION_ZOOM_STEP = 3;
 const MAX_VISIBLE_ACCURACY_RADIUS_METERS = 45;
-const HEADING_LINE_METERS = 80;
+const HEADING_CONE_METERS = 80;
+const HEADING_CONE_HALF_ANGLE_MOVING = 25;
+const HEADING_CONE_HALF_ANGLE_STATIONARY = 40;
+const HEADING_CONE_SPEED_THRESHOLD = 1.0;
 const CONTINUOUS_WATCH_TIMEOUT_MS = 30000;
 
 const INITIAL_LOCATION_ZOOM = 14;
@@ -428,7 +431,7 @@ function restoreMapDataSources() {
   }
 
   if (lastCurrentLocation && lastKnownHeading !== null) {
-    updateHeadingLine(lastCurrentLocation, lastKnownHeading);
+    updateHeadingCone(lastCurrentLocation, lastKnownHeading, null);
   } else {
     setSourceData(SOURCE_HEADING, featureCollection());
   }
@@ -710,25 +713,32 @@ function stopNavigationWatch() {
   activeNavigationWatchId = null;
 }
 
-function updateHeadingLine(latlng, heading) {
+function updateHeadingCone(latlng, heading, speed) {
   if (typeof heading !== "number" || !Number.isFinite(heading)) {
     setSourceData(SOURCE_HEADING, featureCollection());
     lastKnownHeading = null;
     return;
   }
   lastKnownHeading = heading;
-  const headingRad = (heading * Math.PI) / 180;
-  const dLat = (HEADING_LINE_METERS * Math.cos(headingRad)) / 111320;
-  const dLng = (HEADING_LINE_METERS * Math.sin(headingRad)) / (111320 * Math.cos((latlng.lat * Math.PI) / 180));
+  const isMoving = typeof speed === "number" && Number.isFinite(speed) && speed >= HEADING_CONE_SPEED_THRESHOLD;
+  const halfAngle = isMoving ? HEADING_CONE_HALF_ANGLE_MOVING : HEADING_CONE_HALF_ANGLE_STATIONARY;
+  const latScale = 1 / 111320;
+  const lngScale = 1 / (111320 * Math.cos((latlng.lat * Math.PI) / 180));
+  const origin = [latlng.lng, latlng.lat];
+  const numArcPoints = 12;
+  const ring = [origin];
+  for (let i = 0; i <= numArcPoints; i++) {
+    const angleDeg = heading - halfAngle + (2 * halfAngle * i) / numArcPoints;
+    const angleRad = (angleDeg * Math.PI) / 180;
+    ring.push([
+      latlng.lng + HEADING_CONE_METERS * Math.sin(angleRad) * lngScale,
+      latlng.lat + HEADING_CONE_METERS * Math.cos(angleRad) * latScale,
+    ]);
+  }
+  ring.push(origin);
   setSourceData(SOURCE_HEADING, featureCollection([{
     type: "Feature",
-    geometry: {
-      type: "LineString",
-      coordinates: [
-        [latlng.lng, latlng.lat],
-        [latlng.lng + dLng, latlng.lat + dLat],
-      ],
-    },
+    geometry: { type: "Polygon", coordinates: [ring] },
     properties: {},
   }]));
 }
@@ -739,7 +749,7 @@ function startContinuousLocationWatch() {
     (position) => {
       const latlng = { lat: position.coords.latitude, lng: position.coords.longitude };
       setCurrentLocationState(latlng, position.coords.accuracy, { openPopup: false });
-      updateHeadingLine(latlng, position.coords.heading);
+      updateHeadingCone(latlng, position.coords.heading, position.coords.speed);
     },
     (error) => {
       console.warn("[DGM] Continuous location watch error:", error.code, error.message);
@@ -1339,16 +1349,11 @@ function ensureMapSourcesAndLayers() {
 
   map.addLayer({
     id: LAYER_HEADING,
-    type: "line",
+    type: "fill",
     source: SOURCE_HEADING,
-    layout: {
-      "line-cap": "round",
-      "line-join": "round",
-    },
     paint: {
-      "line-color": "#f4fbff",
-      "line-width": 3,
-      "line-opacity": 0.85,
+      "fill-color": "#4da3ff",
+      "fill-opacity": 0.25,
     },
   });
 
@@ -1667,7 +1672,7 @@ async function locateUser() {
 
     closePanelIfOpen();
     setCurrentLocationState(latlng, position.coords.accuracy, { openPopup: false });
-    updateHeadingLine(latlng, position.coords.heading);
+    updateHeadingCone(latlng, position.coords.heading, position.coords.speed);
 
     if (animateLocate) {
       map.flyTo({ center: lngLatToArray(latlng), zoom: targetZoom, duration: LOCATION_FLY_DURATION_MS });
