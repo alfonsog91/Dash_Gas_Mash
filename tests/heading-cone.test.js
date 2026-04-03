@@ -21,7 +21,7 @@ import {
 } from "../heading_cone.js?v=20260403-sensor-presence";
 
 function createLogger() {
-  const logEl = document.getElementById("log");
+  const logEl = typeof document !== "undefined" ? document.getElementById("log") : null;
   const entries = [];
   return {
     write(message) {
@@ -61,10 +61,10 @@ export function runHeadingConeTests() {
     try {
       fn();
       passed += 1;
-      log.write(`✅ ${name}`);
+      log.write(`PASS ${name}`);
     } catch (error) {
       failed += 1;
-      log.write(`❌ ${name}: ${error.message}`);
+      log.write(`FAIL ${name}: ${error.message}`);
     }
   }
 
@@ -135,7 +135,7 @@ export function runHeadingConeTests() {
   runTest("getMetersPerPixelAtLatitude reflects latitude", () => {
     const equator = getMetersPerPixelAtLatitude(0, 12);
     const highLatitude = getMetersPerPixelAtLatitude(60, 12);
-    assertApprox(highLatitude, equator * 0.5, 0.0001, "60° latitude should use cosine scaling");
+    assertApprox(highLatitude, equator * 0.5, 0.0001, "60 degrees latitude should use cosine scaling");
   });
 
   runTest("getHeadingConeLengthMeters converts fixed pixels into map meters", () => {
@@ -157,11 +157,7 @@ export function runHeadingConeTests() {
   });
 
   runTest("getDeviceOrientationHeading prefers iOS webkit compass heading", () => {
-    assertEqual(
-      getDeviceOrientationHeading({ webkitCompassHeading: 271 }),
-      271,
-      "webkit compass heading should be used directly"
-    );
+    assertEqual(getDeviceOrientationHeading({ webkitCompassHeading: 271 }), 271, "webkit compass heading should be used directly");
   });
 
   runTest("getDeviceOrientationHeading converts absolute alpha to compass heading", () => {
@@ -183,11 +179,16 @@ export function runHeadingConeTests() {
     assert(getDeviceOrientationHeading(null) === null, "null events should be ignored");
   });
 
-  const title = failed === 0
-    ? `✅ All ${passed} heading cone tests passed`
-    : `❌ ${failed}/${passed + failed} heading cone tests failed`;
-  document.title = title;
+  const result = { passed, failed };
   log.write(`Results: ${passed} passed, ${failed} failed`);
+  if (typeof document !== "undefined") {
+    document.title = failed === 0
+      ? `All ${passed} heading cone tests passed`
+      : `${failed}/${passed + failed} heading cone tests failed`;
+  }
+  return result;
 }
 
-window.addEventListener("load", runHeadingConeTests);
+if (typeof window !== "undefined") {
+  window.addEventListener("load", runHeadingConeTests);
+}

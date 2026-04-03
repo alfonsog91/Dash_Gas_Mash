@@ -34,7 +34,6 @@ import {
 } from "./optimizer.js?v=20260401-probability-contract";
 import {
   HEADING_CONE_LENGTH_PIXELS,
-  HEADING_CONE_BAND_OPACITIES,
   HEADING_GPS_FALLBACK_SMOOTHING_TIME_MS,
   HEADING_SENSOR_SMOOTHING_MIN_BLEND,
   HEADING_SENSOR_SMOOTHING_TIME_MS,
@@ -739,27 +738,29 @@ function stopNavigationWatch() {
 }
 
 function updateHeadingCone(latlng, heading, speed) {
-  const normalizedHeading = normalizeHeadingDegrees(heading);
-  const resolvedHeading = normalizedHeading ?? lastKnownHeading;
+  const resolvedHeading = normalizeHeadingDegrees(heading);
   if (!latlng || resolvedHeading === null) {
     setSourceData(SOURCE_HEADING, featureCollection());
     return;
   }
+
   lastKnownHeading = resolvedHeading;
   if (typeof speed === "number" && Number.isFinite(speed)) {
     lastKnownHeadingSpeed = Math.max(0, speed);
   }
+
   const halfAngle = getHeadingConeHalfAngle(
     typeof speed === "number" && Number.isFinite(speed)
       ? speed
       : lastKnownHeadingSpeed
   );
-  const bandStops = getHeadingConeBandStops(HEADING_CONE_BAND_OPACITIES);
+  const bandStops = getHeadingConeBandStops();
   const coneLengthMeters = getCachedHeadingConeLengthMeters(latlng.lat);
   if (!(typeof coneLengthMeters === "number" && Number.isFinite(coneLengthMeters) && coneLengthMeters > 0)) {
     setSourceData(SOURCE_HEADING, featureCollection());
     return;
   }
+
   const latScale = 1 / 111320;
   const lngScale = 1 / (111320 * Math.cos((latlng.lat * Math.PI) / 180));
   const origin = [latlng.lng, latlng.lat];
@@ -776,23 +777,27 @@ function updateHeadingCone(latlng, heading, speed) {
     const innerDistanceMeters = coneLengthMeters * startRatio;
     const outerArcPoints = [];
     const innerArcPoints = [];
-    for (let i = 0; i <= numArcPoints; i++) {
+
+    for (let i = 0; i <= numArcPoints; i += 1) {
       const angleDeg = resolvedHeading - halfAngle + (2 * halfAngle * i) / numArcPoints;
       outerArcPoints.push(projectConePoint(outerDistanceMeters, angleDeg));
       if (innerDistanceMeters > 0) {
         innerArcPoints.push(projectConePoint(innerDistanceMeters, angleDeg));
       }
     }
+
     innerArcPoints.reverse();
     const ring = innerDistanceMeters > 0
       ? [...outerArcPoints, ...innerArcPoints, outerArcPoints[0]]
       : [origin, ...outerArcPoints, origin];
+
     return {
       type: "Feature",
       geometry: { type: "Polygon", coordinates: [ring] },
       properties: { bandIndex, opacity },
     };
   });
+
   setSourceData(SOURCE_HEADING, featureCollection(features));
 }
 
@@ -804,14 +809,6 @@ function getCachedHeadingConeLengthMeters(latitude) {
     lastHeadingConeLengthMeters = getHeadingConeLengthMeters(latitude, zoom, HEADING_CONE_LENGTH_PIXELS);
   }
   return lastHeadingConeLengthMeters;
-}
-
-function refreshHeadingConeFromState() {
-  if (lastCurrentLocation && lastKnownHeading !== null) {
-    updateHeadingCone(lastCurrentLocation, lastKnownHeading, null);
-    return;
-  }
-  setSourceData(SOURCE_HEADING, featureCollection());
 }
 
 function getHeadingNowMs() {
@@ -833,6 +830,7 @@ function applyHeadingUpdate(
 ) {
   const normalizedHeading = normalizeHeadingDegrees(nextHeading);
   if (normalizedHeading === null) return null;
+
   const elapsedMs = lastHeadingRenderAt === null
     ? timeConstantMs
     : Math.max(0, nowMs - lastHeadingRenderAt);
@@ -841,6 +839,7 @@ function applyHeadingUpdate(
     normalizedHeading,
     getHeadingBlendFactor(elapsedMs, timeConstantMs, minBlend)
   );
+
   lastHeadingRenderAt = nowMs;
   if (latlng) {
     updateHeadingCone(latlng, resolvedHeading, speed);
@@ -850,27 +849,48 @@ function applyHeadingUpdate(
       lastKnownHeadingSpeed = Math.max(0, speed);
     }
   }
+
   return resolvedHeading;
 }
 
-function getEffectiveHeading() {
-  return lastKnownHeading ?? lastSensorHeading;
+function getEffectiveHeading(nowMs) {
+  const resolvedKnownHeading = normalizeHeadingDegrees(lastKnownHeading);
+  if (resolvedKnownHeading !== null) {
+    return resolvedKnownHeading;
+  }
+
+  if (hasFreshHeadingSensorData(lastSensorHeadingAt, nowMs, HEADING_SENSOR_STALE_AFTER_MS)) {
+    return normalizeHeadingDegrees(lastSensorHeading);
+  }
+
+  return null;
 }
 
-function refreshHeadingConeWithEffectiveHeading(latlng, speed) {
-  const effectiveHeading = getEffectiveHeading();
+function refreshHeadingConeWithEffectiveHeading(latlng, speed, nowMs = getHeadingNowMs()) {
+  const effectiveHeading = getEffectiveHeading(nowMs);
   updateHeadingCone(latlng, effectiveHeading, speed);
   return effectiveHeading;
 }
 
+function refreshHeadingConeFromState(nowMs = getHeadingNowMs()) {
+  const effectiveHeading = getEffectiveHeading(nowMs);
+  if (lastCurrentLocation && effectiveHeading !== null) {
+    updateHeadingCone(lastCurrentLocation, effectiveHeading, lastKnownHeadingSpeed);
+    return;
+  }
+  setSourceData(SOURCE_HEADING, featureCollection());
+}
+
 function syncHeadingFromLocation(latlng, gpsHeading, speed, nowMs = getHeadingNowMs()) {
   if (lastSensorHeading !== null && hasFreshHeadingSensorData(lastSensorHeadingAt, nowMs, HEADING_SENSOR_STALE_AFTER_MS)) {
-    return refreshHeadingConeWithEffectiveHeading(latlng, speed);
+    return refreshHeadingConeWithEffectiveHeading(latlng, speed, nowMs);
   }
+
   const normalizedGpsHeading = normalizeHeadingDegrees(gpsHeading);
   if (normalizedGpsHeading === null) {
-    return refreshHeadingConeWithEffectiveHeading(latlng, speed);
+    return refreshHeadingConeWithEffectiveHeading(latlng, speed, nowMs);
   }
+
   return applyHeadingUpdate(normalizedGpsHeading, {
     latlng,
     speed,
@@ -915,10 +935,12 @@ function startBlueDotBreathingAnimation() {
 
 function startDeviceOrientationWatch() {
   if (hasStartedDeviceOrientationWatch || typeof window === "undefined") return;
+
   hasStartedDeviceOrientationWatch = true;
   const onOrientationChange = (event) => {
     const nextHeading = getDeviceOrientationHeading(event);
     if (nextHeading === null) return;
+
     const nowMs = getHeadingNowMs();
     lastSensorHeading = nextHeading;
     lastSensorHeadingAt = nowMs;
@@ -928,12 +950,14 @@ function startDeviceOrientationWatch() {
       minBlend: HEADING_SENSOR_SMOOTHING_MIN_BLEND,
     });
   };
+
   window.addEventListener("deviceorientationabsolute", onOrientationChange);
   window.addEventListener("deviceorientation", onOrientationChange);
 }
 
 function startContinuousLocationWatch() {
   if (activeContinuousWatchId !== null || !navigator.geolocation) return;
+
   activeContinuousWatchId = navigator.geolocation.watchPosition(
     (position) => {
       const latlng = { lat: position.coords.latitude, lng: position.coords.longitude };

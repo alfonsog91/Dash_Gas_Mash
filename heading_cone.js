@@ -2,14 +2,13 @@ const HEADING_CONE_LENGTH_PIXELS = 28;
 const HEADING_CONE_HALF_ANGLE_MOVING = 18;
 const HEADING_CONE_HALF_ANGLE_STATIONARY = 28;
 const HEADING_CONE_SPEED_FOR_FULLY_MOVING = 3;
-const HEADING_ORIENTATION_MIN_DELTA_DEGREES = 2;
 const HEADING_SENSOR_STALE_AFTER_MS = 2200;
 const HEADING_SENSOR_SMOOTHING_TIME_MS = 90;
 const HEADING_SENSOR_SMOOTHING_MIN_BLEND = 0.42;
 const HEADING_GPS_FALLBACK_SMOOTHING_TIME_MS = 900;
 const HEADING_CONE_BAND_OPACITIES = Object.freeze([0.22, 0.14, 0.08, 0.04]);
-const WEB_MERCATOR_MAX_LATITUDE = 85.05112878; // Web Mercator approaches infinity past this latitude.
-const WEB_MERCATOR_METERS_PER_PIXEL_AT_ZOOM_0 = 40075016.68557849 / 512; // Earth's equatorial circumference / 512px world.
+const WEB_MERCATOR_MAX_LATITUDE = 85.05112878;
+const WEB_MERCATOR_METERS_PER_PIXEL_AT_ZOOM_0 = 40075016.68557849 / 512;
 
 function clamp01(x) {
   return Math.max(0, Math.min(1, Number(x) || 0));
@@ -54,11 +53,7 @@ function interpolateHeadingDegrees(previousHeading, nextHeading, blend = 1) {
   return normalizeHeadingDegrees(normalizedPrevious + delta * clamp01(blend));
 }
 
-function hasFreshHeadingSensorData(
-  lastSensorHeadingAt,
-  nowMs = lastSensorHeadingAt,
-  maxAgeMs = HEADING_SENSOR_STALE_AFTER_MS
-) {
+function hasFreshHeadingSensorData(lastSensorHeadingAt, nowMs, maxAgeMs = HEADING_SENSOR_STALE_AFTER_MS) {
   const resolvedLastSensorHeadingAt = resolveFiniteNumber(lastSensorHeadingAt, null);
   const resolvedNowMs = resolveFiniteNumber(nowMs, null);
   const resolvedMaxAgeMs = resolveFiniteNumber(maxAgeMs, HEADING_SENSOR_STALE_AFTER_MS, { min: 0 });
@@ -119,14 +114,17 @@ function getDeviceOrientationHeading(event) {
   if (webkitHeading !== null) {
     return webkitHeading;
   }
+
   const isAbsoluteHeading = event?.type === "deviceorientationabsolute" || event?.absolute === true;
   if (!isAbsoluteHeading) {
     return null;
   }
+
   const alphaHeading = normalizeHeadingDegrees(event?.alpha);
   if (alphaHeading === null) {
     return null;
   }
+
   return normalizeHeadingDegrees(360 - alphaHeading);
 }
 
@@ -135,7 +133,6 @@ export {
   HEADING_CONE_HALF_ANGLE_MOVING,
   HEADING_CONE_HALF_ANGLE_STATIONARY,
   HEADING_CONE_SPEED_FOR_FULLY_MOVING,
-  HEADING_ORIENTATION_MIN_DELTA_DEGREES,
   HEADING_SENSOR_STALE_AFTER_MS,
   HEADING_SENSOR_SMOOTHING_TIME_MS,
   HEADING_SENSOR_SMOOTHING_MIN_BLEND,
