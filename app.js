@@ -56,6 +56,7 @@ const NAV_REROUTE_MIN_INTERVAL_MS = 4000;
 const BLUE_DOT_BASE_RADIUS_PX = 8;
 const BLUE_DOT_BREATHING_AMPLITUDE_PX = 0.4;
 const BLUE_DOT_BREATHING_CYCLE_MS = 2800;
+const BLUE_DOT_RADIUS_EPSILON_PX = 0.01;
 const FULL_CYCLE_RADIANS = Math.PI * 2;
 
 if (window.location.protocol === "file:") {
@@ -247,6 +248,11 @@ let lastKnownHeading = null;
 let lastKnownHeadingSpeed = null;
 let hasStartedDeviceOrientationWatch = false;
 let hasStartedBlueDotBreathingAnimation = false;
+let blueDotBreathingAnimationFrame = null;
+let lastBlueDotBreathingRadius = null;
+let lastHeadingConeLengthMeters = null;
+let lastHeadingConeLatitude = null;
+let lastHeadingConeZoom = null;
 
 function featureCollection(features = []) {
   return { type: "FeatureCollection", features };
@@ -738,7 +744,7 @@ function updateHeadingCone(latlng, heading, speed) {
       ? speed
       : lastKnownHeadingSpeed
   );
-  const coneLengthMeters = getHeadingConeLengthMeters(latlng.lat, map.getZoom(), HEADING_CONE_LENGTH_PIXELS);
+  const coneLengthMeters = getCachedHeadingConeLengthMeters(latlng.lat);
   if (!(typeof coneLengthMeters === "number" && Number.isFinite(coneLengthMeters) && coneLengthMeters > 0)) {
     setSourceData(SOURCE_HEADING, featureCollection());
     return;
@@ -764,6 +770,16 @@ function updateHeadingCone(latlng, heading, speed) {
   }]));
 }
 
+function getCachedHeadingConeLengthMeters(latitude) {
+  const zoom = map.getZoom();
+  if (zoom !== lastHeadingConeZoom || latitude !== lastHeadingConeLatitude) {
+    lastHeadingConeZoom = zoom;
+    lastHeadingConeLatitude = latitude;
+    lastHeadingConeLengthMeters = getHeadingConeLengthMeters(latitude, zoom, HEADING_CONE_LENGTH_PIXELS);
+  }
+  return lastHeadingConeLengthMeters;
+}
+
 function refreshHeadingConeFromState() {
   if (lastCurrentLocation && lastKnownHeading !== null) {
     updateHeadingCone(lastCurrentLocation, lastKnownHeading, null);
@@ -778,16 +794,32 @@ function getBlueDotBreathingRadius(timestampMs = 0) {
   return BLUE_DOT_BASE_RADIUS_PX + BLUE_DOT_BREATHING_AMPLITUDE_PX * pulse;
 }
 
+function stopBlueDotBreathingAnimation() {
+  if (blueDotBreathingAnimationFrame !== null && typeof window !== "undefined") {
+    window.cancelAnimationFrame(blueDotBreathingAnimationFrame);
+    blueDotBreathingAnimationFrame = null;
+  }
+}
+
 function startBlueDotBreathingAnimation() {
   if (hasStartedBlueDotBreathingAnimation || typeof window === "undefined") return;
   hasStartedBlueDotBreathingAnimation = true;
   const tick = (timestampMs) => {
-    if (map.getLayer(LAYER_CURRENT_LOCATION_DOT)) {
-      map.setPaintProperty(LAYER_CURRENT_LOCATION_DOT, "circle-radius", getBlueDotBreathingRadius(timestampMs));
+    const nextRadius = getBlueDotBreathingRadius(timestampMs);
+    if (
+      map.getLayer(LAYER_CURRENT_LOCATION_DOT)
+      && (
+        lastBlueDotBreathingRadius === null
+        || Math.abs(nextRadius - lastBlueDotBreathingRadius) >= BLUE_DOT_RADIUS_EPSILON_PX
+      )
+    ) {
+      lastBlueDotBreathingRadius = nextRadius;
+      map.setPaintProperty(LAYER_CURRENT_LOCATION_DOT, "circle-radius", nextRadius);
     }
-    window.requestAnimationFrame(tick);
+    blueDotBreathingAnimationFrame = window.requestAnimationFrame(tick);
   };
-  window.requestAnimationFrame(tick);
+  blueDotBreathingAnimationFrame = window.requestAnimationFrame(tick);
+  window.addEventListener("beforeunload", stopBlueDotBreathingAnimation, { once: true });
 }
 
 function startDeviceOrientationWatch() {
