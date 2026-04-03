@@ -32,6 +32,14 @@ import {
   optimizeParkingSet,
   selectParkingSetSubmodular,
 } from "./optimizer.js?v=20260401-probability-contract";
+import {
+  HEADING_CONE_METERS,
+  HEADING_ORIENTATION_MIN_DELTA_DEGREES,
+  getDeviceOrientationHeading,
+  getHeadingConeHalfAngle,
+  getHeadingDeltaDegrees,
+  normalizeHeadingDegrees,
+} from "./heading_cone.js?v=20260401-probability-contract";
 
 const APP_BUILD_ID = "20260401-probability-contract";
 console.info("[DGM] app build", APP_BUILD_ID);
@@ -212,10 +220,6 @@ const LOCATION_PAN_DURATION_SECONDS = 0.9;
 const LOCATION_FLY_DURATION_MS = 850;
 const LOCATION_ZOOM_STEP = 3;
 const MAX_VISIBLE_ACCURACY_RADIUS_METERS = 45;
-const HEADING_CONE_METERS = 80;
-const HEADING_CONE_HALF_ANGLE_MOVING = 25;
-const HEADING_CONE_HALF_ANGLE_STATIONARY = 40;
-const HEADING_CONE_SPEED_THRESHOLD = 1.0;
 const CONTINUOUS_WATCH_TIMEOUT_MS = 30000;
 
 const INITIAL_LOCATION_ZOOM = 14;
@@ -234,6 +238,8 @@ let isLocating = false;
 let hasRequestedInitialLocation = false;
 let activeContinuousWatchId = null;
 let lastKnownHeading = null;
+let lastKnownHeadingSpeed = null;
+let hasStartedDeviceOrientationWatch = false;
 
 function featureCollection(features = []) {
   return { type: "FeatureCollection", features };
@@ -714,21 +720,28 @@ function stopNavigationWatch() {
 }
 
 function updateHeadingCone(latlng, heading, speed) {
-  if (typeof heading !== "number" || !Number.isFinite(heading)) {
+  const normalizedHeading = normalizeHeadingDegrees(heading);
+  const resolvedHeading = normalizedHeading ?? lastKnownHeading;
+  if (!latlng || resolvedHeading === null) {
     setSourceData(SOURCE_HEADING, featureCollection());
-    lastKnownHeading = null;
     return;
   }
-  lastKnownHeading = heading;
-  const isMoving = typeof speed === "number" && Number.isFinite(speed) && speed >= HEADING_CONE_SPEED_THRESHOLD;
-  const halfAngle = isMoving ? HEADING_CONE_HALF_ANGLE_MOVING : HEADING_CONE_HALF_ANGLE_STATIONARY;
+  lastKnownHeading = resolvedHeading;
+  if (typeof speed === "number" && Number.isFinite(speed)) {
+    lastKnownHeadingSpeed = Math.max(0, speed);
+  }
+  const halfAngle = getHeadingConeHalfAngle(
+    typeof speed === "number" && Number.isFinite(speed)
+      ? speed
+      : lastKnownHeadingSpeed
+  );
   const latScale = 1 / 111320;
   const lngScale = 1 / (111320 * Math.cos((latlng.lat * Math.PI) / 180));
   const origin = [latlng.lng, latlng.lat];
   const numArcPoints = 12;
   const ring = [origin];
   for (let i = 0; i <= numArcPoints; i++) {
-    const angleDeg = heading - halfAngle + (2 * halfAngle * i) / numArcPoints;
+    const angleDeg = resolvedHeading - halfAngle + (2 * halfAngle * i) / numArcPoints;
     const angleRad = (angleDeg * Math.PI) / 180;
     ring.push([
       latlng.lng + HEADING_CONE_METERS * Math.sin(angleRad) * lngScale,
@@ -741,6 +754,24 @@ function updateHeadingCone(latlng, heading, speed) {
     geometry: { type: "Polygon", coordinates: [ring] },
     properties: {},
   }]));
+}
+
+function startDeviceOrientationWatch() {
+  if (hasStartedDeviceOrientationWatch || typeof window === "undefined") return;
+  hasStartedDeviceOrientationWatch = true;
+  const onOrientationChange = (event) => {
+    const nextHeading = getDeviceOrientationHeading(event);
+    if (nextHeading === null) return;
+    if (getHeadingDeltaDegrees(nextHeading, lastKnownHeading) < HEADING_ORIENTATION_MIN_DELTA_DEGREES) {
+      return;
+    }
+    lastKnownHeading = nextHeading;
+    if (lastCurrentLocation) {
+      updateHeadingCone(lastCurrentLocation, nextHeading, lastKnownHeadingSpeed);
+    }
+  };
+  window.addEventListener("deviceorientationabsolute", onOrientationChange);
+  window.addEventListener("deviceorientation", onOrientationChange);
 }
 
 function startContinuousLocationWatch() {
@@ -2399,6 +2430,7 @@ map.on("load", () => {
   restoreMapDataSources();
   syncModeButtons();
   startContinuousLocationWatch();
+  startDeviceOrientationWatch();
 
   if (menuButton && panel) {
     menuButton.addEventListener("click", () => {
