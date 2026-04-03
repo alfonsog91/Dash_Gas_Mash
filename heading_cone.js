@@ -3,7 +3,7 @@ const HEADING_CONE_HALF_ANGLE_MOVING = 18;
 const HEADING_CONE_HALF_ANGLE_STATIONARY = 28;
 const HEADING_CONE_SPEED_FOR_FULLY_MOVING = 3;
 const HEADING_ORIENTATION_MIN_DELTA_DEGREES = 2;
-const WEB_MERCATOR_MAX_LATITUDE = 85.05112878; // Web Mercator projection limit.
+const WEB_MERCATOR_MAX_LATITUDE = 85.05112878; // Web Mercator approaches infinity past this latitude.
 const WEB_MERCATOR_METERS_PER_PIXEL_AT_ZOOM_0 = 40075016.68557849 / 512; // Earth's equatorial circumference / 512px world.
 
 function clamp01(x) {

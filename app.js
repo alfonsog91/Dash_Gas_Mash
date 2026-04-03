@@ -774,7 +774,8 @@ function refreshHeadingConeFromState() {
 
 function getBlueDotBreathingRadius(timestampMs = 0) {
   const phase = (timestampMs % BLUE_DOT_BREATHING_CYCLE_MS) / BLUE_DOT_BREATHING_CYCLE_MS;
-  return BLUE_DOT_BASE_RADIUS_PX + BLUE_DOT_BREATHING_AMPLITUDE_PX * Math.sin(phase * FULL_CYCLE_RADIANS);
+  const pulse = 0.5 - 0.5 * Math.cos(phase * FULL_CYCLE_RADIANS);
+  return BLUE_DOT_BASE_RADIUS_PX + BLUE_DOT_BREATHING_AMPLITUDE_PX * pulse;
 }
 
 function startBlueDotBreathingAnimation() {
