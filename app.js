@@ -41,6 +41,7 @@ import {
   getDeviceOrientationHeading,
   getHeadingBlendFactor,
   getHeadingConeBandStops,
+  getHeadingDeltaDegrees,
   getHeadingConeHalfAngle,
   getHeadingConeLengthMeters,
   hasFreshHeadingSensorData,
@@ -48,7 +49,7 @@ import {
   normalizeHeadingDegrees,
 } from "./heading_cone.js?v=20260403-cone-binding";
 
-const APP_BUILD_ID = "20260403-cone-binding";
+const APP_BUILD_ID = "20260403-orientation-loop";
 console.info("[DGM] app build", APP_BUILD_ID);
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
@@ -64,6 +65,13 @@ const BLUE_DOT_BREATHING_AMPLITUDE_PX = 0.4;
 const BLUE_DOT_BREATHING_CYCLE_MS = 2800;
 const BLUE_DOT_RADIUS_EPSILON_PX = 0.01;
 const FULL_CYCLE_RADIANS = Math.PI * 2;
+const HEADING_RENDER_LOOP_MAX_HZ = 30;
+const HEADING_RENDER_LOOP_FRAME_INTERVAL_MS = 1000 / HEADING_RENDER_LOOP_MAX_HZ;
+const HEADING_RENDER_LOOP_MAP_BEARING_SMOOTHING_TIME_MS = 140;
+const HEADING_RENDER_LOOP_GPS_SMOOTHING_TIME_MS = 180;
+const HEADING_RENDER_LOOP_MIN_DELTA_DEGREES = 0.35;
+const HEADING_RENDER_LOOP_MIN_LOCATION_DELTA_METERS = 0.25;
+const HEADING_RENDER_LOOP_MIN_SPEED_DELTA_MPS = 0.1;
 
 if (window.location.protocol === "file:") {
   alert(
@@ -258,11 +266,21 @@ let lastSensorHeadingAt = null;
 let lastHeadingRenderAt = null;
 let hasStartedDeviceOrientationWatch = false;
 let hasStartedBlueDotBreathingAnimation = false;
+let hasStartedHeadingConeRenderLoop = false;
 let blueDotBreathingAnimationFrame = null;
+let headingConeRenderLoopFrame = null;
+let lastHeadingConeLoopFrameAt = null;
+let lastHeadingConeLoopTickAt = null;
+let lastHeadingConeLoopHeading = null;
 let lastBlueDotBreathingRadius = null;
 let lastHeadingConeLengthMeters = null;
 let lastHeadingConeLatitude = null;
 let lastHeadingConeZoom = null;
+let headingConeRenderMesh = null;
+let lastRenderedHeadingConeHeading = null;
+let lastRenderedHeadingConeLocation = null;
+let lastRenderedHeadingConeSpeed = null;
+let lastRenderedHeadingConeZoom = null;
 
 function featureCollection(features = []) {
   return { type: "FeatureCollection", features };
@@ -386,6 +404,78 @@ function setSourceData(sourceId, data) {
   if (source) {
     source.setData(data);
   }
+}
+
+function clearHeadingConeVisual() {
+  if (
+    lastRenderedHeadingConeHeading === null
+    && lastRenderedHeadingConeLocation === null
+    && lastRenderedHeadingConeSpeed === null
+    && lastRenderedHeadingConeZoom === null
+  ) {
+    return;
+  }
+
+  setSourceData(SOURCE_HEADING, featureCollection());
+  lastHeadingConeLoopHeading = null;
+  lastRenderedHeadingConeHeading = null;
+  lastRenderedHeadingConeLocation = null;
+  lastRenderedHeadingConeSpeed = null;
+  lastRenderedHeadingConeZoom = null;
+}
+
+function createHeadingConeRenderMesh() {
+  const bandStops = getHeadingConeBandStops();
+  const numArcSegments = 12;
+  const features = [];
+  const pointRefs = [];
+
+  for (const [bandIndex, { startRatio, endRatio, startOpacity, endOpacity }] of bandStops.entries()) {
+    const opacity = Math.max(0, Math.min(1, (startOpacity + endOpacity) / 2));
+
+    for (let segmentIndex = 0; segmentIndex < numArcSegments; segmentIndex += 1) {
+      const startAngleRatio = segmentIndex / numArcSegments;
+      const endAngleRatio = (segmentIndex + 1) / numArcSegments;
+      const ring = [];
+
+      const pushPointRef = (pointSpec) => {
+        const point = [0, 0];
+        ring.push(point);
+        pointRefs.push({ point, ...pointSpec });
+      };
+
+      if (startRatio > 0) {
+        pushPointRef({ distanceRatio: startRatio, angleRatio: startAngleRatio });
+        pushPointRef({ distanceRatio: endRatio, angleRatio: startAngleRatio });
+        pushPointRef({ distanceRatio: endRatio, angleRatio: endAngleRatio });
+        pushPointRef({ distanceRatio: startRatio, angleRatio: endAngleRatio });
+        pushPointRef({ distanceRatio: startRatio, angleRatio: startAngleRatio });
+      } else {
+        pushPointRef({ isOrigin: true });
+        pushPointRef({ distanceRatio: endRatio, angleRatio: startAngleRatio });
+        pushPointRef({ distanceRatio: endRatio, angleRatio: endAngleRatio });
+        pushPointRef({ isOrigin: true });
+      }
+
+      features.push({
+        type: "Feature",
+        geometry: { type: "Polygon", coordinates: [ring] },
+        properties: { bandIndex, segmentIndex, opacity },
+      });
+    }
+  }
+
+  return {
+    featureCollection: featureCollection(features),
+    pointRefs,
+  };
+}
+
+function getHeadingConeRenderMesh() {
+  if (!headingConeRenderMesh) {
+    headingConeRenderMesh = createHeadingConeRenderMesh();
+  }
+  return headingConeRenderMesh;
 }
 
 function syncModeButtons() {
@@ -744,7 +834,7 @@ function updateHeadingCone(latlng, heading, speed) {
   const resolvedLatLng = lngLatToObject(latlng);
   const resolvedHeading = normalizeHeadingDegrees(heading);
   if (!resolvedLatLng || resolvedHeading === null) {
-    setSourceData(SOURCE_HEADING, featureCollection());
+    clearHeadingConeVisual();
     return;
   }
 
@@ -753,17 +843,15 @@ function updateHeadingCone(latlng, heading, speed) {
       ? speed
       : lastKnownHeadingSpeed
   );
-  const bandStops = getHeadingConeBandStops();
   const coneLengthMeters = getCachedHeadingConeLengthMeters(resolvedLatLng.lat);
   if (!(typeof coneLengthMeters === "number" && Number.isFinite(coneLengthMeters) && coneLengthMeters > 0)) {
-    setSourceData(SOURCE_HEADING, featureCollection());
+    clearHeadingConeVisual();
     return;
   }
 
+  const renderMesh = getHeadingConeRenderMesh();
   const latScale = 1 / 111320;
   const lngScale = 1 / (111320 * Math.max(Math.cos((resolvedLatLng.lat * Math.PI) / 180), 0.1));
-  const origin = [resolvedLatLng.lng, resolvedLatLng.lat];
-  const numArcSegments = 12;
   const projectConePoint = (distanceMeters, angleDeg) => {
     const angleRad = (angleDeg * Math.PI) / 180;
     return [
@@ -771,37 +859,29 @@ function updateHeadingCone(latlng, heading, speed) {
       resolvedLatLng.lat + distanceMeters * Math.cos(angleRad) * latScale,
     ];
   };
-  const features = [];
 
-  for (const { startRatio, endRatio, startOpacity, endOpacity } of bandStops) {
-    const outerDistanceMeters = coneLengthMeters * endRatio;
-    const innerDistanceMeters = coneLengthMeters * startRatio;
-    const opacity = Math.max(0, Math.min(1, (startOpacity + endOpacity) / 2));
-
-    for (let segmentIndex = 0; segmentIndex < numArcSegments; segmentIndex += 1) {
-      const startAngleDeg = resolvedHeading - halfAngle + (2 * halfAngle * segmentIndex) / numArcSegments;
-      const endAngleDeg = resolvedHeading - halfAngle + (2 * halfAngle * (segmentIndex + 1)) / numArcSegments;
-      const outerStart = projectConePoint(outerDistanceMeters, startAngleDeg);
-      const outerEnd = projectConePoint(outerDistanceMeters, endAngleDeg);
-      const ring = innerDistanceMeters > 0
-        ? [
-          projectConePoint(innerDistanceMeters, startAngleDeg),
-          outerStart,
-          outerEnd,
-          projectConePoint(innerDistanceMeters, endAngleDeg),
-          projectConePoint(innerDistanceMeters, startAngleDeg),
-        ]
-        : [origin, outerStart, outerEnd, origin];
-
-      features.push({
-        type: "Feature",
-        geometry: { type: "Polygon", coordinates: [ring] },
-        properties: { segmentIndex, opacity },
-      });
+  for (const pointRef of renderMesh.pointRefs) {
+    if (pointRef.isOrigin) {
+      pointRef.point[0] = resolvedLatLng.lng;
+      pointRef.point[1] = resolvedLatLng.lat;
+      continue;
     }
+
+    const distanceMeters = coneLengthMeters * pointRef.distanceRatio;
+    const angleDeg = resolvedHeading - halfAngle + (2 * halfAngle * pointRef.angleRatio);
+    const [nextLng, nextLat] = projectConePoint(distanceMeters, angleDeg);
+    pointRef.point[0] = nextLng;
+    pointRef.point[1] = nextLat;
   }
 
-  setSourceData(SOURCE_HEADING, featureCollection(features));
+  setSourceData(SOURCE_HEADING, renderMesh.featureCollection);
+  lastHeadingConeLoopHeading = resolvedHeading;
+  lastRenderedHeadingConeHeading = resolvedHeading;
+  lastRenderedHeadingConeLocation = { ...resolvedLatLng };
+  lastRenderedHeadingConeSpeed = typeof speed === "number" && Number.isFinite(speed)
+    ? Math.max(0, speed)
+    : 0;
+  lastRenderedHeadingConeZoom = map.getZoom();
 }
 
 function getCachedHeadingConeLengthMeters(latitude) {
@@ -864,6 +944,86 @@ function getHeadingState(nowMs = getHeadingNowMs()) {
   };
 }
 
+function getHeadingRenderLoopSmoothingTimeMs(source) {
+  if (source === "sensor") {
+    return HEADING_SENSOR_SMOOTHING_TIME_MS;
+  }
+
+  if (source === "gps") {
+    return HEADING_RENDER_LOOP_GPS_SMOOTHING_TIME_MS;
+  }
+
+  return HEADING_RENDER_LOOP_MAP_BEARING_SMOOTHING_TIME_MS;
+}
+
+function shouldRenderHeadingConeFrame(latlng, heading, speed) {
+  if (!lastRenderedHeadingConeLocation || lastRenderedHeadingConeHeading === null) {
+    return true;
+  }
+
+  if (map.getZoom() !== lastRenderedHeadingConeZoom) {
+    return true;
+  }
+
+  const headingDelta = getHeadingDeltaDegrees(heading, lastRenderedHeadingConeHeading);
+  if (!Number.isFinite(headingDelta) || headingDelta >= HEADING_RENDER_LOOP_MIN_DELTA_DEGREES) {
+    return true;
+  }
+
+  const movedMeters = haversineMeters(
+    latlng.lat,
+    latlng.lng,
+    lastRenderedHeadingConeLocation.lat,
+    lastRenderedHeadingConeLocation.lng
+  );
+  if (movedMeters >= HEADING_RENDER_LOOP_MIN_LOCATION_DELTA_METERS) {
+    return true;
+  }
+
+  const resolvedSpeed = typeof speed === "number" && Number.isFinite(speed)
+    ? Math.max(0, speed)
+    : 0;
+  return Math.abs(resolvedSpeed - (lastRenderedHeadingConeSpeed ?? 0)) >= HEADING_RENDER_LOOP_MIN_SPEED_DELTA_MPS;
+}
+
+function renderHeadingConeFrame(nowMs = getHeadingNowMs()) {
+  const currentLocation = lastCurrentLocation;
+  const headingState = getHeadingState(nowMs);
+  const targetHeading = normalizeHeadingDegrees(headingState.effectiveHeading);
+
+  if (!currentLocation || targetHeading === null) {
+    clearHeadingConeVisual();
+    return null;
+  }
+
+  const elapsedMs = lastHeadingConeLoopTickAt === null
+    ? getHeadingRenderLoopSmoothingTimeMs(headingState.source)
+    : Math.max(0, nowMs - lastHeadingConeLoopTickAt);
+  lastHeadingConeLoopTickAt = nowMs;
+
+  const nextHeading = interpolateHeadingDegrees(
+    lastHeadingConeLoopHeading ?? lastRenderedHeadingConeHeading ?? targetHeading,
+    targetHeading,
+    getHeadingBlendFactor(
+      elapsedMs,
+      getHeadingRenderLoopSmoothingTimeMs(headingState.source),
+      headingState.source === "sensor" ? HEADING_SENSOR_SMOOTHING_MIN_BLEND : 0
+    )
+  );
+  const resolvedHeading = normalizeHeadingDegrees(nextHeading);
+  if (resolvedHeading === null) {
+    clearHeadingConeVisual();
+    return null;
+  }
+
+  lastHeadingConeLoopHeading = resolvedHeading;
+  if (shouldRenderHeadingConeFrame(currentLocation, resolvedHeading, headingState.storedSpeed)) {
+    updateHeadingCone(currentLocation, resolvedHeading, headingState.storedSpeed);
+  }
+
+  return resolvedHeading;
+}
+
 function updateStoredHeadingSpeed(speed) {
   if (typeof speed === "number" && Number.isFinite(speed)) {
     lastKnownHeadingSpeed = Math.max(0, speed);
@@ -920,7 +1080,7 @@ function refreshHeadingConeWithEffectiveHeading(latlng, speed, nowMs = getHeadin
     return effectiveHeading;
   }
 
-  setSourceData(SOURCE_HEADING, featureCollection());
+  clearHeadingConeVisual();
   return effectiveHeading;
 }
 
@@ -951,8 +1111,10 @@ function installRuntimeDebugSurface() {
       refreshHeadingConeFromState();
       return getHeadingState(getHeadingNowMs());
     },
+    renderHeadingConeFrame: () => renderHeadingConeFrame(getHeadingNowMs()),
     loadForView,
     locateUser,
+    startHeadingConeRenderLoop,
     startDeviceOrientationWatch,
   };
 }
@@ -1012,6 +1174,107 @@ function startBlueDotBreathingAnimation() {
   };
   blueDotBreathingAnimationFrame = window.requestAnimationFrame(tick);
   window.addEventListener("beforeunload", stopBlueDotBreathingAnimation, { once: true });
+}
+
+function stopHeadingConeRenderLoop() {
+  if (headingConeRenderLoopFrame !== null && typeof window !== "undefined") {
+    window.cancelAnimationFrame(headingConeRenderLoopFrame);
+    headingConeRenderLoopFrame = null;
+  }
+
+  lastHeadingConeLoopFrameAt = null;
+  lastHeadingConeLoopTickAt = null;
+}
+
+function isHeadingConeRenderLoopActive() {
+  if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+    return false;
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.hidden) {
+      return false;
+    }
+
+    if (typeof document.hasFocus === "function" && !document.hasFocus()) {
+      return false;
+    }
+  }
+
+  return Boolean(
+    map
+    && typeof map.getLayer === "function"
+    && typeof map.getSource === "function"
+    && map.getLayer(LAYER_HEADING)
+    && map.getSource(SOURCE_HEADING)
+  );
+}
+
+function queueHeadingConeRenderLoop() {
+  if (headingConeRenderLoopFrame !== null || !isHeadingConeRenderLoopActive()) {
+    return;
+  }
+
+  headingConeRenderLoopFrame = window.requestAnimationFrame((timestampMs) => {
+    headingConeRenderLoopFrame = null;
+
+    if (!isHeadingConeRenderLoopActive()) {
+      stopHeadingConeRenderLoop();
+      return;
+    }
+
+    if (
+      lastHeadingConeLoopFrameAt !== null
+      && timestampMs - lastHeadingConeLoopFrameAt < HEADING_RENDER_LOOP_FRAME_INTERVAL_MS
+    ) {
+      queueHeadingConeRenderLoop();
+      return;
+    }
+
+    lastHeadingConeLoopFrameAt = timestampMs;
+    renderHeadingConeFrame(getHeadingNowMs());
+    queueHeadingConeRenderLoop();
+  });
+}
+
+function syncHeadingConeRenderLoop() {
+  if (!isHeadingConeRenderLoopActive()) {
+    stopHeadingConeRenderLoop();
+    return;
+  }
+
+  if (lastHeadingConeLoopHeading === null) {
+    lastHeadingConeLoopHeading = lastRenderedHeadingConeHeading;
+  }
+
+  queueHeadingConeRenderLoop();
+}
+
+function startHeadingConeRenderLoop() {
+  if (hasStartedHeadingConeRenderLoop || typeof window === "undefined") {
+    return;
+  }
+
+  hasStartedHeadingConeRenderLoop = true;
+  const handleLoopActivityChange = () => {
+    if (isHeadingConeRenderLoopActive()) {
+      lastHeadingConeLoopFrameAt = null;
+      lastHeadingConeLoopTickAt = null;
+      syncHeadingConeRenderLoop();
+      return;
+    }
+
+    stopHeadingConeRenderLoop();
+  };
+
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", handleLoopActivityChange);
+  }
+
+  window.addEventListener("focus", handleLoopActivityChange);
+  window.addEventListener("blur", handleLoopActivityChange);
+  window.addEventListener("beforeunload", stopHeadingConeRenderLoop, { once: true });
+  handleLoopActivityChange();
 }
 
 function startDeviceOrientationWatch() {
@@ -2700,6 +2963,7 @@ map.on("load", () => {
   startContinuousLocationWatch();
   startDeviceOrientationWatch();
   startBlueDotBreathingAnimation();
+  startHeadingConeRenderLoop();
 
   if (menuButton && panel) {
     menuButton.addEventListener("click", () => {
@@ -2731,4 +2995,5 @@ map.on("style.load", () => {
   ensureMapSourcesAndLayers();
   restoreMapDataSources();
   syncModeButtons();
+  syncHeadingConeRenderLoop();
 });
