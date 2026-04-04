@@ -35,10 +35,11 @@ import {
 import {
   HEADING_CONE_LENGTH_PIXELS,
   HEADING_GPS_FALLBACK_SMOOTHING_TIME_MS,
+  HEADING_SENSOR_MAX_WEBKIT_COMPASS_ACCURACY_DEGREES,
   HEADING_SENSOR_SMOOTHING_MIN_BLEND,
   HEADING_SENSOR_SMOOTHING_TIME_MS,
   HEADING_SENSOR_STALE_AFTER_MS,
-  getDeviceOrientationHeading,
+  getDeviceOrientationReading,
   getHeadingBlendFactor,
   getHeadingConeBandStops,
   getHeadingDeltaDegrees,
@@ -47,9 +48,9 @@ import {
   hasFreshHeadingSensorData,
   interpolateHeadingDegrees,
   normalizeHeadingDegrees,
-} from "./heading_cone.js?v=20260403-cone-binding";
+} from "./heading_cone.js?v=20260403-ios-compass";
 
-const APP_BUILD_ID = "20260403-orientation-loop";
+const APP_BUILD_ID = "20260403-ios-compass";
 console.info("[DGM] app build", APP_BUILD_ID);
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
@@ -69,9 +70,15 @@ const HEADING_RENDER_LOOP_MAX_HZ = 30;
 const HEADING_RENDER_LOOP_FRAME_INTERVAL_MS = 1000 / HEADING_RENDER_LOOP_MAX_HZ;
 const HEADING_RENDER_LOOP_MAP_BEARING_SMOOTHING_TIME_MS = 140;
 const HEADING_RENDER_LOOP_GPS_SMOOTHING_TIME_MS = 180;
-const HEADING_RENDER_LOOP_MIN_DELTA_DEGREES = 0.35;
+const HEADING_RENDER_LOOP_MIN_DELTA_DEGREES = 0.5;
 const HEADING_RENDER_LOOP_MIN_LOCATION_DELTA_METERS = 0.25;
 const HEADING_RENDER_LOOP_MIN_SPEED_DELTA_MPS = 0.1;
+const HEADING_CONE_RENDER_SCALE_BIAS = 1.15;
+const COMPASS_PERMISSION_REQUIRED_STATE = "required";
+const COMPASS_PERMISSION_GRANTED_STATE = "granted";
+const COMPASS_PERMISSION_DENIED_STATE = "denied";
+const COMPASS_PERMISSION_NOT_REQUIRED_STATE = "not-required";
+const COMPASS_PERMISSION_UNAVAILABLE_STATE = "unavailable";
 
 if (window.location.protocol === "file:") {
   alert(
@@ -263,6 +270,11 @@ let lastKnownHeadingSource = null;
 let lastKnownHeadingSpeed = null;
 let lastSensorHeading = null;
 let lastSensorHeadingAt = null;
+let lastSensorEventAt = null;
+let lastSensorEventWallClockMs = null;
+let lastRawSensorHeading = null;
+let lastSensorHeadingAccuracy = null;
+let lastSensorHeadingKind = null;
 let lastHeadingRenderAt = null;
 let hasStartedDeviceOrientationWatch = false;
 let hasStartedBlueDotBreathingAnimation = false;
@@ -281,6 +293,14 @@ let lastRenderedHeadingConeHeading = null;
 let lastRenderedHeadingConeLocation = null;
 let lastRenderedHeadingConeSpeed = null;
 let lastRenderedHeadingConeZoom = null;
+let compassPermissionState = COMPASS_PERMISSION_UNAVAILABLE_STATE;
+let isCompassPermissionRequestPending = false;
+let compassUiRoot = null;
+let compassEnableButton = null;
+let compassDebugToggleButton = null;
+let compassDebugOverlay = null;
+let compassDebugOverlayBody = null;
+let isCompassDebugOverlayVisible = true;
 
 function featureCollection(features = []) {
   return { type: "FeatureCollection", features };
@@ -889,7 +909,11 @@ function getCachedHeadingConeLengthMeters(latitude) {
   if (zoom !== lastHeadingConeZoom || latitude !== lastHeadingConeLatitude) {
     lastHeadingConeZoom = zoom;
     lastHeadingConeLatitude = latitude;
-    lastHeadingConeLengthMeters = getHeadingConeLengthMeters(latitude, zoom, HEADING_CONE_LENGTH_PIXELS);
+    lastHeadingConeLengthMeters = getHeadingConeLengthMeters(
+      latitude,
+      zoom,
+      HEADING_CONE_LENGTH_PIXELS * HEADING_CONE_RENDER_SCALE_BIAS
+    );
   }
   return lastHeadingConeLengthMeters;
 }
@@ -899,6 +923,255 @@ function getHeadingNowMs() {
     return performance.now();
   }
   return Date.now();
+}
+
+function getCompassPermissionRequestTarget() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const orientationEvent = window.DeviceOrientationEvent;
+  if (!orientationEvent || typeof orientationEvent.requestPermission !== "function") {
+    return null;
+  }
+
+  return orientationEvent;
+}
+
+function getResolvedCompassPermissionState() {
+  if (typeof window === "undefined" || !window.DeviceOrientationEvent) {
+    return COMPASS_PERMISSION_UNAVAILABLE_STATE;
+  }
+
+  if (!getCompassPermissionRequestTarget()) {
+    return COMPASS_PERMISSION_NOT_REQUIRED_STATE;
+  }
+
+  if (
+    compassPermissionState === COMPASS_PERMISSION_GRANTED_STATE
+    || compassPermissionState === COMPASS_PERMISSION_DENIED_STATE
+  ) {
+    return compassPermissionState;
+  }
+
+  return COMPASS_PERMISSION_REQUIRED_STATE;
+}
+
+function formatCompassTimestamp(timestampMs) {
+  if (!(typeof timestampMs === "number" && Number.isFinite(timestampMs))) {
+    return "none";
+  }
+
+  return new Date(timestampMs).toISOString().slice(11, 23);
+}
+
+function formatCompassHeadingValue(heading) {
+  if (!(typeof heading === "number" && Number.isFinite(heading))) {
+    return "none";
+  }
+
+  return `${heading.toFixed(1)}°`;
+}
+
+function getHeadingSourceLabel(source) {
+  if (source === "sensor") {
+    return "sensor";
+  }
+
+  if (source === "gps") {
+    return "GPS";
+  }
+
+  if (source === "bearing" || source === "map-bearing") {
+    return "bearing";
+  }
+
+  return "none";
+}
+
+function updateCompassDebugOverlay(nowMs = getHeadingNowMs(), headingState = getHeadingState(nowMs)) {
+  if (!compassDebugOverlayBody) {
+    return;
+  }
+
+  const permissionState = getResolvedCompassPermissionState();
+  const accuracyText = typeof lastSensorHeadingAccuracy === "number" && Number.isFinite(lastSensorHeadingAccuracy)
+    ? ` (${lastSensorHeadingAccuracy.toFixed(1)}° acc)`
+    : "";
+  const eventAgeText = typeof lastSensorEventAt === "number" && Number.isFinite(lastSensorEventAt)
+    ? ` (${Math.round(Math.max(0, nowMs - lastSensorEventAt))} ms ago)`
+    : "";
+
+  compassDebugOverlayBody.textContent = [
+    `permission: ${permissionState}`,
+    `last event: ${formatCompassTimestamp(lastSensorEventWallClockMs)}${eventAgeText}`,
+    `raw heading: ${formatCompassHeadingValue(lastRawSensorHeading)}${accuracyText}`,
+    `source: ${getHeadingSourceLabel(headingState?.source)}`,
+    `sensor kind: ${lastSensorHeadingKind || "none"}`,
+  ].join("\n");
+}
+
+function syncCompassUi(nowMs = getHeadingNowMs()) {
+  if (!compassUiRoot || !compassEnableButton || !compassDebugToggleButton || !compassDebugOverlay) {
+    return;
+  }
+
+  compassPermissionState = getResolvedCompassPermissionState();
+  const shouldShowEnableButton = (
+    compassPermissionState === COMPASS_PERMISSION_REQUIRED_STATE
+    || compassPermissionState === COMPASS_PERMISSION_DENIED_STATE
+  );
+
+  compassEnableButton.hidden = !shouldShowEnableButton;
+  compassEnableButton.disabled = isCompassPermissionRequestPending;
+  compassEnableButton.textContent = isCompassPermissionRequestPending
+    ? "Enabling..."
+    : "Enable Compass";
+
+  compassDebugOverlay.hidden = !isCompassDebugOverlayVisible;
+  compassDebugToggleButton.textContent = isCompassDebugOverlayVisible ? "Hide Debug" : "Show Debug";
+  compassDebugToggleButton.setAttribute("aria-pressed", String(isCompassDebugOverlayVisible));
+  updateCompassDebugOverlay(nowMs);
+}
+
+function setCompassPermissionState(nextState, nowMs = getHeadingNowMs()) {
+  compassPermissionState = nextState;
+  syncCompassUi(nowMs);
+}
+
+function ensureCompassUi() {
+  if (typeof document === "undefined" || compassUiRoot) {
+    return;
+  }
+
+  compassUiRoot = document.createElement("div");
+  Object.assign(compassUiRoot.style, {
+    position: "fixed",
+    top: "12px",
+    left: "12px",
+    zIndex: "12",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: "8px",
+    maxWidth: "min(82vw, 280px)",
+    pointerEvents: "none",
+  });
+
+  compassEnableButton = document.createElement("button");
+  compassEnableButton.type = "button";
+  compassEnableButton.textContent = "Enable Compass";
+  Object.assign(compassEnableButton.style, {
+    pointerEvents: "auto",
+    border: "0",
+    borderRadius: "999px",
+    padding: "10px 14px",
+    fontSize: "13px",
+    fontWeight: "600",
+    color: "#08111d",
+    background: "rgba(235, 246, 255, 0.96)",
+    boxShadow: "0 10px 24px rgba(8, 17, 29, 0.24)",
+  });
+  compassEnableButton.addEventListener("click", () => {
+    requestCompassPermissionFromUserGesture().catch((error) => {
+      console.warn("[DGM] Compass permission request failed:", error);
+      setCompassPermissionState(COMPASS_PERMISSION_DENIED_STATE);
+    });
+  });
+
+  compassDebugToggleButton = document.createElement("button");
+  compassDebugToggleButton.type = "button";
+  Object.assign(compassDebugToggleButton.style, {
+    pointerEvents: "auto",
+    border: "0",
+    borderRadius: "999px",
+    padding: "8px 12px",
+    fontSize: "12px",
+    fontWeight: "600",
+    color: "#eef6ff",
+    background: "rgba(8, 17, 29, 0.82)",
+    boxShadow: "0 8px 20px rgba(8, 17, 29, 0.22)",
+  });
+  compassDebugToggleButton.addEventListener("click", () => {
+    isCompassDebugOverlayVisible = !isCompassDebugOverlayVisible;
+    syncCompassUi();
+  });
+
+  compassDebugOverlay = document.createElement("div");
+  Object.assign(compassDebugOverlay.style, {
+    pointerEvents: "auto",
+    minWidth: "220px",
+    padding: "10px 12px",
+    borderRadius: "14px",
+    background: "rgba(8, 17, 29, 0.82)",
+    color: "#eef6ff",
+    boxShadow: "0 12px 28px rgba(8, 17, 29, 0.28)",
+    backdropFilter: "blur(10px)",
+  });
+
+  const compassDebugTitle = document.createElement("div");
+  compassDebugTitle.textContent = "Compass Debug";
+  Object.assign(compassDebugTitle.style, {
+    marginBottom: "6px",
+    fontSize: "12px",
+    fontWeight: "700",
+    letterSpacing: "0.04em",
+    textTransform: "uppercase",
+  });
+
+  compassDebugOverlayBody = document.createElement("pre");
+  Object.assign(compassDebugOverlayBody.style, {
+    margin: "0",
+    fontSize: "11px",
+    lineHeight: "1.5",
+    whiteSpace: "pre-wrap",
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+  });
+
+  compassDebugOverlay.append(compassDebugTitle, compassDebugOverlayBody);
+  compassUiRoot.append(compassEnableButton, compassDebugToggleButton, compassDebugOverlay);
+  document.body.append(compassUiRoot);
+  syncCompassUi();
+}
+
+async function requestCompassPermissionFromUserGesture() {
+  ensureCompassUi();
+
+  const requestTarget = getCompassPermissionRequestTarget();
+  if (!requestTarget) {
+    const nextState = typeof window !== "undefined" && window.DeviceOrientationEvent
+      ? COMPASS_PERMISSION_NOT_REQUIRED_STATE
+      : COMPASS_PERMISSION_UNAVAILABLE_STATE;
+    setCompassPermissionState(nextState);
+    startDeviceOrientationWatch();
+    return nextState;
+  }
+
+  if (isCompassPermissionRequestPending) {
+    return compassPermissionState;
+  }
+
+  isCompassPermissionRequestPending = true;
+  syncCompassUi();
+
+  try {
+    const permissionResult = await requestTarget.requestPermission();
+    if (permissionResult === COMPASS_PERMISSION_GRANTED_STATE) {
+      setCompassPermissionState(COMPASS_PERMISSION_GRANTED_STATE);
+      startDeviceOrientationWatch();
+      syncHeadingConeRenderLoop();
+      return COMPASS_PERMISSION_GRANTED_STATE;
+    }
+
+    setCompassPermissionState(COMPASS_PERMISSION_DENIED_STATE);
+    return COMPASS_PERMISSION_DENIED_STATE;
+  } catch (error) {
+    setCompassPermissionState(COMPASS_PERMISSION_DENIED_STATE);
+    throw error;
+  } finally {
+    isCompassPermissionRequestPending = false;
+    syncCompassUi();
+  }
 }
 
 function getMapBearingHeading() {
@@ -926,7 +1199,7 @@ function getHeadingState(nowMs = getHeadingNowMs()) {
     source = lastKnownHeadingSource || "stored";
   } else if (mapBearing !== null) {
     effectiveHeading = mapBearing;
-    source = "map-bearing";
+    source = "bearing";
   }
 
   return {
@@ -989,6 +1262,7 @@ function shouldRenderHeadingConeFrame(latlng, heading, speed) {
 function renderHeadingConeFrame(nowMs = getHeadingNowMs()) {
   const currentLocation = lastCurrentLocation;
   const headingState = getHeadingState(nowMs);
+  updateCompassDebugOverlay(nowMs, headingState);
   const targetHeading = normalizeHeadingDegrees(headingState.effectiveHeading);
 
   if (!currentLocation || targetHeading === null) {
@@ -1093,6 +1367,11 @@ function getRuntimeDebugState(nowMs = getHeadingNowMs()) {
     appBuildId: APP_BUILD_ID,
     currentLocation: lastCurrentLocation ? { ...lastCurrentLocation } : null,
     currentLocationAccuracyMeters: lastCurrentLocationAccuracyMeters,
+    compassPermissionState: getResolvedCompassPermissionState(),
+    lastSensorEventWallClockMs,
+    lastRawSensorHeading,
+    lastSensorHeadingAccuracy,
+    lastSensorHeadingKind,
     heading: getHeadingState(nowMs),
     baseStyle: currentBaseStyle,
     routeActive: Boolean(activeRoute),
@@ -1278,26 +1557,55 @@ function startHeadingConeRenderLoop() {
 }
 
 function startDeviceOrientationWatch() {
-  if (hasStartedDeviceOrientationWatch || typeof window === "undefined") return;
+  if (typeof window === "undefined") return;
+
+  ensureCompassUi();
+
+  if (!window.DeviceOrientationEvent) {
+    setCompassPermissionState(COMPASS_PERMISSION_UNAVAILABLE_STATE);
+    return;
+  }
+
+  const resolvedPermissionState = getResolvedCompassPermissionState();
+  if (
+    resolvedPermissionState === COMPASS_PERMISSION_REQUIRED_STATE
+    || resolvedPermissionState === COMPASS_PERMISSION_DENIED_STATE
+  ) {
+    setCompassPermissionState(resolvedPermissionState);
+    return;
+  }
+
+  if (hasStartedDeviceOrientationWatch) {
+    setCompassPermissionState(resolvedPermissionState);
+    return;
+  }
 
   hasStartedDeviceOrientationWatch = true;
   const onOrientationChange = (event) => {
-    const nextHeading = getDeviceOrientationHeading(event);
-    if (nextHeading === null) return;
+    const sensorReading = getDeviceOrientationReading(event, {
+      maxWebkitCompassAccuracyDegrees: HEADING_SENSOR_MAX_WEBKIT_COMPASS_ACCURACY_DEGREES,
+    });
 
     const nowMs = getHeadingNowMs();
-    lastSensorHeading = nextHeading;
-    lastSensorHeadingAt = nowMs;
-    applyHeadingUpdate(nextHeading, {
-      nowMs,
-      timeConstantMs: HEADING_SENSOR_SMOOTHING_TIME_MS,
-      minBlend: HEADING_SENSOR_SMOOTHING_MIN_BLEND,
-      source: "sensor",
-    });
+    lastSensorEventAt = nowMs;
+    lastSensorEventWallClockMs = Date.now();
+    lastRawSensorHeading = normalizeHeadingDegrees(sensorReading.rawHeading);
+    lastSensorHeadingAccuracy = typeof sensorReading.accuracy === "number" && Number.isFinite(sensorReading.accuracy)
+      ? sensorReading.accuracy
+      : null;
+    lastSensorHeadingKind = sensorReading.source;
+
+    if (sensorReading.heading !== null) {
+      lastSensorHeading = sensorReading.heading;
+      lastSensorHeadingAt = nowMs;
+    }
+
+    updateCompassDebugOverlay(nowMs);
   };
 
-  window.addEventListener("deviceorientationabsolute", onOrientationChange);
-  window.addEventListener("deviceorientation", onOrientationChange);
+  window.addEventListener("deviceorientationabsolute", onOrientationChange, { passive: true });
+  window.addEventListener("deviceorientation", onOrientationChange, { passive: true });
+  setCompassPermissionState(resolvedPermissionState);
 }
 
 function startContinuousLocationWatch() {
@@ -2960,6 +3268,7 @@ map.on("load", () => {
   ensureMapSourcesAndLayers();
   restoreMapDataSources();
   syncModeButtons();
+  ensureCompassUi();
   startContinuousLocationWatch();
   startDeviceOrientationWatch();
   startBlueDotBreathingAnimation();

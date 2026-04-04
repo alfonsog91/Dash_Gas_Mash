@@ -5,6 +5,7 @@ const HEADING_CONE_SPEED_FOR_FULLY_MOVING = 3;
 const HEADING_SENSOR_STALE_AFTER_MS = 2200;
 const HEADING_SENSOR_SMOOTHING_TIME_MS = 90;
 const HEADING_SENSOR_SMOOTHING_MIN_BLEND = 0.42;
+const HEADING_SENSOR_MAX_WEBKIT_COMPASS_ACCURACY_DEGREES = 30;
 const HEADING_GPS_FALLBACK_SMOOTHING_TIME_MS = 900;
 const HEADING_CONE_BASE_OPACITY = 0.24;
 const HEADING_CONE_TIP_OPACITY = 0.015;
@@ -130,23 +131,64 @@ function getHeadingConeBandStops(opacities = HEADING_CONE_BAND_OPACITIES) {
   }));
 }
 
-function getDeviceOrientationHeading(event) {
+function getDeviceOrientationReading(
+  event,
+  {
+    maxWebkitCompassAccuracyDegrees = HEADING_SENSOR_MAX_WEBKIT_COMPASS_ACCURACY_DEGREES,
+  } = {}
+) {
   const webkitHeading = normalizeHeadingDegrees(event?.webkitCompassHeading);
+  const webkitAccuracy = resolveFiniteNumber(event?.webkitCompassAccuracy, null, { min: 0 });
   if (webkitHeading !== null) {
-    return webkitHeading;
+    const accuracyLimit = resolveFiniteNumber(
+      maxWebkitCompassAccuracyDegrees,
+      HEADING_SENSOR_MAX_WEBKIT_COMPASS_ACCURACY_DEGREES,
+      { min: 0 }
+    );
+    const reliable = webkitAccuracy === null || webkitAccuracy <= accuracyLimit;
+    return {
+      heading: reliable ? webkitHeading : null,
+      rawHeading: webkitHeading,
+      accuracy: webkitAccuracy,
+      source: "webkit-compass",
+      reliable,
+    };
   }
 
   const isAbsoluteHeading = event?.type === "deviceorientationabsolute" || event?.absolute === true;
   if (!isAbsoluteHeading) {
-    return null;
+    return {
+      heading: null,
+      rawHeading: null,
+      accuracy: webkitAccuracy,
+      source: null,
+      reliable: false,
+    };
   }
 
   const alphaHeading = normalizeHeadingDegrees(event?.alpha);
   if (alphaHeading === null) {
-    return null;
+    return {
+      heading: null,
+      rawHeading: null,
+      accuracy: null,
+      source: null,
+      reliable: false,
+    };
   }
 
-  return normalizeHeadingDegrees(360 - alphaHeading);
+  const absoluteHeading = normalizeHeadingDegrees(360 - alphaHeading);
+  return {
+    heading: absoluteHeading,
+    rawHeading: absoluteHeading,
+    accuracy: null,
+    source: "absolute-alpha",
+    reliable: absoluteHeading !== null,
+  };
+}
+
+function getDeviceOrientationHeading(event, options) {
+  return getDeviceOrientationReading(event, options).heading;
 }
 
 export {
@@ -157,6 +199,7 @@ export {
   HEADING_SENSOR_STALE_AFTER_MS,
   HEADING_SENSOR_SMOOTHING_TIME_MS,
   HEADING_SENSOR_SMOOTHING_MIN_BLEND,
+  HEADING_SENSOR_MAX_WEBKIT_COMPASS_ACCURACY_DEGREES,
   HEADING_GPS_FALLBACK_SMOOTHING_TIME_MS,
   HEADING_CONE_BAND_OPACITIES,
   normalizeHeadingDegrees,
@@ -168,5 +211,6 @@ export {
   getMetersPerPixelAtLatitude,
   getHeadingConeLengthMeters,
   getHeadingConeBandStops,
+  getDeviceOrientationReading,
   getDeviceOrientationHeading,
 };
