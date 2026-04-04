@@ -50,7 +50,7 @@ import {
   normalizeHeadingDegrees,
 } from "./heading_cone.js?v=20260403-ios-compass";
 
-const APP_BUILD_ID = "20260403-ios-compass";
+const APP_BUILD_ID = "20260403-ios-compass-auto";
 console.info("[DGM] app build", APP_BUILD_ID);
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
@@ -79,6 +79,7 @@ const COMPASS_PERMISSION_GRANTED_STATE = "granted";
 const COMPASS_PERMISSION_DENIED_STATE = "denied";
 const COMPASS_PERMISSION_NOT_REQUIRED_STATE = "not-required";
 const COMPASS_PERMISSION_UNAVAILABLE_STATE = "unavailable";
+const COMPASS_PERMISSION_STORAGE_KEY = "dgm:compass-permission-state";
 
 if (window.location.protocol === "file:") {
   alert(
@@ -293,10 +294,11 @@ let lastRenderedHeadingConeHeading = null;
 let lastRenderedHeadingConeLocation = null;
 let lastRenderedHeadingConeSpeed = null;
 let lastRenderedHeadingConeZoom = null;
-let compassPermissionState = COMPASS_PERMISSION_UNAVAILABLE_STATE;
+let compassPermissionState = readStoredCompassPermissionState() || COMPASS_PERMISSION_UNAVAILABLE_STATE;
 let isCompassPermissionRequestPending = false;
+let hasInstalledCompassPermissionAutoRequest = false;
+let hasTriggeredCompassPermissionAutoRequest = false;
 let compassUiRoot = null;
-let compassEnableButton = null;
 let compassDebugToggleButton = null;
 let compassDebugOverlay = null;
 let compassDebugOverlayBody = null;
@@ -938,6 +940,44 @@ function getCompassPermissionRequestTarget() {
   return orientationEvent;
 }
 
+function canPersistCompassPermissionState(state) {
+  return (
+    state === COMPASS_PERMISSION_GRANTED_STATE
+    || state === COMPASS_PERMISSION_DENIED_STATE
+    || state === COMPASS_PERMISSION_NOT_REQUIRED_STATE
+    || state === COMPASS_PERMISSION_UNAVAILABLE_STATE
+  );
+}
+
+function readStoredCompassPermissionState() {
+  if (typeof window === "undefined" || !window.localStorage) {
+    return null;
+  }
+
+  try {
+    const storedState = window.localStorage.getItem(COMPASS_PERMISSION_STORAGE_KEY);
+    return canPersistCompassPermissionState(storedState) ? storedState : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredCompassPermissionState(state) {
+  if (typeof window === "undefined" || !window.localStorage) {
+    return;
+  }
+
+  try {
+    if (canPersistCompassPermissionState(state)) {
+      window.localStorage.setItem(COMPASS_PERMISSION_STORAGE_KEY, state);
+    } else {
+      window.localStorage.removeItem(COMPASS_PERMISSION_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage failures and keep runtime behavior intact.
+  }
+}
+
 function getResolvedCompassPermissionState() {
   if (typeof window === "undefined" || !window.DeviceOrientationEvent) {
     return COMPASS_PERMISSION_UNAVAILABLE_STATE;
@@ -1012,22 +1052,11 @@ function updateCompassDebugOverlay(nowMs = getHeadingNowMs(), headingState = get
 }
 
 function syncCompassUi(nowMs = getHeadingNowMs()) {
-  if (!compassUiRoot || !compassEnableButton || !compassDebugToggleButton || !compassDebugOverlay) {
+  if (!compassUiRoot || !compassDebugToggleButton || !compassDebugOverlay) {
     return;
   }
 
   compassPermissionState = getResolvedCompassPermissionState();
-  const shouldShowEnableButton = (
-    compassPermissionState === COMPASS_PERMISSION_REQUIRED_STATE
-    || compassPermissionState === COMPASS_PERMISSION_DENIED_STATE
-  );
-
-  compassEnableButton.hidden = !shouldShowEnableButton;
-  compassEnableButton.disabled = isCompassPermissionRequestPending;
-  compassEnableButton.textContent = isCompassPermissionRequestPending
-    ? "Enabling..."
-    : "Enable Compass";
-
   compassDebugOverlay.hidden = !isCompassDebugOverlayVisible;
   compassDebugToggleButton.textContent = isCompassDebugOverlayVisible ? "Hide Debug" : "Show Debug";
   compassDebugToggleButton.setAttribute("aria-pressed", String(isCompassDebugOverlayVisible));
@@ -1036,6 +1065,7 @@ function syncCompassUi(nowMs = getHeadingNowMs()) {
 
 function setCompassPermissionState(nextState, nowMs = getHeadingNowMs()) {
   compassPermissionState = nextState;
+  writeStoredCompassPermissionState(nextState);
   syncCompassUi(nowMs);
 }
 
@@ -1056,27 +1086,6 @@ function ensureCompassUi() {
     gap: "8px",
     maxWidth: "min(82vw, 280px)",
     pointerEvents: "none",
-  });
-
-  compassEnableButton = document.createElement("button");
-  compassEnableButton.type = "button";
-  compassEnableButton.textContent = "Enable Compass";
-  Object.assign(compassEnableButton.style, {
-    pointerEvents: "auto",
-    border: "0",
-    borderRadius: "999px",
-    padding: "10px 14px",
-    fontSize: "13px",
-    fontWeight: "600",
-    color: "#08111d",
-    background: "rgba(235, 246, 255, 0.96)",
-    boxShadow: "0 10px 24px rgba(8, 17, 29, 0.24)",
-  });
-  compassEnableButton.addEventListener("click", () => {
-    requestCompassPermissionFromUserGesture().catch((error) => {
-      console.warn("[DGM] Compass permission request failed:", error);
-      setCompassPermissionState(COMPASS_PERMISSION_DENIED_STATE);
-    });
   });
 
   compassDebugToggleButton = document.createElement("button");
@@ -1129,7 +1138,7 @@ function ensureCompassUi() {
   });
 
   compassDebugOverlay.append(compassDebugTitle, compassDebugOverlayBody);
-  compassUiRoot.append(compassEnableButton, compassDebugToggleButton, compassDebugOverlay);
+  compassUiRoot.append(compassDebugToggleButton, compassDebugOverlay);
   document.body.append(compassUiRoot);
   syncCompassUi();
 }
@@ -1171,6 +1180,49 @@ async function requestCompassPermissionFromUserGesture() {
   } finally {
     isCompassPermissionRequestPending = false;
     syncCompassUi();
+  }
+}
+
+function requestCompassPermissionOnFirstGesture() {
+  if (hasTriggeredCompassPermissionAutoRequest || isCompassPermissionRequestPending) {
+    return;
+  }
+
+  if (getResolvedCompassPermissionState() !== COMPASS_PERMISSION_REQUIRED_STATE) {
+    return;
+  }
+
+  hasTriggeredCompassPermissionAutoRequest = true;
+  requestCompassPermissionFromUserGesture().catch((error) => {
+    console.warn("[DGM] Compass permission request failed:", error);
+  });
+}
+
+function installCompassPermissionAutoRequest() {
+  if (typeof document === "undefined" || hasInstalledCompassPermissionAutoRequest) {
+    return;
+  }
+
+  hasInstalledCompassPermissionAutoRequest = true;
+  const handleFirstGesture = () => {
+    requestCompassPermissionOnFirstGesture();
+  };
+
+  document.addEventListener("touchstart", handleFirstGesture, {
+    capture: true,
+    once: true,
+    passive: true,
+  });
+
+  if (elLocateMe) {
+    elLocateMe.addEventListener("click", handleFirstGesture, {
+      capture: true,
+      once: true,
+    });
+  }
+
+  if (map && typeof map.once === "function") {
+    map.once("click", handleFirstGesture);
   }
 }
 
@@ -3152,6 +3204,7 @@ async function loadForView() {
 }
 
 installRuntimeDebugSurface();
+installCompassPermissionAutoRequest();
 
 elLoad.addEventListener("click", () => {
   loadForView().catch((err) => {
