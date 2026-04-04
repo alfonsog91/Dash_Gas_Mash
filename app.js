@@ -46,9 +46,9 @@ import {
   hasFreshHeadingSensorData,
   interpolateHeadingDegrees,
   normalizeHeadingDegrees,
-} from "./heading_cone.js?v=20260403-sensor-presence";
+} from "./heading_cone.js?v=20260403-cone-binding";
 
-const APP_BUILD_ID = "20260403-sensor-presence";
+const APP_BUILD_ID = "20260403-cone-binding";
 console.info("[DGM] app build", APP_BUILD_ID);
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
@@ -723,7 +723,7 @@ function setCurrentLocationState(latlng, accuracyMeters, { openPopup = true } = 
     properties: { accuracyMeters: accuracyRadius },
   }]));
 
-  refreshHeadingConeFromState();
+  refreshHeadingConeWithEffectiveHeading(currentLngLat, lastKnownHeadingSpeed);
 
   if (openPopup) {
     openPopupAtLngLat(currentLngLat, `You are here<br/><span class="mono">Accuracy ±${Math.round(accuracyRadius)} m</span>`);
@@ -741,14 +741,11 @@ function stopNavigationWatch() {
 }
 
 function updateHeadingCone(latlng, heading, speed) {
+  const resolvedLatLng = lngLatToObject(latlng);
   const resolvedHeading = normalizeHeadingDegrees(heading);
-  if (!latlng || resolvedHeading === null) {
+  if (!resolvedLatLng || resolvedHeading === null) {
     setSourceData(SOURCE_HEADING, featureCollection());
     return;
-  }
-
-  if (typeof speed === "number" && Number.isFinite(speed)) {
-    lastKnownHeadingSpeed = Math.max(0, speed);
   }
 
   const halfAngle = getHeadingConeHalfAngle(
@@ -757,48 +754,52 @@ function updateHeadingCone(latlng, heading, speed) {
       : lastKnownHeadingSpeed
   );
   const bandStops = getHeadingConeBandStops();
-  const coneLengthMeters = getCachedHeadingConeLengthMeters(latlng.lat);
+  const coneLengthMeters = getCachedHeadingConeLengthMeters(resolvedLatLng.lat);
   if (!(typeof coneLengthMeters === "number" && Number.isFinite(coneLengthMeters) && coneLengthMeters > 0)) {
     setSourceData(SOURCE_HEADING, featureCollection());
     return;
   }
 
   const latScale = 1 / 111320;
-  const lngScale = 1 / (111320 * Math.cos((latlng.lat * Math.PI) / 180));
-  const origin = [latlng.lng, latlng.lat];
-  const numArcPoints = 12;
+  const lngScale = 1 / (111320 * Math.max(Math.cos((resolvedLatLng.lat * Math.PI) / 180), 0.1));
+  const origin = [resolvedLatLng.lng, resolvedLatLng.lat];
+  const numArcSegments = 12;
   const projectConePoint = (distanceMeters, angleDeg) => {
     const angleRad = (angleDeg * Math.PI) / 180;
     return [
-      latlng.lng + distanceMeters * Math.sin(angleRad) * lngScale,
-      latlng.lat + distanceMeters * Math.cos(angleRad) * latScale,
+      resolvedLatLng.lng + distanceMeters * Math.sin(angleRad) * lngScale,
+      resolvedLatLng.lat + distanceMeters * Math.cos(angleRad) * latScale,
     ];
   };
-  const features = bandStops.map(({ startRatio, endRatio, opacity }, bandIndex) => {
+  const features = [];
+
+  for (const { startRatio, endRatio, startOpacity, endOpacity } of bandStops) {
     const outerDistanceMeters = coneLengthMeters * endRatio;
     const innerDistanceMeters = coneLengthMeters * startRatio;
-    const outerArcPoints = [];
-    const innerArcPoints = [];
+    const opacity = Math.max(0, Math.min(1, (startOpacity + endOpacity) / 2));
 
-    for (let i = 0; i <= numArcPoints; i += 1) {
-      const angleDeg = resolvedHeading - halfAngle + (2 * halfAngle * i) / numArcPoints;
-      outerArcPoints.push(projectConePoint(outerDistanceMeters, angleDeg));
-      if (innerDistanceMeters > 0) {
-        innerArcPoints.push(projectConePoint(innerDistanceMeters, angleDeg));
-      }
+    for (let segmentIndex = 0; segmentIndex < numArcSegments; segmentIndex += 1) {
+      const startAngleDeg = resolvedHeading - halfAngle + (2 * halfAngle * segmentIndex) / numArcSegments;
+      const endAngleDeg = resolvedHeading - halfAngle + (2 * halfAngle * (segmentIndex + 1)) / numArcSegments;
+      const outerStart = projectConePoint(outerDistanceMeters, startAngleDeg);
+      const outerEnd = projectConePoint(outerDistanceMeters, endAngleDeg);
+      const ring = innerDistanceMeters > 0
+        ? [
+          projectConePoint(innerDistanceMeters, startAngleDeg),
+          outerStart,
+          outerEnd,
+          projectConePoint(innerDistanceMeters, endAngleDeg),
+          projectConePoint(innerDistanceMeters, startAngleDeg),
+        ]
+        : [origin, outerStart, outerEnd, origin];
+
+      features.push({
+        type: "Feature",
+        geometry: { type: "Polygon", coordinates: [ring] },
+        properties: { segmentIndex, opacity },
+      });
     }
-
-    innerArcPoints.reverse();
-    const ring = innerDistanceMeters > 0
-      ? [...outerArcPoints, ...innerArcPoints, outerArcPoints[0]]
-      : [origin, ...outerArcPoints, origin];
-
-    return {
-      type: "Feature",
-      geometry: { type: "Polygon", coordinates: [ring] },
-      properties: { bandIndex, opacity },
-    };
-  });
+  }
 
   setSourceData(SOURCE_HEADING, featureCollection(features));
 }
@@ -863,6 +864,13 @@ function getHeadingState(nowMs = getHeadingNowMs()) {
   };
 }
 
+function updateStoredHeadingSpeed(speed) {
+  if (typeof speed === "number" && Number.isFinite(speed)) {
+    lastKnownHeadingSpeed = Math.max(0, speed);
+  }
+  return lastKnownHeadingSpeed;
+}
+
 function applyHeadingUpdate(
   nextHeading,
   {
@@ -889,13 +897,11 @@ function applyHeadingUpdate(
   lastKnownHeading = resolvedHeading;
   lastKnownHeadingSource = source;
   lastHeadingRenderAt = nowMs;
+  updateStoredHeadingSpeed(speed);
   if (latlng) {
-    updateHeadingCone(latlng, resolvedHeading, speed);
+    updateHeadingCone(latlng, resolvedHeading, lastKnownHeadingSpeed);
   } else {
     lastKnownHeading = resolvedHeading;
-    if (typeof speed === "number" && Number.isFinite(speed)) {
-      lastKnownHeadingSpeed = Math.max(0, speed);
-    }
   }
 
   return resolvedHeading;
@@ -906,18 +912,20 @@ function getEffectiveHeading(nowMs = getHeadingNowMs()) {
 }
 
 function refreshHeadingConeWithEffectiveHeading(latlng, speed, nowMs = getHeadingNowMs()) {
+  const resolvedLatLng = latlng ? lngLatToObject(latlng) : null;
   const effectiveHeading = getEffectiveHeading(nowMs);
-  updateHeadingCone(latlng, effectiveHeading, speed);
+  const resolvedSpeed = updateStoredHeadingSpeed(speed);
+  if (resolvedLatLng && effectiveHeading !== null) {
+    updateHeadingCone(resolvedLatLng, effectiveHeading, resolvedSpeed);
+    return effectiveHeading;
+  }
+
+  setSourceData(SOURCE_HEADING, featureCollection());
   return effectiveHeading;
 }
 
 function refreshHeadingConeFromState(nowMs = getHeadingNowMs()) {
-  const effectiveHeading = getEffectiveHeading(nowMs);
-  if (lastCurrentLocation && effectiveHeading !== null) {
-    updateHeadingCone(lastCurrentLocation, effectiveHeading, lastKnownHeadingSpeed);
-    return;
-  }
-  setSourceData(SOURCE_HEADING, featureCollection());
+  refreshHeadingConeWithEffectiveHeading(lastCurrentLocation, lastKnownHeadingSpeed, nowMs);
 }
 
 function getRuntimeDebugState(nowMs = getHeadingNowMs()) {
@@ -950,15 +958,17 @@ function installRuntimeDebugSurface() {
 }
 
 function syncHeadingFromLocation(latlng, gpsHeading, speed, nowMs = getHeadingNowMs()) {
+  updateStoredHeadingSpeed(speed);
+
   if (lastSensorHeading !== null && hasFreshHeadingSensorData(lastSensorHeadingAt, nowMs, HEADING_SENSOR_STALE_AFTER_MS)) {
-    return refreshHeadingConeWithEffectiveHeading(latlng, speed, nowMs);
+    return refreshHeadingConeWithEffectiveHeading(latlng, lastKnownHeadingSpeed, nowMs);
   }
 
   const normalizedGpsHeading = normalizeHeadingDegrees(gpsHeading);
   if (normalizedGpsHeading === null) {
     lastKnownHeading = null;
     lastKnownHeadingSource = null;
-    return refreshHeadingConeWithEffectiveHeading(latlng, speed, nowMs);
+    return refreshHeadingConeWithEffectiveHeading(latlng, lastKnownHeadingSpeed, nowMs);
   }
 
   return applyHeadingUpdate(normalizedGpsHeading, {

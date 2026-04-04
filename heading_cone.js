@@ -6,7 +6,11 @@ const HEADING_SENSOR_STALE_AFTER_MS = 2200;
 const HEADING_SENSOR_SMOOTHING_TIME_MS = 90;
 const HEADING_SENSOR_SMOOTHING_MIN_BLEND = 0.42;
 const HEADING_GPS_FALLBACK_SMOOTHING_TIME_MS = 900;
-const HEADING_CONE_BAND_OPACITIES = Object.freeze([0.22, 0.14, 0.08, 0.04]);
+const HEADING_CONE_BASE_OPACITY = 0.24;
+const HEADING_CONE_TIP_OPACITY = 0.015;
+const HEADING_CONE_ALPHA_BASE_BIAS_POWER = 1.35;
+const HEADING_CONE_ALPHA_EASE_OUT_POWER = 2;
+const HEADING_CONE_OPACITY_STEPS = 12;
 const WEB_MERCATOR_MAX_LATITUDE = 85.05112878;
 const WEB_MERCATOR_METERS_PER_PIXEL_AT_ZOOM_0 = 40075016.68557849 / 512;
 
@@ -98,6 +102,21 @@ function getHeadingConeLengthMeters(latitude, zoom, pixelLength = HEADING_CONE_L
   return metersPerPixel * resolvedPixelLength;
 }
 
+function getHeadingConeOpacityAtRatio(ratio) {
+  const resolvedRatio = clamp01(ratio);
+  const baseBiasedRatio = resolvedRatio ** HEADING_CONE_ALPHA_BASE_BIAS_POWER;
+  const easedTail = (1 - baseBiasedRatio) ** HEADING_CONE_ALPHA_EASE_OUT_POWER;
+  return HEADING_CONE_TIP_OPACITY
+    + (HEADING_CONE_BASE_OPACITY - HEADING_CONE_TIP_OPACITY) * easedTail;
+}
+
+const HEADING_CONE_BAND_OPACITIES = Object.freeze(
+  Array.from({ length: HEADING_CONE_OPACITY_STEPS }, (_, index) => {
+    const midpointRatio = (index + 0.5) / HEADING_CONE_OPACITY_STEPS;
+    return getHeadingConeOpacityAtRatio(midpointRatio);
+  })
+);
+
 function getHeadingConeBandStops(opacities = HEADING_CONE_BAND_OPACITIES) {
   const resolvedOpacities = Array.isArray(opacities) && opacities.length
     ? opacities
@@ -105,6 +124,8 @@ function getHeadingConeBandStops(opacities = HEADING_CONE_BAND_OPACITIES) {
   return resolvedOpacities.map((opacity, index) => ({
     startRatio: index / resolvedOpacities.length,
     endRatio: (index + 1) / resolvedOpacities.length,
+    startOpacity: getHeadingConeOpacityAtRatio(index / resolvedOpacities.length),
+    endOpacity: getHeadingConeOpacityAtRatio((index + 1) / resolvedOpacities.length),
     opacity: clamp01(opacity),
   }));
 }
