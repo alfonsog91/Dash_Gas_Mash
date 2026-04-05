@@ -50,7 +50,7 @@ import {
   normalizeHeadingDegrees,
 } from "./heading_cone.js?v=20260404-visual-amplification";
 
-const APP_BUILD_ID = "20260404-overlay-hitfix";
+const APP_BUILD_ID = "20260404-debug-gate-gestures";
 console.info("[DGM] app build", APP_BUILD_ID);
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
@@ -81,6 +81,31 @@ const COMPASS_PERMISSION_DENIED_STATE = "denied";
 const COMPASS_PERMISSION_NOT_REQUIRED_STATE = "not-required";
 const COMPASS_PERMISSION_UNAVAILABLE_STATE = "unavailable";
 const COMPASS_PERMISSION_STORAGE_KEY = "dgm:compass-permission-state";
+const DEBUG_MODE_QUERY_PARAM = "debug";
+const DEBUG_MODE_ENABLED_VALUE = "1";
+
+function isCompassDebugModeEnabled() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  const searchParams = new URLSearchParams(window.location.search);
+  return searchParams.get(DEBUG_MODE_QUERY_PARAM) === DEBUG_MODE_ENABLED_VALUE;
+}
+
+function isTouchInteractionDevice() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  const coarsePointer = typeof window.matchMedia === "function"
+    ? window.matchMedia("(any-pointer: coarse)").matches
+    : false;
+  const touchPoints = typeof navigator !== "undefined" && Number(navigator.maxTouchPoints) > 0;
+  return coarsePointer || touchPoints;
+}
+
+const COMPASS_DEBUG_MODE_ENABLED = isCompassDebugModeEnabled();
 
 if (window.location.protocol === "file:") {
   alert(
@@ -152,6 +177,10 @@ const map = new maplibregl.Map({
 });
 
 map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+
+if (isTouchInteractionDevice() && map.doubleClickZoom) {
+  map.doubleClickZoom.disable();
+}
 
 let activePopup = null;
 let activeAbort = null;
@@ -310,7 +339,7 @@ let compassUiRoot = null;
 let compassDebugToggleButton = null;
 let compassDebugOverlay = null;
 let compassDebugOverlayBody = null;
-let isCompassDebugOverlayVisible = true;
+let isCompassDebugOverlayVisible = COMPASS_DEBUG_MODE_ENABLED;
 
 function featureCollection(features = []) {
   return { type: "FeatureCollection", features };
@@ -1078,7 +1107,7 @@ function setCompassPermissionState(nextState, nowMs = getHeadingNowMs()) {
 }
 
 function ensureCompassUi() {
-  if (typeof document === "undefined" || compassUiRoot) {
+  if (typeof document === "undefined" || compassUiRoot || !COMPASS_DEBUG_MODE_ENABLED) {
     return;
   }
 
