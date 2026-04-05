@@ -48,9 +48,9 @@ import {
   hasFreshHeadingSensorData,
   interpolateHeadingDegrees,
   normalizeHeadingDegrees,
-} from "./heading_cone.js?v=20260403-ios-compass";
+} from "./heading_cone.js?v=20260404-visual-amplification";
 
-const APP_BUILD_ID = "20260403-ios-compass-auto";
+const APP_BUILD_ID = "20260404-visual-amplification";
 console.info("[DGM] app build", APP_BUILD_ID);
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
@@ -61,10 +61,11 @@ const OSRM_ROUTE_API_URL = "https://router.project-osrm.org/route/v1/driving";
 const NAV_REROUTE_MIN_DISTANCE_METERS = 30;
 const NAV_REROUTE_MIN_INTERVAL_MS = 4000;
 // Subtle pulsing animation for the current-location marker.
-const BLUE_DOT_BASE_RADIUS_PX = 8;
-const BLUE_DOT_BREATHING_AMPLITUDE_PX = 0.4;
+const BLUE_DOT_BASE_RADIUS_PX = 9;
+const BLUE_DOT_BREATHING_AMPLITUDE_PX = 0.55;
 const BLUE_DOT_BREATHING_CYCLE_MS = 2800;
 const BLUE_DOT_RADIUS_EPSILON_PX = 0.01;
+const BLUE_DOT_HALO_RADIUS_SCALE = 2.35;
 const FULL_CYCLE_RADIANS = Math.PI * 2;
 const HEADING_RENDER_LOOP_MAX_HZ = 30;
 const HEADING_RENDER_LOOP_FRAME_INTERVAL_MS = 1000 / HEADING_RENDER_LOOP_MAX_HZ;
@@ -133,7 +134,10 @@ const LAYER_PARKING = "parking-layer";
 const LAYER_SPOT = "spot-layer";
 const LAYER_CURRENT_LOCATION_ACCURACY_FILL = "current-location-accuracy-fill";
 const LAYER_CURRENT_LOCATION_ACCURACY_LINE = "current-location-accuracy-line";
+const LAYER_HEADING_GLOW = "heading-glow-layer";
 const LAYER_HEADING = "heading-layer";
+const LAYER_HEADING_EDGE = "heading-edge-layer";
+const LAYER_CURRENT_LOCATION_HALO = "current-location-halo";
 const LAYER_CURRENT_LOCATION_DOT = "current-location-dot";
 const LAYER_ROUTE_CASING = "route-casing-layer";
 const LAYER_ROUTE = "route-layer";
@@ -1479,6 +1483,10 @@ function getBlueDotBreathingRadius(timestampMs = 0) {
   return BLUE_DOT_BASE_RADIUS_PX + BLUE_DOT_BREATHING_AMPLITUDE_PX * pulse;
 }
 
+function getBlueDotHaloRadius(baseRadius) {
+  return baseRadius * BLUE_DOT_HALO_RADIUS_SCALE;
+}
+
 function stopBlueDotBreathingAnimation() {
   if (blueDotBreathingAnimationFrame !== null && typeof window !== "undefined") {
     window.cancelAnimationFrame(blueDotBreathingAnimationFrame);
@@ -1499,6 +1507,13 @@ function startBlueDotBreathingAnimation() {
       )
     ) {
       lastBlueDotBreathingRadius = nextRadius;
+      if (map.getLayer(LAYER_CURRENT_LOCATION_HALO)) {
+        map.setPaintProperty(
+          LAYER_CURRENT_LOCATION_HALO,
+          "circle-radius",
+          getBlueDotHaloRadius(nextRadius)
+        );
+      }
       map.setPaintProperty(LAYER_CURRENT_LOCATION_DOT, "circle-radius", nextRadius);
     }
     blueDotBreathingAnimationFrame = window.requestAnimationFrame(tick);
@@ -2266,12 +2281,49 @@ function ensureMapSourcesAndLayers() {
   });
 
   map.addLayer({
+    id: LAYER_HEADING_GLOW,
+    type: "fill",
+    source: SOURCE_HEADING,
+    paint: {
+      "fill-color": "#9ad9ff",
+      "fill-opacity": ["*", ["coalesce", ["get", "opacity"], 0], 0.68],
+    },
+  });
+
+  map.addLayer({
     id: LAYER_HEADING,
     type: "fill",
     source: SOURCE_HEADING,
     paint: {
-      "fill-color": "#4da3ff",
+      "fill-color": "#57bcff",
       "fill-opacity": ["coalesce", ["get", "opacity"], 0],
+    },
+  });
+
+  map.addLayer({
+    id: LAYER_HEADING_EDGE,
+    type: "line",
+    source: SOURCE_HEADING,
+    layout: {
+      "line-cap": "round",
+      "line-join": "round",
+    },
+    paint: {
+      "line-color": "#eefbff",
+      "line-width": 1.4,
+      "line-opacity": ["*", ["coalesce", ["get", "opacity"], 0], 0.72],
+    },
+  });
+
+  map.addLayer({
+    id: LAYER_CURRENT_LOCATION_HALO,
+    type: "circle",
+    source: SOURCE_CURRENT_LOCATION,
+    paint: {
+      "circle-radius": getBlueDotHaloRadius(BLUE_DOT_BASE_RADIUS_PX),
+      "circle-color": "#6dcdff",
+      "circle-opacity": 0.34,
+      "circle-blur": 0.68,
     },
   });
 
@@ -2281,10 +2333,10 @@ function ensureMapSourcesAndLayers() {
     source: SOURCE_CURRENT_LOCATION,
     paint: {
       "circle-radius": BLUE_DOT_BASE_RADIUS_PX,
-      "circle-color": "#2d6cdf",
-      "circle-stroke-color": "#f4fbff",
-      "circle-stroke-width": 3,
-      "circle-opacity": 0.95,
+      "circle-color": "#1da8ff",
+      "circle-stroke-color": "#f7fdff",
+      "circle-stroke-width": 3.6,
+      "circle-opacity": 0.98,
     },
   });
 
@@ -3309,7 +3361,7 @@ map.on("rotate", refreshHeadingConeFromState);
 
 map.on("click", (event) => {
   const featuresAtPoint = map.queryRenderedFeatures(event.point, {
-    layers: [LAYER_RESTAURANTS, LAYER_PARKING, LAYER_CURRENT_LOCATION_DOT],
+    layers: [LAYER_RESTAURANTS, LAYER_PARKING, LAYER_CURRENT_LOCATION_HALO, LAYER_CURRENT_LOCATION_DOT],
   });
 
   if (featuresAtPoint.length) return;
