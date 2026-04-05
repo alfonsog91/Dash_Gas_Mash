@@ -50,7 +50,7 @@ import {
   normalizeHeadingDegrees,
 } from "./heading_cone.js?v=20260404-visual-amplification";
 
-const APP_BUILD_ID = "20260404-search-overlay";
+const APP_BUILD_ID = "20260404-overlay-hitfix";
 console.info("[DGM] app build", APP_BUILD_ID);
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
@@ -1223,7 +1223,7 @@ function installCompassPermissionAutoRequest() {
   });
 
   if (elSearchToggle) {
-    elSearchToggle.addEventListener("click", handleFirstGesture, {
+    elSearchToggle.addEventListener("pointerdown", handleFirstGesture, {
       capture: true,
       once: true,
     });
@@ -1926,6 +1926,8 @@ function setSearchOverlayOpen(isOpen, { focusInput = false, restoreFocus = false
 
   isSearchOverlayOpen = Boolean(isOpen);
   elSearchOverlay.hidden = !isSearchOverlayOpen;
+  elSearchOverlay.style.display = isSearchOverlayOpen ? "grid" : "none";
+  elSearchOverlay.style.pointerEvents = isSearchOverlayOpen ? "auto" : "none";
   elSearchOverlay.setAttribute("aria-hidden", String(!isSearchOverlayOpen));
   elSearchToggle.setAttribute("aria-expanded", String(isSearchOverlayOpen));
 
@@ -1962,6 +1964,29 @@ function openSearchOverlay() {
 
 function closeSearchOverlay(options) {
   setSearchOverlayOpen(false, options);
+}
+
+function isKeyboardActivationClick(event) {
+  return event?.type === "click" && event.detail === 0;
+}
+
+function addPreferredPressHandler(element, handler) {
+  if (!element) return;
+
+  element.addEventListener("pointerdown", (event) => {
+    if (typeof event.button === "number" && event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    handler(event);
+  });
+
+  element.addEventListener("click", (event) => {
+    if (!isKeyboardActivationClick(event)) {
+      return;
+    }
+    handler(event);
+  });
 }
 
 function renderSearchResults(results) {
@@ -3332,26 +3357,23 @@ if (elSatelliteMode) {
   elSatelliteMode.addEventListener("click", () => applyBaseStyle("satellite"));
 }
 
-if (elSearchToggle) {
-  elSearchToggle.addEventListener("click", () => {
+addPreferredPressHandler(elSearchToggle, () => {
     if (isSearchOverlayOpen) {
       closeSearchOverlay();
       return;
     }
 
     openSearchOverlay();
-  });
-}
+});
 
-if (elSearchClose) {
-  elSearchClose.addEventListener("click", () => {
-    closeSearchOverlay({ restoreFocus: true });
-  });
-}
+addPreferredPressHandler(elSearchClose, () => {
+  closeSearchOverlay({ restoreFocus: true });
+});
 
 if (elSearchOverlay) {
-  elSearchOverlay.addEventListener("click", (event) => {
+  elSearchOverlay.addEventListener("pointerdown", (event) => {
     if (event.target !== elSearchOverlay) return;
+    event.preventDefault();
     closeSearchOverlay({ restoreFocus: true });
   });
 }
