@@ -211,14 +211,23 @@
       <main id="main">
         <div id="map"></div>
         <div class="map-toolbar" aria-label="Map tools">
-          <form id="searchForm" class="map-search" role="search">
-            <input id="searchInput" type="search" placeholder="Search address or place" aria-label="Search address or place" aria-autocomplete="list" aria-controls="searchResults" autocomplete="off" enterkeyhint="search" spellcheck="false" />
-            <button id="searchButton" type="submit">Search</button>
-          </form>
-          <div id="searchResults" class="search-results" role="listbox" aria-label="Search results" aria-hidden="true"></div>
+          <button id="searchToggle" class="search-toggle" type="button" aria-haspopup="dialog" aria-controls="searchOverlay" aria-expanded="false">Search</button>
           <div class="map-mode-toggle" role="group" aria-label="Basemap style">
             <button id="streetMode" class="map-mode-button is-active" type="button" aria-pressed="true">Map</button>
             <button id="satelliteMode" class="map-mode-button" type="button" aria-pressed="false">Satellite</button>
+          </div>
+        </div>
+        <div id="searchOverlay" class="search-overlay" hidden aria-hidden="true">
+          <div class="search-overlay-panel" role="dialog" aria-modal="true" aria-labelledby="searchOverlayTitle">
+            <div class="search-overlay-head">
+              <div id="searchOverlayTitle" class="search-overlay-title">Search</div>
+              <button id="searchClose" class="search-close" type="button" aria-label="Close search">Close</button>
+            </div>
+            <form id="searchForm" class="map-search" role="search">
+              <input id="searchInput" type="search" placeholder="Search address or place" aria-label="Search address or place" aria-autocomplete="list" aria-controls="searchResults" autocomplete="off" enterkeyhint="search" spellcheck="false" />
+              <button id="searchButton" type="submit">Search</button>
+            </form>
+            <div id="searchResults" class="search-results" role="listbox" aria-label="Search results" aria-hidden="true"></div>
           </div>
         </div>
         <section id="navigationCard" class="navigation-card" aria-live="polite" hidden>
@@ -256,6 +265,6 @@
       crossorigin=""
     ></script>
 
-    <script type="module" src="./app.js?v=20260403-sensor-presence"></script>
+    <script type="module" src="./app.js?v=20260404-search-overlay"></script>
   </body>
 </html>

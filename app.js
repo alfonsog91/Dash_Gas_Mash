@@ -50,7 +50,7 @@ import {
   normalizeHeadingDegrees,
 } from "./heading_cone.js?v=20260404-visual-amplification";
 
-const APP_BUILD_ID = "20260404-visual-amplification";
+const APP_BUILD_ID = "20260404-search-overlay";
 console.info("[DGM] app build", APP_BUILD_ID);
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
@@ -168,6 +168,7 @@ let searchDebounceTimer = null;
 let renderedSearchResults = [];
 let searchResultPressActive = false;
 let searchResultPressTimer = null;
+let isSearchOverlayOpen = false;
 let activeRouteAbort = null;
 let activeRoute = null;
 let activeNavigationWatchId = null;
@@ -228,6 +229,9 @@ const elSummaryCards = document.getElementById("summaryCards");
 const menuButton = document.getElementById("menuToggle");
 const panel = document.getElementById("panel");
 const elLocateMe = document.getElementById("locateMe");
+const elSearchToggle = document.getElementById("searchToggle");
+const elSearchOverlay = document.getElementById("searchOverlay");
+const elSearchClose = document.getElementById("searchClose");
 const elSearchForm = document.getElementById("searchForm");
 const elSearchInput = document.getElementById("searchInput");
 const elSearchButton = document.getElementById("searchButton");
@@ -1218,6 +1222,13 @@ function installCompassPermissionAutoRequest() {
     passive: true,
   });
 
+  if (elSearchToggle) {
+    elSearchToggle.addEventListener("click", handleFirstGesture, {
+      capture: true,
+      once: true,
+    });
+  }
+
   if (elLocateMe) {
     elLocateMe.addEventListener("click", handleFirstGesture, {
       capture: true,
@@ -1910,6 +1921,49 @@ function clearSearchResults() {
   setSearchResultsExpanded(false);
 }
 
+function setSearchOverlayOpen(isOpen, { focusInput = false, restoreFocus = false } = {}) {
+  if (!elSearchOverlay || !elSearchToggle) return;
+
+  isSearchOverlayOpen = Boolean(isOpen);
+  elSearchOverlay.hidden = !isSearchOverlayOpen;
+  elSearchOverlay.setAttribute("aria-hidden", String(!isSearchOverlayOpen));
+  elSearchToggle.setAttribute("aria-expanded", String(isSearchOverlayOpen));
+
+  if (!isSearchOverlayOpen) {
+    if (searchDebounceTimer) {
+      clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = null;
+    }
+    if (activeSearchAbort) {
+      activeSearchAbort.abort();
+      activeSearchAbort = null;
+    }
+    clearSearchResults();
+    if (document.activeElement === elSearchInput) {
+      elSearchInput.blur();
+    }
+    if (restoreFocus) {
+      elSearchToggle.focus();
+    }
+    return;
+  }
+
+  if (focusInput && elSearchInput) {
+    window.requestAnimationFrame(() => {
+      elSearchInput.focus();
+      elSearchInput.select();
+    });
+  }
+}
+
+function openSearchOverlay() {
+  setSearchOverlayOpen(true, { focusInput: true });
+}
+
+function closeSearchOverlay(options) {
+  setSearchOverlayOpen(false, options);
+}
+
 function renderSearchResults(results) {
   if (!elSearchResults) return;
   renderedSearchResults = Array.isArray(results) ? results : [];
@@ -2126,6 +2180,7 @@ function selectRenderedSearchResult(index) {
     elSearchInput.value = match.label || match.title;
   }
   focusSearchMatch(match);
+  closeSearchOverlay();
 }
 
 function setLayerVisibility(layerId, visible) {
@@ -3277,6 +3332,30 @@ if (elSatelliteMode) {
   elSatelliteMode.addEventListener("click", () => applyBaseStyle("satellite"));
 }
 
+if (elSearchToggle) {
+  elSearchToggle.addEventListener("click", () => {
+    if (isSearchOverlayOpen) {
+      closeSearchOverlay();
+      return;
+    }
+
+    openSearchOverlay();
+  });
+}
+
+if (elSearchClose) {
+  elSearchClose.addEventListener("click", () => {
+    closeSearchOverlay({ restoreFocus: true });
+  });
+}
+
+if (elSearchOverlay) {
+  elSearchOverlay.addEventListener("click", (event) => {
+    if (event.target !== elSearchOverlay) return;
+    closeSearchOverlay({ restoreFocus: true });
+  });
+}
+
 if (elSearchForm && elSearchInput && elSearchButton) {
   elSearchForm.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -3289,6 +3368,7 @@ if (elSearchForm && elSearchInput && elSearchButton) {
 
     try {
       await searchAddress(query);
+      closeSearchOverlay();
     } catch (error) {
       console.error(error);
       alert(error?.message ?? String(error));
@@ -3304,14 +3384,15 @@ if (elSearchForm && elSearchInput && elSearchButton) {
 
   elSearchInput.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
-      clearSearchResults();
-      elSearchInput.blur();
+      event.preventDefault();
+      closeSearchOverlay({ restoreFocus: true });
     }
   });
 
   elSearchInput.addEventListener("blur", () => {
     window.setTimeout(() => {
       if (searchResultPressActive) return;
+      if (!isSearchOverlayOpen) return;
       clearSearchResults();
     }, 120);
   });
