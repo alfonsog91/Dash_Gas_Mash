@@ -19,6 +19,11 @@ import {
   getMetersPerPixelAtLatitude,
   normalizeHeadingDegrees,
 } from "../heading_cone.js?v=20260403-sensor-presence";
+import {
+  isHeadingRenderLoopDocumentActive,
+  resolveCompassPermissionState,
+  resolveEffectiveHeadingState,
+} from "../heading_runtime.js";
 
 function createLogger() {
   const logEl = typeof document !== "undefined" ? document.getElementById("log") : null;
@@ -177,6 +182,109 @@ export function runHeadingConeTests() {
     assert(getDeviceOrientationHeading({ type: "deviceorientation", absolute: false, alpha: 15 }) === null, "relative alpha should be ignored");
     assert(getDeviceOrientationHeading({ type: "deviceorientationabsolute", alpha: Number.NaN }) === null, "invalid alpha should be ignored");
     assert(getDeviceOrientationHeading(null) === null, "null events should be ignored");
+  });
+
+  runTest("resolveEffectiveHeadingState prefers fresh sensor heading", () => {
+    const state = resolveEffectiveHeadingState({
+      storedHeading: 120,
+      storedHeadingSource: "gps",
+      storedSpeed: 0.4,
+      sensorHeading: 270,
+      sensorHeadingAt: 1000,
+      nowMs: 1000 + HEADING_SENSOR_STALE_AFTER_MS - 1,
+      mapBearing: 35,
+      maxSensorAgeMs: HEADING_SENSOR_STALE_AFTER_MS,
+    });
+
+    assertEqual(state.effectiveHeading, 270, "fresh sensor heading should win precedence");
+    assertEqual(state.source, "sensor", "fresh sensor heading should report sensor source");
+  });
+
+  runTest("resolveEffectiveHeadingState falls back from stale or invalid sensor data", () => {
+    const gpsFallback = resolveEffectiveHeadingState({
+      storedHeading: 120,
+      storedHeadingSource: "gps",
+      storedSpeed: 0.4,
+      sensorHeading: 270,
+      sensorHeadingAt: 1000,
+      nowMs: 1000 + HEADING_SENSOR_STALE_AFTER_MS + 1,
+      mapBearing: 35,
+      maxSensorAgeMs: HEADING_SENSOR_STALE_AFTER_MS,
+    });
+    assertEqual(gpsFallback.effectiveHeading, 120, "stale sensor data should fall back to stored GPS heading");
+    assertEqual(gpsFallback.source, "gps", "stale sensor fallback should preserve GPS source");
+
+    const bearingFallback = resolveEffectiveHeadingState({
+      storedHeading: Number.NaN,
+      storedHeadingSource: "gps",
+      storedSpeed: 0.4,
+      sensorHeading: Number.NaN,
+      sensorHeadingAt: 1000,
+      nowMs: 1000 + HEADING_SENSOR_STALE_AFTER_MS + 1,
+      mapBearing: 35,
+      maxSensorAgeMs: HEADING_SENSOR_STALE_AFTER_MS,
+    });
+    assertEqual(bearingFallback.effectiveHeading, 35, "invalid stored heading should fall back to map bearing");
+    assertEqual(bearingFallback.source, "bearing", "map bearing should remain the final fallback source");
+  });
+
+  runTest("isHeadingRenderLoopDocumentActive keeps visible pages eligible without focus", () => {
+    assert(
+      isHeadingRenderLoopDocumentActive({ hidden: false, hasFocus: () => false }),
+      "visible documents should not lose heading updates just because focus is false"
+    );
+    assert(
+      !isHeadingRenderLoopDocumentActive({ hidden: true, hasFocus: () => true }),
+      "hidden documents should still pause heading updates"
+    );
+  });
+
+  runTest("resolveCompassPermissionState preserves permission gating semantics", () => {
+    assertEqual(
+      resolveCompassPermissionState({
+        hasDeviceOrientationEvent: false,
+        canRequestPermission: false,
+        permissionState: null,
+      }),
+      "unavailable",
+      "missing DeviceOrientationEvent should stay unavailable"
+    );
+    assertEqual(
+      resolveCompassPermissionState({
+        hasDeviceOrientationEvent: true,
+        canRequestPermission: false,
+        permissionState: null,
+      }),
+      "not-required",
+      "platforms without requestPermission should stay not-required"
+    );
+    assertEqual(
+      resolveCompassPermissionState({
+        hasDeviceOrientationEvent: true,
+        canRequestPermission: true,
+        permissionState: null,
+      }),
+      "required",
+      "requestPermission platforms should remain gesture-gated until decided"
+    );
+    assertEqual(
+      resolveCompassPermissionState({
+        hasDeviceOrientationEvent: true,
+        canRequestPermission: true,
+        permissionState: "granted",
+      }),
+      "granted",
+      "granted state should persist"
+    );
+    assertEqual(
+      resolveCompassPermissionState({
+        hasDeviceOrientationEvent: true,
+        canRequestPermission: true,
+        permissionState: "denied",
+      }),
+      "denied",
+      "denied state should persist"
+    );
   });
 
   const result = { passed, failed };

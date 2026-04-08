@@ -49,6 +49,11 @@ import {
   interpolateHeadingDegrees,
   normalizeHeadingDegrees,
 } from "./heading_cone.js?v=20260404-visual-amplification";
+import {
+  isHeadingRenderLoopDocumentActive,
+  resolveCompassPermissionState,
+  resolveEffectiveHeadingState,
+} from "./heading_runtime.js";
 
 const APP_BUILD_ID = "20260404-debug-gate-gestures";
 console.info("[DGM] app build", APP_BUILD_ID);
@@ -1016,22 +1021,16 @@ function writeStoredCompassPermissionState(state) {
 }
 
 function getResolvedCompassPermissionState() {
-  if (typeof window === "undefined" || !window.DeviceOrientationEvent) {
-    return COMPASS_PERMISSION_UNAVAILABLE_STATE;
-  }
-
-  if (!getCompassPermissionRequestTarget()) {
-    return COMPASS_PERMISSION_NOT_REQUIRED_STATE;
-  }
-
-  if (
-    compassPermissionState === COMPASS_PERMISSION_GRANTED_STATE
-    || compassPermissionState === COMPASS_PERMISSION_DENIED_STATE
-  ) {
-    return compassPermissionState;
-  }
-
-  return COMPASS_PERMISSION_REQUIRED_STATE;
+  return resolveCompassPermissionState({
+    hasDeviceOrientationEvent: typeof window !== "undefined" && Boolean(window.DeviceOrientationEvent),
+    canRequestPermission: Boolean(getCompassPermissionRequestTarget()),
+    permissionState: compassPermissionState,
+    requiredState: COMPASS_PERMISSION_REQUIRED_STATE,
+    grantedState: COMPASS_PERMISSION_GRANTED_STATE,
+    deniedState: COMPASS_PERMISSION_DENIED_STATE,
+    notRequiredState: COMPASS_PERMISSION_NOT_REQUIRED_STATE,
+    unavailableState: COMPASS_PERMISSION_UNAVAILABLE_STATE,
+  });
 }
 
 function formatCompassTimestamp(timestampMs) {
@@ -1279,38 +1278,16 @@ function getMapBearingHeading() {
 }
 
 function getHeadingState(nowMs = getHeadingNowMs()) {
-  const storedHeading = normalizeHeadingDegrees(lastKnownHeading);
-  const sensorHeading = normalizeHeadingDegrees(lastSensorHeading);
-  const sensorFresh = hasFreshHeadingSensorData(lastSensorHeadingAt, nowMs, HEADING_SENSOR_STALE_AFTER_MS);
-  const mapBearing = getMapBearingHeading();
-
-  let effectiveHeading = null;
-  let source = null;
-
-  if (sensorFresh && sensorHeading !== null) {
-    effectiveHeading = sensorHeading;
-    source = "sensor";
-  } else if (storedHeading !== null && lastKnownHeadingSource !== "sensor") {
-    effectiveHeading = storedHeading;
-    source = lastKnownHeadingSource || "stored";
-  } else if (mapBearing !== null) {
-    effectiveHeading = mapBearing;
-    source = "bearing";
-  }
-
-  return {
-    effectiveHeading,
-    source,
-    mapBearing,
-    storedHeading,
+  return resolveEffectiveHeadingState({
+    storedHeading: lastKnownHeading,
     storedHeadingSource: lastKnownHeadingSource,
     storedSpeed: lastKnownHeadingSpeed,
-    sensorHeading,
-    sensorFresh,
-    sensorAgeMs: typeof lastSensorHeadingAt === "number"
-      ? Math.max(0, nowMs - lastSensorHeadingAt)
-      : null,
-  };
+    sensorHeading: lastSensorHeading,
+    sensorHeadingAt: lastSensorHeadingAt,
+    nowMs,
+    mapBearing: getMapBearingHeading(),
+    maxSensorAgeMs: HEADING_SENSOR_STALE_AFTER_MS,
+  });
 }
 
 function getHeadingRenderLoopSmoothingTimeMs(source) {
@@ -1577,14 +1554,8 @@ function isHeadingConeRenderLoopActive() {
     return false;
   }
 
-  if (typeof document !== "undefined") {
-    if (document.hidden) {
-      return false;
-    }
-
-    if (typeof document.hasFocus === "function" && !document.hasFocus()) {
-      return false;
-    }
+  if (typeof document !== "undefined" && !isHeadingRenderLoopDocumentActive(document)) {
+    return false;
   }
 
   return Boolean(
