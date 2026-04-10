@@ -876,8 +876,12 @@ export function topLikelyMerchantsForParking(parkingPoint, restaurants, tauMeter
     .slice(0, limit);
 
   return weighted.map(({ r, d }) => ({
+    id: r.id,
     name: r.tags?.name ?? r.tags?.brand ?? "(unnamed)",
     amenity: r.tags?.amenity ?? "food",
+    lat: r.lat,
+    lon: r.lon,
+    tags: r.tags ?? {},
     distMeters: Math.round(d),
   }));
 }

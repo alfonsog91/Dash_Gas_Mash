@@ -64,7 +64,7 @@ import {
   formatCensusSourceSummary,
 } from "./census.js?v=20260410-census-data";
 
-const APP_BUILD_ID = "20260410-place-sheets";
+const APP_BUILD_ID = "20260410-nav-arrival";
 console.info("[DGM] app build", APP_BUILD_ID);
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
@@ -96,8 +96,22 @@ const COMPASS_PERMISSION_DENIED_STATE = "denied";
 const COMPASS_PERMISSION_NOT_REQUIRED_STATE = "not-required";
 const COMPASS_PERMISSION_UNAVAILABLE_STATE = "unavailable";
 const COMPASS_PERMISSION_STORAGE_KEY = "dgm:compass-permission-state";
+const PLACE_HISTORY_STORAGE_KEY = "dgm:place-history-v1";
+const PLACE_HISTORY_MAX_ENTRIES = 240;
 const DEBUG_MODE_QUERY_PARAM = "debug";
 const DEBUG_MODE_ENABLED_VALUE = "1";
+const STAGING_SPOT_MIN_DISTANCE_METERS = 322;
+const STAGING_SPOT_MAX_DISTANCE_METERS = 804;
+const MICRO_CORRIDOR_MIN_DISTANCE_METERS = 90;
+const MICRO_CORRIDOR_MAX_DISTANCE_METERS = 321;
+const ARRIVAL_CAMERA_AUTO_DISTANCE_METERS = 260;
+const ARRIVAL_CAMERA_EXIT_DISTANCE_METERS = 420;
+const NAVIGATION_CAMERA_ARRIVAL_MIN_ZOOM = 16.9;
+const NAVIGATION_CAMERA_ARRIVAL_MAX_ZOOM = 18.35;
+const NAVIGATION_CAMERA_ARRIVAL_MIN_PITCH = 28;
+const NAVIGATION_CAMERA_ARRIVAL_MAX_PITCH = 42;
+const NAVIGATION_REROUTE_DELTA_MIN_DURATION_SECONDS = 18;
+const NAVIGATION_REROUTE_DELTA_MIN_DISTANCE_METERS = 60;
 
 function isCompassDebugModeEnabled() {
   if (typeof window === "undefined") {
@@ -216,6 +230,7 @@ let lastCurrentLocation = null;
 let lastCurrentLocationAccuracyMeters = null;
 let lastHeatFeatures = [];
 let lastSpotPoint = null;
+let lastRankedParkingAll = [];
 let currentBaseStyle = "map";
 let hasBoundLayerEvents = false;
 let activeSearchAbort = null;
@@ -231,6 +246,9 @@ let activeRoute = null;
 let activeNavigationWatchId = null;
 let lastRouteOriginForRefresh = null;
 let lastRouteRefreshAt = 0;
+let navigationCameraMode = "browse";
+let navigationCameraModeAutoArrival = false;
+let lastNavigationCameraSyncAt = 0;
 let navigationVoiceEnabled = true;
 let lastSpokenInstructionKey = "";
 
@@ -294,6 +312,7 @@ const elParkingList = document.getElementById("parkingList");
 const elSummaryCards = document.getElementById("summaryCards");
 const menuButton = document.getElementById("menuToggle");
 const panel = document.getElementById("panel");
+const elMain = document.getElementById("main");
 const elLocateMe = document.getElementById("locateMe");
 const elSearchToggle = document.getElementById("searchToggle");
 const elSearchOverlay = document.getElementById("searchOverlay");
@@ -306,13 +325,19 @@ const elStreetMode = document.getElementById("streetMode");
 const elSatelliteMode = document.getElementById("satelliteMode");
 const elNavigationCard = document.getElementById("navigationCard");
 const elNavigationBanner = document.getElementById("navigationBanner");
+const elNavigationBannerGlyph = document.getElementById("navigationBannerGlyph");
 const elNavigationBannerInstruction = document.getElementById("navigationBannerInstruction");
 const elNavigationBannerMeta = document.getElementById("navigationBannerMeta");
 const elNavigationTitle = document.getElementById("navigationTitle");
 const elNavigationMeta = document.getElementById("navigationMeta");
+const elNavigationModePills = document.getElementById("navigationModePills");
+const elNavigationMetricGrid = document.getElementById("navigationMetricGrid");
+const elNavigationIntel = document.getElementById("navigationIntel");
 const elNavigationStatus = document.getElementById("navigationStatus");
 const elNavigationSteps = document.getElementById("navigationSteps");
 const elNavigationRecenter = document.getElementById("navigationRecenter");
+const elNavigationArrival = document.getElementById("navigationArrival");
+const elNavigationOverview = document.getElementById("navigationOverview");
 const elNavigationClear = document.getElementById("navigationClear");
 const elNavigationVoice = document.getElementById("navigationVoice");
 
@@ -326,12 +351,20 @@ const MAX_VISIBLE_ACCURACY_RADIUS_METERS = 45;
 const CONTINUOUS_WATCH_TIMEOUT_MS = 30000;
 const LIVE_LOCATION_WATCH_MAXIMUM_AGE_MS = 0;
 const AUTO_FOLLOW_LOCATION_MIN_CENTER_OFFSET_METERS = 6;
+const NAVIGATION_CAMERA_UPDATE_MIN_INTERVAL_MS = 380;
+const NAVIGATION_CAMERA_MIN_BEARING_DELTA_DEGREES = 4;
+const NAVIGATION_CAMERA_MIN_ZOOM_DELTA = 0.12;
+const NAVIGATION_CAMERA_MIN_PITCH_DELTA = 2;
+const NAVIGATION_CAMERA_DRIVER_MIN_ZOOM = 15.6;
+const NAVIGATION_CAMERA_DRIVER_MAX_ZOOM = 17.4;
+const NAVIGATION_CAMERA_DRIVER_MIN_PITCH = 46;
+const NAVIGATION_CAMERA_DRIVER_MAX_PITCH = 62;
 const AUTO_FOLLOW_LOCATION_PAN_DURATION_MS = 450;
 const AUTO_FOLLOW_HEADING_MIN_DELTA_DEGREES = 10;
 const AUTO_FOLLOW_HEADING_ROTATION_DURATION_MS = 380;
 const MAP_TOUCH_TAP_POPUP_DELAY_MS = 260;
 const MAP_TOUCH_GESTURE_SUPPRESSION_MS = 420;
-const POPUP_NEARBY_RESTAURANT_LIMIT = 10;
+const POPUP_NEARBY_RESTAURANT_LIMIT = 12;
 
 const INITIAL_LOCATION_ZOOM = 14;
 const INITIAL_LOCATION_TIMEOUT_MS = 8000;
@@ -390,6 +423,12 @@ let isFollowingCurrentLocation = isTouchInteractionDevice();
 let pendingMapTapPopupTimer = null;
 let lastMapTouchStartAt = 0;
 let suppressMapTapPopupUntil = 0;
+let placeSheetRoot = null;
+let placeSheetBody = null;
+let activePlaceSheetState = null;
+let placeSheetCompareBaseline = null;
+let activePlaceSheetRouteAbort = null;
+let comparePlaceSheetRouteAbort = null;
 
 function featureCollection(features = []) {
   return { type: "FeatureCollection", features };
@@ -463,6 +502,7 @@ function closeActivePopup() {
 }
 
 function openPopupAtLngLat(lngLat, html, popupOptions = {}) {
+  closePlaceSheet();
   closeActivePopup();
 
   const popup = new maplibregl.Popup({
@@ -506,6 +546,269 @@ function openPopupAtLngLat(lngLat, html, popupOptions = {}) {
   activePopup = popup;
 
   return activePopup;
+}
+
+function abortActivePlaceSheetRouteSummary() {
+  if (activePlaceSheetRouteAbort) {
+    activePlaceSheetRouteAbort.abort();
+    activePlaceSheetRouteAbort = null;
+  }
+}
+
+function abortComparePlaceSheetRouteSummary() {
+  if (comparePlaceSheetRouteAbort) {
+    comparePlaceSheetRouteAbort.abort();
+    comparePlaceSheetRouteAbort = null;
+  }
+}
+
+function updatePlaceSheetRouteSummary(stateKey, patch) {
+  let didUpdate = false;
+
+  if (activePlaceSheetState?.key === stateKey) {
+    activePlaceSheetState = { ...activePlaceSheetState, ...patch };
+    didUpdate = true;
+  }
+
+  if (placeSheetCompareBaseline?.key === stateKey) {
+    placeSheetCompareBaseline = { ...placeSheetCompareBaseline, ...patch };
+    didUpdate = true;
+  }
+
+  if (didUpdate) {
+    renderActivePlaceSheet();
+  }
+}
+
+function queueActivePlaceSheetRouteSummary() {
+  abortActivePlaceSheetRouteSummary();
+
+  if (!activePlaceSheetState || !lastCurrentLocation) {
+    return;
+  }
+
+  const controller = new AbortController();
+  const stateKey = activePlaceSheetState.key;
+  const destination = { lat: activePlaceSheetState.lat, lng: activePlaceSheetState.lng };
+  activePlaceSheetRouteAbort = controller;
+
+  fetchDrivingRoute(lastCurrentLocation, destination, { signal: controller.signal })
+    .then((route) => {
+      if (activePlaceSheetRouteAbort === controller) {
+        activePlaceSheetRouteAbort = null;
+      }
+
+      updatePlaceSheetRouteSummary(stateKey, {
+        routeStatus: "ready",
+        routeError: "",
+        routeSummary: {
+          distanceMeters: route.distanceMeters,
+          durationSeconds: route.durationSeconds,
+        },
+      });
+    })
+    .catch((error) => {
+      if (activePlaceSheetRouteAbort === controller) {
+        activePlaceSheetRouteAbort = null;
+      }
+
+      if (error?.name === "AbortError") {
+        return;
+      }
+
+      updatePlaceSheetRouteSummary(stateKey, {
+        routeStatus: "error",
+        routeError: error?.message ?? String(error),
+        routeSummary: null,
+      });
+    });
+}
+
+function queueComparePlaceSheetRouteSummary() {
+  abortComparePlaceSheetRouteSummary();
+
+  if (!placeSheetCompareBaseline || !lastCurrentLocation) {
+    return;
+  }
+
+  const controller = new AbortController();
+  const stateKey = placeSheetCompareBaseline.key;
+  const destination = { lat: placeSheetCompareBaseline.lat, lng: placeSheetCompareBaseline.lng };
+  comparePlaceSheetRouteAbort = controller;
+
+  fetchDrivingRoute(lastCurrentLocation, destination, { signal: controller.signal })
+    .then((route) => {
+      if (comparePlaceSheetRouteAbort === controller) {
+        comparePlaceSheetRouteAbort = null;
+      }
+
+      updatePlaceSheetRouteSummary(stateKey, {
+        routeStatus: "ready",
+        routeError: "",
+        routeSummary: {
+          distanceMeters: route.distanceMeters,
+          durationSeconds: route.durationSeconds,
+        },
+      });
+    })
+    .catch((error) => {
+      if (comparePlaceSheetRouteAbort === controller) {
+        comparePlaceSheetRouteAbort = null;
+      }
+
+      if (error?.name === "AbortError") {
+        return;
+      }
+
+      updatePlaceSheetRouteSummary(stateKey, {
+        routeStatus: "error",
+        routeError: error?.message ?? String(error),
+        routeSummary: null,
+      });
+    });
+}
+
+function ensurePlaceSheet() {
+  if (typeof document === "undefined" || placeSheetRoot || !elMain) {
+    return;
+  }
+
+  placeSheetRoot = document.createElement("section");
+  placeSheetRoot.className = "place-sheet-host";
+  placeSheetRoot.hidden = true;
+  placeSheetRoot.innerHTML = `
+    <div class="place-sheet-panel" role="dialog" aria-modal="false" aria-labelledby="placeSheetTitle">
+      <div class="place-sheet-body"></div>
+    </div>`;
+
+  placeSheetBody = placeSheetRoot.querySelector(".place-sheet-body");
+  placeSheetRoot.addEventListener("click", (event) => {
+    const closeButton = event.target.closest("[data-place-sheet-close]");
+    if (closeButton) {
+      event.preventDefault();
+      closePlaceSheet();
+      return;
+    }
+
+    const routeButton = event.target.closest("[data-route-lat][data-route-lng]");
+    if (routeButton && placeSheetRoot.contains(routeButton)) {
+      event.preventDefault();
+      if (activePlaceSheetState) {
+        const nextHistory = touchPlaceHistoryEntry(activePlaceSheetState, { incrementOpen: false, incrementRoute: true });
+        if (nextHistory) {
+          activePlaceSheetState = { ...activePlaceSheetState, history: nextHistory };
+          if (placeSheetCompareBaseline?.key === activePlaceSheetState.key) {
+            placeSheetCompareBaseline = { ...placeSheetCompareBaseline, history: nextHistory };
+          }
+          renderActivePlaceSheet();
+        }
+      }
+      startInAppNavigation({
+        lat: Number(routeButton.dataset.routeLat),
+        lng: Number(routeButton.dataset.routeLng),
+        title: routeButton.dataset.routeTitle || "Destination",
+        placeState: activePlaceSheetState ? { ...activePlaceSheetState } : null,
+      }).catch((error) => {
+        console.error(error);
+        setNavigationStatus(error?.message ?? String(error), "error");
+      });
+      return;
+    }
+
+    const sectionButton = event.target.closest("[data-place-sheet-scroll]");
+    if (sectionButton && placeSheetRoot.contains(sectionButton)) {
+      event.preventDefault();
+      const sectionId = sectionButton.dataset.placeSheetScroll;
+      const section = placeSheetRoot.querySelector(`#${sectionId}`);
+      if (section && typeof section.scrollIntoView === "function") {
+        section.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+      return;
+    }
+
+    const compareButton = event.target.closest("[data-place-sheet-compare]");
+    if (compareButton && placeSheetRoot.contains(compareButton)) {
+      event.preventDefault();
+      const action = compareButton.dataset.placeSheetCompare;
+      if (action === "clear") {
+        abortComparePlaceSheetRouteSummary();
+        placeSheetCompareBaseline = null;
+      } else if (activePlaceSheetState) {
+        placeSheetCompareBaseline = buildPlaceSheetComparable(activePlaceSheetState);
+        if (lastCurrentLocation && placeSheetCompareBaseline.routeStatus !== "ready") {
+          placeSheetCompareBaseline = { ...placeSheetCompareBaseline, routeStatus: "loading", routeError: "" };
+          queueComparePlaceSheetRouteSummary();
+        }
+      }
+      renderActivePlaceSheet();
+      return;
+    }
+
+    const restaurantButton = event.target.closest("[data-place-sheet-restaurant-id]");
+    if (restaurantButton && placeSheetRoot.contains(restaurantButton)) {
+      event.preventDefault();
+      const restaurant = restaurantById.get(restaurantButton.dataset.placeSheetRestaurantId);
+      if (restaurant) {
+        openRestaurantSheet(restaurant);
+      }
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && activePlaceSheetState) {
+      closePlaceSheet();
+    }
+  });
+
+  elMain.append(placeSheetRoot);
+}
+
+function renderActivePlaceSheet() {
+  if (!placeSheetBody || !activePlaceSheetState) {
+    return;
+  }
+
+  placeSheetBody.innerHTML = renderPlaceSheetHtml(activePlaceSheetState);
+}
+
+function openPlaceSheet(state) {
+  ensurePlaceSheet();
+  if (!placeSheetRoot || !placeSheetBody) {
+    return;
+  }
+
+  closeActivePopup();
+  const history = touchPlaceHistoryEntry(state);
+  activePlaceSheetState = {
+    ...state,
+    history,
+    routeSummary: state.routeSummary ?? null,
+    routeStatus: state.routeSummary
+      ? "ready"
+      : lastCurrentLocation
+        ? "loading"
+        : "unavailable",
+    routeError: "",
+  };
+  placeSheetRoot.hidden = false;
+  placeSheetRoot.classList.add("is-open");
+  renderActivePlaceSheet();
+  placeSheetBody.scrollTop = 0;
+  if (activePlaceSheetState.routeStatus === "loading") {
+    queueActivePlaceSheetRouteSummary();
+  }
+}
+
+function closePlaceSheet() {
+  abortActivePlaceSheetRouteSummary();
+  activePlaceSheetState = null;
+  if (!placeSheetRoot || !placeSheetBody) {
+    return;
+  }
+
+  placeSheetRoot.classList.remove("is-open");
+  placeSheetRoot.hidden = true;
+  placeSheetBody.innerHTML = "";
 }
 
 function setSourceData(sourceId, data) {
@@ -842,16 +1145,25 @@ function renderNearbyRestaurantsList(likely) {
     return '<div class="popup-empty">No nearby restaurants were found in this view.</div>';
   }
 
+  const items = likely.map((restaurant, index) => {
+    const wrapperStart = restaurant.id
+      ? `<button type="button" class="popup-nearby-item popup-nearby-item--button" data-place-sheet-restaurant-id="${escapeHtml(String(restaurant.id))}">`
+      : '<article class="popup-nearby-item">';
+    const wrapperEnd = restaurant.id ? '</button>' : '</article>';
+
+    return `
+      ${wrapperStart}
+        <div class="popup-nearby-rank">${index + 1}</div>
+        <div class="popup-nearby-copy">
+          <div class="popup-nearby-name">${escapeHtml(restaurant.name)}</div>
+          <div class="popup-nearby-meta">${escapeHtml(formatTagLabel(restaurant.amenity))} · ${restaurant.distMeters} m away</div>
+        </div>
+      ${wrapperEnd}`;
+  }).join("");
+
   return `
     <div class="popup-nearby-list">
-      ${likely.map((restaurant, index) => `
-        <article class="popup-nearby-item">
-          <div class="popup-nearby-rank">${index + 1}</div>
-          <div class="popup-nearby-copy">
-            <div class="popup-nearby-name">${escapeHtml(restaurant.name)}</div>
-            <div class="popup-nearby-meta">${escapeHtml(formatTagLabel(restaurant.amenity))} · ${restaurant.distMeters} m away</div>
-          </div>
-        </article>`).join("")}
+      ${items}
     </div>`;
 }
 
@@ -999,6 +1311,12 @@ function formatRouteDuration(durationSeconds) {
   return `${hours} hr ${minutes} min`;
 }
 
+function formatCompactRouteDuration(durationSeconds) {
+  const seconds = Math.abs(Math.round(Number(durationSeconds) || 0));
+  if (seconds < 90) return `${seconds} sec`;
+  return formatRouteDuration(seconds);
+}
+
 function buildRouteBounds(coordinates) {
   if (!coordinates?.length) return null;
   const bounds = new maplibregl.LngLatBounds(coordinates[0], coordinates[0]);
@@ -1027,6 +1345,7 @@ function setNavigationCardVisible(isVisible) {
   if (!elNavigationCard) return;
   elNavigationCard.hidden = !isVisible;
   elNavigationCard.classList.toggle("is-active", Boolean(isVisible));
+  updateNavigationCameraUi();
 }
 
 function setNavigationStatus(message, tone = "info") {
@@ -1037,14 +1356,450 @@ function setNavigationStatus(message, tone = "info") {
   elNavigationStatus.hidden = !text;
 }
 
+function findRestaurantByDestination(destination, maxDistanceMeters = 40) {
+  const lat = Number(destination?.lat);
+  const lng = Number(destination?.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return null;
+  }
+
+  return Array.from(restaurantById.values()).find((restaurant) => (
+    haversineMeters(lat, lng, restaurant.lat, restaurant.lon) <= maxDistanceMeters
+  )) || null;
+}
+
+function resolveNavigationDestinationState(destination) {
+  if (destination?.placeState) {
+    return { ...destination.placeState };
+  }
+
+  const restaurant = findRestaurantByDestination(destination);
+  if (restaurant) {
+    return buildRestaurantSheetState(restaurant);
+  }
+
+  return buildSpotSheetState({ lat: destination.lat, lng: destination.lng });
+}
+
+function getNavigationDestinationState(route) {
+  if (!route?.destination) {
+    return null;
+  }
+
+  const baseState = route.destinationState || resolveNavigationDestinationState(route.destination);
+  const freshScore = lastStats
+    ? getPopupPointScore({ lat: route.destination.lat, lon: route.destination.lng }, lastRestaurants, lastParams.tauMeters, lastParams.hour)
+    : baseState?.score ?? null;
+
+  return {
+    ...baseState,
+    title: route.destination.title || baseState?.title || "Destination",
+    lat: route.destination.lat,
+    lng: route.destination.lng,
+    score: freshScore,
+    routeSummary: {
+      distanceMeters: route.distanceMeters,
+      durationSeconds: route.durationSeconds,
+    },
+    routeStatus: "ready",
+    routeError: "",
+  };
+}
+
+function formatArrivalClock(durationSeconds) {
+  const arrival = new Date(Date.now() + Math.max(0, Number(durationSeconds) || 0) * 1000);
+  return arrival.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function getNavigationCameraModeLabel() {
+  if (!activeRoute) return "Browse";
+  if (navigationCameraMode === "driver") return "Driver camera";
+  if (navigationCameraMode === "arrival") return "Arrival camera";
+  if (navigationCameraMode === "overview") return "Overview";
+  if (navigationCameraMode === "free") return "Free pan";
+  return "Browse";
+}
+
+function updateNavigationCameraUi() {
+  if (elNavigationCard) {
+    elNavigationCard.dataset.mode = activeRoute ? navigationCameraMode : "browse";
+  }
+  if (elNavigationRecenter) {
+    elNavigationRecenter.setAttribute("aria-pressed", String(activeRoute && navigationCameraMode === "driver"));
+  }
+  if (elNavigationArrival) {
+    elNavigationArrival.setAttribute("aria-pressed", String(activeRoute && navigationCameraMode === "arrival"));
+  }
+  if (elNavigationOverview) {
+    elNavigationOverview.setAttribute("aria-pressed", String(activeRoute && navigationCameraMode === "overview"));
+  }
+}
+
+function setNavigationCameraMode(mode, { auto = false } = {}) {
+  navigationCameraMode = mode;
+  navigationCameraModeAutoArrival = Boolean(auto && mode === "arrival");
+  if (mode !== "arrival") {
+    navigationCameraModeAutoArrival = false;
+  }
+  updateNavigationCameraUi();
+}
+
+function isNavigationFollowCameraActive() {
+  return Boolean(activeRoute && (navigationCameraMode === "driver" || navigationCameraMode === "arrival"));
+}
+
+function getNavigationCameraPitch(mode = navigationCameraMode, speedMetersPerSecond = 0, remainingDistanceMeters = 0) {
+  if (mode === "arrival") {
+    const imminence = 1 - clamp01((Number(remainingDistanceMeters) || 0) / ARRIVAL_CAMERA_EXIT_DISTANCE_METERS);
+    return NAVIGATION_CAMERA_ARRIVAL_MIN_PITCH
+      + imminence * (NAVIGATION_CAMERA_ARRIVAL_MAX_PITCH - NAVIGATION_CAMERA_ARRIVAL_MIN_PITCH);
+  }
+
+  const normalizedSpeed = clamp01((Number(speedMetersPerSecond) || 0) / 18);
+  return NAVIGATION_CAMERA_DRIVER_MIN_PITCH
+    + normalizedSpeed * (NAVIGATION_CAMERA_DRIVER_MAX_PITCH - NAVIGATION_CAMERA_DRIVER_MIN_PITCH);
+}
+
+function getNavigationCameraZoom(mode = navigationCameraMode, speedMetersPerSecond = 0, nextStepDistanceMeters = 0, remainingDistanceMeters = 0) {
+  if (mode === "arrival") {
+    const normalizedSpeed = clamp01((Number(speedMetersPerSecond) || 0) / 12);
+    const imminence = 1 - clamp01((Number(remainingDistanceMeters) || 0) / ARRIVAL_CAMERA_EXIT_DISTANCE_METERS);
+    const targetZoom = NAVIGATION_CAMERA_ARRIVAL_MIN_ZOOM
+      + imminence * (NAVIGATION_CAMERA_ARRIVAL_MAX_ZOOM - NAVIGATION_CAMERA_ARRIVAL_MIN_ZOOM)
+      + (1 - normalizedSpeed) * 0.18;
+    return Math.max(NAVIGATION_CAMERA_ARRIVAL_MIN_ZOOM, Math.min(NAVIGATION_CAMERA_ARRIVAL_MAX_ZOOM, targetZoom));
+  }
+
+  const normalizedSpeed = clamp01((Number(speedMetersPerSecond) || 0) / 18);
+  const turnImmediacy = 1 - clamp01((Number(nextStepDistanceMeters) || 0) / 900);
+  const targetZoom = NAVIGATION_CAMERA_DRIVER_MAX_ZOOM - normalizedSpeed * 0.8 + turnImmediacy * 0.35;
+  return Math.max(NAVIGATION_CAMERA_DRIVER_MIN_ZOOM, Math.min(NAVIGATION_CAMERA_DRIVER_MAX_ZOOM, targetZoom));
+}
+
+function syncNavigationCameraModeForRoute(route) {
+  if (!route || navigationCameraMode === "overview" || navigationCameraMode === "free" || navigationCameraMode === "browse") {
+    return;
+  }
+
+  const remainingDistanceMeters = Number(route.distanceMeters) || 0;
+  if (navigationCameraMode === "driver" && remainingDistanceMeters <= ARRIVAL_CAMERA_AUTO_DISTANCE_METERS) {
+    setNavigationCameraMode("arrival", { auto: true });
+    return;
+  }
+
+  if (
+    navigationCameraMode === "arrival"
+    && navigationCameraModeAutoArrival
+    && remainingDistanceMeters >= ARRIVAL_CAMERA_EXIT_DISTANCE_METERS
+  ) {
+    setNavigationCameraMode("driver", { auto: true });
+  }
+}
+
+function syncActiveNavigationCamera({
+  latlng = lastCurrentLocation,
+  heading = lastKnownHeading,
+  speed = lastKnownHeadingSpeed,
+  force = false,
+  allowBearing = true,
+} = {}) {
+  if (!isNavigationFollowCameraActive() || !latlng || !map) {
+    return;
+  }
+
+  const resolvedLatLng = lngLatToObject(latlng);
+  const normalizedHeading = normalizeHeadingDegrees(heading);
+  const primaryStep = getPrimaryRouteStep(activeRoute);
+  const remainingDistanceMeters = Number(activeRoute?.distanceMeters) || 0;
+  const targetZoom = getNavigationCameraZoom(navigationCameraMode, speed, primaryStep?.distance, remainingDistanceMeters);
+  const targetPitch = getNavigationCameraPitch(navigationCameraMode, speed, remainingDistanceMeters);
+  const targetBearing = allowBearing && normalizedHeading !== null
+    ? normalizedHeading
+    : getMapBearingHeading();
+
+  const now = Date.now();
+  if (!force && now - lastNavigationCameraSyncAt < NAVIGATION_CAMERA_UPDATE_MIN_INTERVAL_MS) {
+    return;
+  }
+
+  const mapCenter = map.getCenter();
+  const centerDelta = haversineMeters(mapCenter.lat, mapCenter.lng, resolvedLatLng.lat, resolvedLatLng.lng);
+  const bearingDelta = getHeadingDeltaDegrees(targetBearing, getMapBearingHeading());
+  const pitchDelta = Math.abs((Number(map.getPitch()) || 0) - targetPitch);
+  const zoomDelta = Math.abs((Number(map.getZoom()) || 0) - targetZoom);
+
+  if (
+    !force
+    && centerDelta < AUTO_FOLLOW_LOCATION_MIN_CENTER_OFFSET_METERS
+    && (!Number.isFinite(bearingDelta) || bearingDelta < NAVIGATION_CAMERA_MIN_BEARING_DELTA_DEGREES)
+    && pitchDelta < NAVIGATION_CAMERA_MIN_PITCH_DELTA
+    && zoomDelta < NAVIGATION_CAMERA_MIN_ZOOM_DELTA
+  ) {
+    return;
+  }
+
+  lastNavigationCameraSyncAt = now;
+  map.easeTo({
+    center: [resolvedLatLng.lng, resolvedLatLng.lat],
+    bearing: targetBearing,
+    pitch: targetPitch,
+    zoom: targetZoom,
+    duration: force ? 700 : 320,
+    essential: true,
+  });
+}
+
+function focusActiveNavigationCamera({ force = false, mode = "driver" } = {}) {
+  if (!activeRoute) {
+    return;
+  }
+
+  setNavigationCameraMode(mode);
+  syncActiveNavigationCamera({ force: true, allowBearing: true });
+  if (force) {
+    setNavigationStatus("", "info");
+  }
+}
+
+function showActiveRouteArrivalView() {
+  if (!activeRoute) {
+    return;
+  }
+
+  focusActiveNavigationCamera({ force: true, mode: "arrival" });
+}
+
+function showActiveRouteOverview() {
+  if (!activeRoute) {
+    return;
+  }
+
+  setNavigationCameraMode("overview");
+  fitRouteToView(activeRoute);
+}
+
+function resetNavigationCamera() {
+  setNavigationCameraMode("browse");
+  navigationCameraModeAutoArrival = false;
+  lastNavigationCameraSyncAt = 0;
+  if (map) {
+    map.easeTo({ bearing: 0, pitch: 0, duration: 650, essential: true });
+  }
+}
+
+function renderNavigationModePills(route, snapshot) {
+  if (!elNavigationModePills) {
+    return;
+  }
+
+  const destinationState = snapshot?.destinationState || null;
+  const pills = [
+    { label: getNavigationCameraModeLabel(), active: activeRoute && (navigationCameraMode === "driver" || navigationCameraMode === "arrival") },
+    { label: destinationState?.score ? "Field aware" : "Route only", active: Boolean(destinationState?.score) },
+    { label: snapshot?.arrivalReadiness?.headline || "Cruise", active: Boolean(snapshot?.arrivalReadiness?.isFinalApproach) },
+    { label: navigationVoiceEnabled ? "Voice on" : "Voice muted", active: navigationVoiceEnabled },
+  ];
+
+  elNavigationModePills.innerHTML = pills.map((pill) => `
+    <span class="navigation-mode-pill${pill.active ? ' is-active' : ''}">${escapeHtml(pill.label)}</span>
+  `).join("");
+}
+
+function renderNavigationIntelCard(label, value, detail) {
+  if (!value) return "";
+  return `
+    <article class="navigation-intel-card">
+      <div class="navigation-intel-label">${escapeHtml(label)}</div>
+      <div class="navigation-intel-value">${escapeHtml(value)}</div>
+      <div class="navigation-intel-detail">${escapeHtml(detail)}</div>
+    </article>`;
+}
+
 function getPrimaryRouteStep(route) {
   if (!route?.steps?.length) return null;
   return route.steps.find((step) => Number(step?.distance) > 15) || route.steps[0] || null;
 }
 
+function getArrivalRouteStep(route) {
+  if (!route?.steps?.length) return null;
+
+  for (let index = route.steps.length - 1; index >= 0; index -= 1) {
+    const step = route.steps[index];
+    if (String(step?.maneuver?.type || "").toLowerCase() === "arrive") {
+      return step;
+    }
+  }
+
+  return route.steps[route.steps.length - 1] || null;
+}
+
+function getFinalTurnRouteStep(route) {
+  if (!route?.steps?.length) return null;
+
+  for (let index = route.steps.length - 1; index >= 0; index -= 1) {
+    const step = route.steps[index];
+    if (String(step?.maneuver?.type || "").toLowerCase() !== "arrive") {
+      return step;
+    }
+  }
+
+  return route.steps[0] || null;
+}
+
+function getRouteApproachSegment(route) {
+  const coordinates = route?.geometry?.coordinates;
+  if (!Array.isArray(coordinates) || coordinates.length < 2) {
+    return null;
+  }
+
+  const end = coordinates[coordinates.length - 1];
+  for (let index = coordinates.length - 2; index >= 0; index -= 1) {
+    const candidate = coordinates[index];
+    if (candidate[0] !== end[0] || candidate[1] !== end[1]) {
+      return {
+        start: { lng: candidate[0], lat: candidate[1] },
+        end: { lng: end[0], lat: end[1] },
+      };
+    }
+  }
+
+  return null;
+}
+
+function getPlanarVectorMeters(fromLatLng, toLatLng) {
+  const fromLat = Number(fromLatLng?.lat ?? 0);
+  const fromLng = Number(fromLatLng?.lng ?? 0);
+  const toLat = Number(toLatLng?.lat ?? 0);
+  const toLng = Number(toLatLng?.lng ?? 0);
+  const avgLatRad = (((fromLat + toLat) / 2) * Math.PI) / 180;
+  return {
+    x: (toLng - fromLng) * 111320 * Math.cos(avgLatRad),
+    y: (toLat - fromLat) * 111320,
+  };
+}
+
+function getApproachRelativeSide(approachStart, approachEnd, point) {
+  const travel = getPlanarVectorMeters(approachStart, approachEnd);
+  const target = getPlanarVectorMeters(approachEnd, point);
+  const targetDistance = Math.hypot(target.x, target.y);
+  if (targetDistance < 12) {
+    return "center";
+  }
+
+  const cross = travel.x * target.y - travel.y * target.x;
+  const along = travel.x * target.x + travel.y * target.y;
+  if (Math.abs(cross) < Math.max(14, targetDistance * 0.18)) {
+    return along >= 0 ? "ahead" : "behind";
+  }
+
+  return cross > 0 ? "left" : "right";
+}
+
+function formatRelativeSideLabel(side) {
+  if (side === "left") return "to the left";
+  if (side === "right") return "to the right";
+  if (side === "ahead") return "straight ahead";
+  if (side === "behind") return "behind the finish";
+  return "near the curb";
+}
+
+function getArrivalSideFromModifier(modifier) {
+  const normalizedModifier = String(modifier || "").toLowerCase().replace(/_/g, " ");
+  if (normalizedModifier.includes("left")) return "left";
+  if (normalizedModifier.includes("right")) return "right";
+  if (normalizedModifier === "straight") return "center";
+  return "center";
+}
+
+function getTurnDeltaDegrees(bearingBefore, bearingAfter) {
+  if (!Number.isFinite(bearingBefore) || !Number.isFinite(bearingAfter)) {
+    return 0;
+  }
+  return ((bearingAfter - bearingBefore + 540) % 360) - 180;
+}
+
+function getNavigationGlyphRotationDegrees(modifier) {
+  switch (String(modifier || "straight").toLowerCase().replace(/_/g, " ")) {
+    case "uturn":
+      return 180;
+    case "sharp right":
+      return 58;
+    case "right":
+      return 90;
+    case "slight right":
+      return 34;
+    case "slight left":
+      return -34;
+    case "left":
+      return -90;
+    case "sharp left":
+      return -58;
+    default:
+      return 0;
+  }
+}
+
+function renderNavigationManeuverGlyph(step, { compact = false } = {}) {
+  const maneuver = step?.maneuver || {};
+  const type = String(maneuver.type || "continue").toLowerCase().replace(/_/g, " ");
+  const modifier = String(maneuver.modifier || "straight").toLowerCase().replace(/_/g, " ");
+  const rotation = getNavigationGlyphRotationDegrees(modifier);
+  const exitNumber = Number.isFinite(Number(maneuver.exit)) ? Math.round(Number(maneuver.exit)) : null;
+  const variantClass = compact ? "navigation-glyph--compact" : "navigation-glyph--banner";
+
+  let svgMarkup = `
+    <svg viewBox="0 0 48 48" class="navigation-glyph-svg" aria-hidden="true">
+      <circle cx="24" cy="24" r="20" class="navigation-glyph-ring"></circle>
+      <g transform="rotate(${rotation} 24 24)">
+        <path d="M24 35V13" class="navigation-glyph-stroke"></path>
+        <path d="M15 22L24 13L33 22" class="navigation-glyph-stroke"></path>
+      </g>
+    </svg>`;
+
+  if (type === "depart") {
+    svgMarkup = `
+      <svg viewBox="0 0 48 48" class="navigation-glyph-svg" aria-hidden="true">
+        <circle cx="24" cy="24" r="20" class="navigation-glyph-ring"></circle>
+        <circle cx="24" cy="33" r="3.4" class="navigation-glyph-fill"></circle>
+        <g transform="rotate(${rotation} 24 24)">
+          <path d="M24 32V13" class="navigation-glyph-stroke"></path>
+          <path d="M15 22L24 13L33 22" class="navigation-glyph-stroke"></path>
+        </g>
+      </svg>`;
+  } else if (type === "arrive") {
+    svgMarkup = `
+      <svg viewBox="0 0 48 48" class="navigation-glyph-svg" aria-hidden="true">
+        <circle cx="24" cy="24" r="20" class="navigation-glyph-ring"></circle>
+        <circle cx="24" cy="24" r="8.5" class="navigation-glyph-stroke navigation-glyph-stroke--thin"></circle>
+        <circle cx="24" cy="24" r="3.5" class="navigation-glyph-fill"></circle>
+      </svg>`;
+  } else if (type === "roundabout" || type === "rotary" || type === "exit roundabout" || type === "exit rotary") {
+    svgMarkup = `
+      <svg viewBox="0 0 48 48" class="navigation-glyph-svg" aria-hidden="true">
+        <circle cx="24" cy="24" r="20" class="navigation-glyph-ring"></circle>
+        <path d="M29 14A10 10 0 1 0 34 27" class="navigation-glyph-stroke"></path>
+        <path d="M29 11L34 14L31 19" class="navigation-glyph-stroke"></path>
+        ${exitNumber ? `<text x="24" y="29" text-anchor="middle" class="navigation-glyph-exit">${exitNumber}</text>` : ""}
+      </svg>`;
+  } else if (type === "fork" || type === "merge" || type === "on ramp" || type === "off ramp" || type === "ramp") {
+    svgMarkup = `
+      <svg viewBox="0 0 48 48" class="navigation-glyph-svg" aria-hidden="true">
+        <circle cx="24" cy="24" r="20" class="navigation-glyph-ring"></circle>
+        <g transform="rotate(${rotation} 24 24)">
+          <path d="M24 35V23" class="navigation-glyph-stroke"></path>
+          <path d="M24 23L16 13" class="navigation-glyph-stroke"></path>
+          <path d="M24 23L32 13" class="navigation-glyph-stroke"></path>
+          <path d="M32 13V25" class="navigation-glyph-stroke navigation-glyph-stroke--thin"></path>
+        </g>
+      </svg>`;
+  }
+
+  return `<span class="navigation-glyph ${variantClass}">${svgMarkup}</span>`;
+}
+
 function buildRouteStepInstruction(step) {
   const maneuver = step?.maneuver || {};
-  const type = String(maneuver.type || "continue");
+  const type = String(maneuver.type || "continue").toLowerCase().replace(/_/g, " ");
   const modifier = String(maneuver.modifier || "").replace(/_/g, " ");
   const road = step?.name ? ` on ${step.name}` : "";
 
@@ -1059,16 +1814,397 @@ function buildRouteStepInstruction(step) {
       return `Turn ${modifier}${road}`.trim();
     case "merge":
       return `Merge${road}`.trim();
+    case "on ramp":
+      return `Take the ${modifier ? `${modifier} ` : ""}on-ramp${road}`.trim();
+    case "off ramp":
+      return `Take the ${modifier ? `${modifier} ` : ""}exit${road}`.trim();
     case "fork":
       return `Keep ${modifier || "ahead"}${road}`.trim();
     case "roundabout":
     case "rotary":
-      return `Enter the roundabout${road}`.trim();
+      return maneuver.exit
+        ? `Take exit ${maneuver.exit} at the roundabout${road}`.trim()
+        : `Enter the roundabout${road}`.trim();
+    case "exit roundabout":
+    case "exit rotary":
+      return `Exit the roundabout${road}`.trim();
     case "end of road":
       return `At the end of the road, turn ${modifier}${road}`.trim();
+    case "new name":
+      return step?.name ? `Continue as ${step.name}` : "Continue ahead";
     default:
-      return `Continue ${modifier}${road}`.trim();
+      return `Continue ${modifier || "ahead"}${road}`.trim();
   }
+}
+
+function getNavigationTurnComplexity(step) {
+  if (!step) {
+    return null;
+  }
+
+  const maneuver = step.maneuver || {};
+  const maneuverType = String(maneuver.type || "continue").toLowerCase().replace(/_/g, " ");
+  const angleFactor = clamp01(Math.abs(getTurnDeltaDegrees(maneuver.bearing_before, maneuver.bearing_after)) / 135);
+  const intersection = Array.isArray(step.intersections) ? step.intersections[0] || null : null;
+  const laneCount = Array.isArray(intersection?.lanes) ? intersection.lanes.length : 0;
+  const validEntryCount = Array.isArray(intersection?.entry)
+    ? intersection.entry.filter(Boolean).length
+    : 0;
+  const laneFactor = clamp01(Math.max(0, laneCount - 1) / 4);
+  const entryFactor = clamp01(Math.max(0, validEntryCount - 1) / 4);
+
+  let typeFactor = 0.34;
+  if (maneuverType === "roundabout" || maneuverType === "rotary" || maneuverType === "exit roundabout" || maneuverType === "exit rotary") {
+    typeFactor = 0.84;
+  } else if (maneuverType === "fork" || maneuverType === "merge" || maneuverType === "on ramp" || maneuverType === "off ramp") {
+    typeFactor = 0.72;
+  } else if (maneuverType === "end of road") {
+    typeFactor = 0.63;
+  } else if (maneuverType === "turn") {
+    typeFactor = 0.48;
+  }
+
+  const score = clamp01(0.42 * typeFactor + 0.28 * angleFactor + 0.16 * laneFactor + 0.14 * entryFactor);
+  let label = "Clean";
+  if (score >= 0.76) {
+    label = "Complex";
+  } else if (score >= 0.56) {
+    label = "Busy";
+  } else if (score >= 0.34) {
+    label = "Moderate";
+  }
+
+  const detailParts = [];
+  if (laneCount > 0) detailParts.push(`${laneCount} lane${laneCount === 1 ? "" : "s"}`);
+  if (validEntryCount > 1) detailParts.push(`${validEntryCount} legal branches`);
+  if (!detailParts.length) detailParts.push(buildRouteStepInstruction(step));
+
+  return {
+    score,
+    label,
+    detail: detailParts.join(" · "),
+  };
+}
+
+function buildRouteApproachProfile(route, destinationState, { pickupFriction, stagingCandidate, microCandidate } = {}) {
+  const approachSegment = getRouteApproachSegment(route);
+  const arrivalStep = getArrivalRouteStep(route);
+  const finalTurnStep = getFinalTurnRouteStep(route);
+  const finalTurn = getNavigationTurnComplexity(finalTurnStep || arrivalStep);
+  const approachDirection = approachSegment
+    ? getDirectionLabel(approachSegment.start, approachSegment.end)
+    : "unknown";
+  const arrivalSide = getArrivalSideFromModifier(arrivalStep?.maneuver?.modifier);
+  const drivingSide = String(arrivalStep?.driving_side || finalTurnStep?.driving_side || "right").toLowerCase() === "left"
+    ? "left"
+    : "right";
+  const legalCurbSide = drivingSide;
+  const curbParkingCandidate = pickupFriction?.nearestParking?.candidate || null;
+  const curbParkingSide = curbParkingCandidate && approachSegment
+    ? getApproachRelativeSide(approachSegment.start, approachSegment.end, { lat: curbParkingCandidate.lat, lng: curbParkingCandidate.lon })
+    : null;
+  const stagingSide = stagingCandidate && approachSegment
+    ? getApproachRelativeSide(approachSegment.start, approachSegment.end, { lat: stagingCandidate.candidate.lat, lng: stagingCandidate.candidate.lon })
+    : null;
+  const microSide = microCandidate && approachSegment
+    ? getApproachRelativeSide(approachSegment.start, approachSegment.end, { lat: microCandidate.candidate.lat, lng: microCandidate.candidate.lon })
+    : null;
+
+  let curbsideConfidence = arrivalSide === "center" ? 0.46 : 0.64;
+  if (arrivalSide === legalCurbSide) {
+    curbsideConfidence += 0.14;
+  } else if (arrivalSide !== "center") {
+    curbsideConfidence -= 0.14;
+  }
+  if (curbParkingSide && arrivalSide !== "center") {
+    curbsideConfidence += curbParkingSide === arrivalSide ? 0.12 : -0.08;
+  }
+  if (stagingSide && arrivalSide !== "center") {
+    curbsideConfidence += stagingSide === arrivalSide ? 0.06 : -0.04;
+  }
+  if (microSide && arrivalSide !== "center") {
+    curbsideConfidence += microSide === arrivalSide ? 0.04 : -0.03;
+  }
+  if (finalTurn) {
+    curbsideConfidence -= clamp01((finalTurn.score - 0.3) / 0.7) * 0.12;
+  }
+  curbsideConfidence -= (pickupFriction?.score ?? 0) * 0.08;
+  curbsideConfidence = clamp01(curbsideConfidence);
+
+  let curbsideLabel = "Curbside uncertain";
+  if (arrivalSide === "center") {
+    curbsideLabel = curbsideConfidence >= 0.62 ? "Straight-in arrival" : "Curbside uncertain";
+  } else if (arrivalSide === legalCurbSide && curbsideConfidence >= 0.72) {
+    curbsideLabel = `Likely ${arrivalSide}-side curb`;
+  } else if (arrivalSide !== legalCurbSide) {
+    curbsideLabel = `${arrivalSide[0].toUpperCase()}${arrivalSide.slice(1)}-side finish`;
+  } else {
+    curbsideLabel = `${arrivalSide[0].toUpperCase()}${arrivalSide.slice(1)}-side possible`;
+  }
+
+  const contextParts = [];
+  if (curbParkingCandidate && Number.isFinite(pickupFriction?.nearestParking?.distanceMeters)) {
+    contextParts.push(`${pickupFriction.nearestParking.distanceMeters} m visible parking sits ${formatRelativeSideLabel(curbParkingSide)}`);
+  }
+  if (stagingCandidate) {
+    contextParts.push(`best staging sits ${formatRelativeSideLabel(stagingSide)} and ${formatProbabilityDelta(stagingCandidate.probabilityDelta)}`);
+  } else if (microCandidate) {
+    contextParts.push(`short move support sits ${formatRelativeSideLabel(microSide)}`);
+  }
+
+  const curbsideDetail = arrivalSide === "center"
+    ? `OSRM does not expose a firm last-segment curbside here, so DGM is leaning on the visible parking field.${contextParts.length ? ` ${contextParts.join(". ")}.` : ""}`
+    : `OSRM places the finish on the ${arrivalSide} while legal curb flow is ${legalCurbSide}.${contextParts.length ? ` ${contextParts.join(". ")}.` : ""}`;
+
+  return {
+    approachDirection,
+    arrivalSide,
+    legalCurbSide,
+    curbsideConfidence,
+    curbsideLabel,
+    curbsideDetail,
+    finalTurn,
+    destinationState,
+  };
+}
+
+function getNavigationReadinessTone(score) {
+  if (score >= 0.72) return "good";
+  if (score >= 0.52) return "steady";
+  if (score >= 0.34) return "watch";
+  return "risk";
+}
+
+function buildNavigationArrivalReadiness({
+  route,
+  destinationScore,
+  pickupFriction,
+  stagingCandidate,
+  microCandidate,
+  approachProfile,
+}) {
+  const fieldScore = destinationScore ? clamp01(getProbabilityMid(destinationScore)) : 0.34;
+  const pickupEase = pickupFriction ? 1 - clamp01(pickupFriction.score) : 0.4;
+  const curbScore = approachProfile ? clamp01(approachProfile.curbsideConfidence) : 0.4;
+  const stageScore = stagingCandidate
+    ? clamp01(0.52 + stagingCandidate.probabilityDelta * 2.6)
+    : microCandidate
+      ? clamp01(0.36 + microCandidate.suitability * 0.48)
+      : 0.26;
+  const overall = clamp01(0.34 * fieldScore + 0.24 * pickupEase + 0.24 * curbScore + 0.18 * stageScore);
+  const finalApproach = (Number(route?.distanceMeters) || 0) <= ARRIVAL_CAMERA_EXIT_DISTANCE_METERS;
+
+  let headline = "Arrival watch";
+  if (overall >= 0.74) {
+    headline = "Arrival locked";
+  } else if (overall >= 0.56) {
+    headline = "Arrival building";
+  }
+
+  return {
+    overall,
+    headline,
+    isFinalApproach: finalApproach,
+    detail: finalApproach
+      ? "Final approach is live. DGM is biasing the HUD toward curbside and staging clarity."
+      : `Arrival camera will tighten automatically inside ${formatRouteDistance(ARRIVAL_CAMERA_AUTO_DISTANCE_METERS)}.`,
+    items: [
+      {
+        label: "Field",
+        value: destinationScore ? describeSignal(getProbabilityMid(destinationScore)) : "Route only",
+        detail: destinationScore
+          ? formatProbabilityRange(getProbabilityLow(destinationScore), getProbabilityHigh(destinationScore))
+          : "Refresh the field to unlock arrival scoring.",
+        score: fieldScore,
+      },
+      {
+        label: "Friction",
+        value: pickupFriction?.label || "Route only",
+        detail: pickupFriction?.value || "Needs field refresh",
+        score: pickupEase,
+      },
+      {
+        label: "Curb",
+        value: approachProfile?.curbsideLabel || "Unmapped",
+        detail: approachProfile ? `${Math.round(approachProfile.curbsideConfidence * 100)}/100 confidence` : "Needs route finish context",
+        score: curbScore,
+      },
+      {
+        label: "Stage",
+        value: stagingCandidate
+          ? formatProbabilityDelta(stagingCandidate.probabilityDelta)
+          : microCandidate
+            ? `${Math.round(microCandidate.suitability * 100)}/100`
+            : "No edge",
+        detail: stagingCandidate
+          ? `${stagingCandidate.distanceMeters} m ${stagingCandidate.direction}`
+          : microCandidate
+            ? `${microCandidate.distanceMeters} m ${microCandidate.direction}`
+            : "No visible nearby lift",
+        score: stageScore,
+      },
+    ],
+  };
+}
+
+function renderNavigationReadinessStrip(readiness) {
+  if (!readiness?.items?.length) {
+    return "";
+  }
+
+  return `
+    <section class="navigation-readiness" aria-label="Arrival readiness">
+      <div class="navigation-readiness-head">
+        <div class="navigation-readiness-title">${escapeHtml(readiness.headline)}</div>
+        <div class="navigation-readiness-detail">${escapeHtml(readiness.detail)}</div>
+      </div>
+      <div class="navigation-readiness-strip">
+        ${readiness.items.map((item) => `
+          <article class="navigation-readiness-chip" data-tone="${escapeHtml(getNavigationReadinessTone(item.score))}">
+            <div class="navigation-readiness-label">${escapeHtml(item.label)}</div>
+            <div class="navigation-readiness-value">${escapeHtml(item.value)}</div>
+            <div class="navigation-readiness-meta">${escapeHtml(item.detail)}</div>
+            <div class="navigation-readiness-bar"><span style="width:${Math.round(clamp01(item.score) * 100)}%"></span></div>
+          </article>
+        `).join("")}
+      </div>
+    </section>`;
+}
+
+function getParkingCandidateIdentity(candidate) {
+  if (!candidate) {
+    return "";
+  }
+
+  const lat = Number(candidate.lat);
+  const lon = Number(candidate.lon);
+  return String(
+    candidate.id
+      || `${Number.isFinite(lat) ? lat.toFixed(5) : "x"}:${Number.isFinite(lon) ? lon.toFixed(5) : "y"}:${getParkingCandidateLabel(candidate)}`
+  );
+}
+
+function formatRouteDurationDelta(durationSeconds) {
+  const delta = Math.round(Number(durationSeconds) || 0);
+  if (delta === 0) return "ETA unchanged";
+  return `${formatCompactRouteDuration(delta)} ${delta < 0 ? "faster" : "slower"}`;
+}
+
+function formatRouteDistanceDelta(distanceMeters) {
+  const delta = Math.round(Number(distanceMeters) || 0);
+  if (delta === 0) return "distance unchanged";
+  return `${formatRouteDistance(Math.abs(delta))} ${delta < 0 ? "shorter" : "longer"}`;
+}
+
+function buildNavigationSnapshot(route) {
+  const primaryStep = getPrimaryRouteStep(route);
+  const destinationState = getNavigationDestinationState(route);
+  const destinationScore = destinationState?.score ?? null;
+  const pickupFriction = destinationState ? getPickupFrictionDetails(destinationState) : null;
+  const competition = destinationScore ? getCompetitionPressureDetails(destinationScore) : null;
+  const stagingCandidate = destinationState
+    ? buildParkingCandidateInsights(destinationState, {
+      minDistanceMeters: STAGING_SPOT_MIN_DISTANCE_METERS,
+      maxDistanceMeters: STAGING_SPOT_MAX_DISTANCE_METERS,
+      limit: 1,
+    })[0] || null
+    : null;
+  const microCandidate = destinationState
+    ? buildParkingCandidateInsights(destinationState, {
+      minDistanceMeters: MICRO_CORRIDOR_MIN_DISTANCE_METERS,
+      maxDistanceMeters: MICRO_CORRIDOR_MAX_DISTANCE_METERS,
+      limit: 1,
+    })[0] || null
+    : null;
+  const approachProfile = buildRouteApproachProfile(route, destinationState, {
+    pickupFriction,
+    stagingCandidate,
+    microCandidate,
+  });
+  const arrivalReadiness = buildNavigationArrivalReadiness({
+    route,
+    destinationScore,
+    pickupFriction,
+    stagingCandidate,
+    microCandidate,
+    approachProfile,
+  });
+  const arrivalSummary = destinationScore
+    ? `${arrivalReadiness.headline}. ${approachProfile?.curbsideLabel || "Approach stabilizing"}. ${competition?.detail || ""}`.trim()
+    : "Route is active. Load or refresh the current field to unlock DGM arrival intelligence for this destination.";
+
+  return {
+    primaryStep,
+    destinationState,
+    destinationScore,
+    pickupFriction,
+    competition,
+    stagingCandidate,
+    microCandidate,
+    approachProfile,
+    arrivalReadiness,
+    arrivalSummary,
+  };
+}
+
+function buildNavigationRerouteDelta(previousRoute, nextRoute, previousSnapshot, nextSnapshot) {
+  if (!previousRoute || !nextRoute || !previousSnapshot || !nextSnapshot) {
+    return null;
+  }
+
+  const durationDelta = (Number(nextRoute.durationSeconds) || 0) - (Number(previousRoute.durationSeconds) || 0);
+  const distanceDelta = (Number(nextRoute.distanceMeters) || 0) - (Number(previousRoute.distanceMeters) || 0);
+  const detailParts = [];
+
+  if (Math.abs(durationDelta) >= NAVIGATION_REROUTE_DELTA_MIN_DURATION_SECONDS) {
+    detailParts.push(formatRouteDurationDelta(durationDelta));
+  }
+  if (Math.abs(distanceDelta) >= NAVIGATION_REROUTE_DELTA_MIN_DISTANCE_METERS) {
+    detailParts.push(formatRouteDistanceDelta(distanceDelta));
+  }
+
+  const previousCurb = previousSnapshot.approachProfile?.curbsideLabel || "";
+  const nextCurb = nextSnapshot.approachProfile?.curbsideLabel || "";
+  if (previousCurb && nextCurb && previousCurb !== nextCurb) {
+    detailParts.push(`curbside shifts to ${nextCurb.toLowerCase()}`);
+  }
+
+  const previousTurn = previousSnapshot.approachProfile?.finalTurn?.label || "";
+  const nextTurn = nextSnapshot.approachProfile?.finalTurn?.label || "";
+  if (previousTurn && nextTurn && previousTurn !== nextTurn) {
+    detailParts.push(`final turn is now ${nextTurn.toLowerCase()}`);
+  }
+
+  const previousStagingKey = getParkingCandidateIdentity(previousSnapshot.stagingCandidate?.candidate);
+  const nextStagingKey = getParkingCandidateIdentity(nextSnapshot.stagingCandidate?.candidate);
+  if (nextStagingKey && previousStagingKey !== nextStagingKey) {
+    detailParts.push(`best staging shifts to ${getParkingCandidateLabel(nextSnapshot.stagingCandidate.candidate)}`);
+  }
+
+  const previousFrictionLabel = previousSnapshot.pickupFriction?.label || "";
+  const nextFrictionLabel = nextSnapshot.pickupFriction?.label || "";
+  if (previousFrictionLabel && nextFrictionLabel && previousFrictionLabel !== nextFrictionLabel) {
+    detailParts.push(`pickup friction moves to ${nextFrictionLabel.toLowerCase()}`);
+  }
+
+  if (!detailParts.length) {
+    return null;
+  }
+
+  let headline = "Reroute changes arrival setup";
+  if (durationDelta <= -NAVIGATION_REROUTE_DELTA_MIN_DURATION_SECONDS) {
+    headline = "Reroute improves arrival";
+  } else if (durationDelta >= NAVIGATION_REROUTE_DELTA_MIN_DURATION_SECONDS) {
+    headline = "Reroute slows arrival";
+  } else if (previousCurb !== nextCurb) {
+    headline = "Reroute changes curbside";
+  }
+
+  return {
+    headline,
+    detail: detailParts.join(" · "),
+    tone: durationDelta > 0 ? "watch" : "good",
+  };
 }
 
 function speakNavigationInstruction(route, { force = false } = {}) {
@@ -1109,9 +2245,33 @@ function setNavigationVoiceEnabled(isEnabled) {
 function renderNavigationCard(route) {
   if (!elNavigationCard || !elNavigationTitle || !elNavigationMeta || !elNavigationSteps) return;
 
-  const primaryStep = getPrimaryRouteStep(route);
+  syncNavigationCameraModeForRoute(route);
+
+  const snapshot = route.navigationSnapshot || buildNavigationSnapshot(route);
+  const {
+    primaryStep,
+    destinationState,
+    destinationScore,
+    pickupFriction,
+    competition,
+    stagingCandidate,
+    microCandidate,
+    approachProfile,
+    arrivalReadiness,
+    arrivalSummary,
+  } = snapshot;
+
+  route.navigationSnapshot = snapshot;
+  route.destinationState = destinationState;
+  renderNavigationModePills(route, snapshot);
+
   if (elNavigationBanner) {
     elNavigationBanner.hidden = false;
+  }
+  if (elNavigationBannerGlyph) {
+    elNavigationBannerGlyph.innerHTML = primaryStep
+      ? renderNavigationManeuverGlyph(primaryStep)
+      : renderNavigationManeuverGlyph({ maneuver: { type: "depart", modifier: "straight" } });
   }
   if (elNavigationBannerInstruction) {
     elNavigationBannerInstruction.textContent = primaryStep
@@ -1120,26 +2280,90 @@ function renderNavigationCard(route) {
   }
   if (elNavigationBannerMeta) {
     elNavigationBannerMeta.textContent = primaryStep
-      ? `${formatRouteDistance(primaryStep.distance)} to next turn`
-      : `${formatRouteDistance(route.distanceMeters)} remaining`;
+      ? `${formatRouteDistance(primaryStep.distance)} to next turn · arrive ${formatArrivalClock(route.durationSeconds)}`
+      : `${formatRouteDistance(route.distanceMeters)} remaining · arrive ${formatArrivalClock(route.durationSeconds)}`;
   }
 
   elNavigationTitle.textContent = route.destination.title || "Route";
-  elNavigationMeta.textContent = `${formatRouteDistance(route.distanceMeters)} · ${formatRouteDuration(route.durationSeconds)}`;
+  elNavigationMeta.textContent = `${formatRouteDistance(route.distanceMeters)} · ${formatRouteDuration(route.durationSeconds)} · arrive ${formatArrivalClock(route.durationSeconds)}`;
+
+  if (elNavigationMetricGrid) {
+    elNavigationMetricGrid.innerHTML = renderPopupMetricGrid([
+      renderPopupMetricCard("Remaining", formatRouteDistance(route.distanceMeters), `${formatRouteDuration(route.durationSeconds)} left`),
+      renderPopupMetricCard("Arrive by", formatArrivalClock(route.durationSeconds), "Using open OSRM road geometry from your live position"),
+      renderPopupMetricCard(
+        "Camera",
+        getNavigationCameraModeLabel(),
+        navigationCameraMode === "arrival"
+          ? "Arrival camera is tightening the final approach and curbside read."
+          : navigationCameraMode === "driver"
+            ? "Heading-follow rotation is active only while this route is live."
+            : navigationCameraMode === "overview"
+              ? "Full-route framing is active. Tap Drive to resume heading-follow."
+              : "Manual camera is active. Tap Drive to resume heading-follow."
+      ),
+      destinationScore
+        ? renderPopupMetricCard("Arrival field", formatProbabilityRange(getProbabilityLow(destinationScore), getProbabilityHigh(destinationScore)), describeSignal(getProbabilityMid(destinationScore)))
+        : renderPopupMetricCard("Arrival field", "Route only", "Load or refresh the field to unlock destination intelligence."),
+    ]);
+  }
+
+  if (elNavigationIntel) {
+    elNavigationIntel.innerHTML = `
+      <div class="navigation-intel-banner">${escapeHtml(arrivalSummary)}</div>
+      ${renderNavigationReadinessStrip(arrivalReadiness)}
+      ${route.rerouteDelta
+        ? `<div class="navigation-reroute-banner" data-tone="${escapeHtml(route.rerouteDelta.tone || "steady")}"><strong>${escapeHtml(route.rerouteDelta.headline)}</strong><span>${escapeHtml(route.rerouteDelta.detail)}</span></div>`
+        : ""}
+      <div class="navigation-intel-grid">
+        ${pickupFriction
+          ? renderNavigationIntelCard("Pickup friction", pickupFriction.label, `${pickupFriction.value} · ${pickupFriction.detail}`)
+          : renderNavigationIntelCard("Pickup friction", "Route only", "Field refresh is needed before DGM can grade arrival friction.")}
+        ${competition
+          ? renderNavigationIntelCard("Competition", competition.label, `${competition.value} · ${competition.detail}`)
+          : renderNavigationIntelCard("Competition", "Route only", "Competition pressure becomes available once the field is loaded.")}
+        ${approachProfile
+          ? renderNavigationIntelCard("Curbside", approachProfile.curbsideLabel, `${Math.round(approachProfile.curbsideConfidence * 100)}/100 · ${approachProfile.curbsideDetail}`)
+          : renderNavigationIntelCard("Curbside", "Unmapped", "Arrival-side confidence becomes available once the route finish is resolved.")}
+        ${approachProfile?.finalTurn
+          ? renderNavigationIntelCard("Final turn", approachProfile.finalTurn.label, `${approachProfile.approachDirection}bound finish · ${approachProfile.finalTurn.detail}`)
+          : renderNavigationIntelCard("Final turn", "Unmapped", "Turn complexity becomes available once OSRM returns the final intersection.")}
+        ${stagingCandidate
+          ? renderNavigationIntelCard(
+            "Best staging hold",
+            getParkingCandidateLabel(stagingCandidate.candidate),
+            `${stagingCandidate.distanceMeters} m ${stagingCandidate.direction} · ${formatProbabilityDelta(stagingCandidate.probabilityDelta)}`
+          )
+          : renderNavigationIntelCard("Best staging hold", "Not visible", "No 0.2–0.5 mile staging improvement is currently visible near the destination.")}
+        ${microCandidate
+          ? renderNavigationIntelCard(
+            "Micro-corridor",
+            `${microCandidate.distanceMeters} m ${microCandidate.direction}`,
+            `${getParkingCandidateLabel(microCandidate.candidate)} · suitability ${Math.round(microCandidate.suitability * 100)}/100`
+          )
+          : renderNavigationIntelCard("Micro-corridor", "No short shift", "DGM does not see a nearby short move that materially improves arrival readiness right now.")}
+      </div>`;
+  }
+
   elNavigationSteps.innerHTML = route.steps.length
     ? route.steps.map((step, index) => `
       <li class="navigation-step">
-        <span class="navigation-step-index">${index + 1}</span>
+        <span class="navigation-step-glyph">${renderNavigationManeuverGlyph(step, { compact: true })}</span>
         <div class="navigation-step-body">
           <div class="navigation-step-text">${escapeHtml(buildRouteStepInstruction(step))}</div>
-          <div class="navigation-step-meta">${escapeHtml(formatRouteDistance(step.distance))}</div>
+          <div class="navigation-step-meta">${escapeHtml(`${index + 1}. ${formatRouteDistance(step.distance)}`)}</div>
         </div>
       </li>
     `).join("")
     : `<li class="navigation-step navigation-step--empty"><div class="navigation-step-body"><div class="navigation-step-text">Route ready.</div></div></li>`;
 
   setNavigationCardVisible(true);
-  setNavigationStatus("", "info");
+  updateNavigationCameraUi();
+  if (navigationCameraMode === "free" && activeRoute) {
+    setNavigationStatus("Driver camera paused. Tap Drive to resume heading-follow.", "info");
+  } else {
+    setNavigationStatus("", "info");
+  }
   updateNavigationVoiceButton();
   speakNavigationInstruction(route);
 }
@@ -1342,6 +2566,129 @@ function writeStoredCompassPermissionState(state) {
   } catch {
     // Ignore storage failures and keep runtime behavior intact.
   }
+}
+
+function canUseLocalStorage() {
+  return typeof window !== "undefined" && Boolean(window.localStorage);
+}
+
+function readPlaceHistoryStore() {
+  if (!canUseLocalStorage()) {
+    return {};
+  }
+
+  try {
+    const raw = window.localStorage.getItem(PLACE_HISTORY_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writePlaceHistoryStore(store) {
+  if (!canUseLocalStorage()) {
+    return;
+  }
+
+  try {
+    const entries = Object.entries(store || {})
+      .sort((left, right) => (right?.[1]?.lastOpenedAt ?? 0) - (left?.[1]?.lastOpenedAt ?? 0))
+      .slice(0, PLACE_HISTORY_MAX_ENTRIES);
+    window.localStorage.setItem(PLACE_HISTORY_STORAGE_KEY, JSON.stringify(Object.fromEntries(entries)));
+  } catch {
+    // Ignore storage failures and keep runtime behavior intact.
+  }
+}
+
+function getPlaceHistoryEntry(placeKey) {
+  if (!placeKey) {
+    return null;
+  }
+
+  const entry = readPlaceHistoryStore()[placeKey];
+  return entry && typeof entry === "object" ? entry : null;
+}
+
+function touchPlaceHistoryEntry(state, { incrementOpen = true, incrementRoute = false } = {}) {
+  if (!state?.key) {
+    return null;
+  }
+
+  const store = readPlaceHistoryStore();
+  const now = Date.now();
+  const nextEntry = {
+    openCount: 0,
+    routeCount: 0,
+    firstSeenAt: now,
+    lastOpenedAt: now,
+    lastRouteAt: null,
+    kind: state.kind,
+    title: state.title,
+    subtitle: state.subtitle || "",
+    ...(store[state.key] || {}),
+  };
+
+  nextEntry.kind = state.kind;
+  nextEntry.title = state.title;
+  nextEntry.subtitle = state.subtitle || "";
+  nextEntry.lastOpenedAt = now;
+  if (incrementOpen) {
+    nextEntry.openCount = Number(nextEntry.openCount || 0) + 1;
+  }
+  if (incrementRoute) {
+    nextEntry.routeCount = Number(nextEntry.routeCount || 0) + 1;
+    nextEntry.lastRouteAt = now;
+  }
+
+  store[state.key] = nextEntry;
+  writePlaceHistoryStore(store);
+  return nextEntry;
+}
+
+function formatRelativeTimestamp(timestampMs) {
+  if (!Number.isFinite(timestampMs) || timestampMs <= 0) {
+    return "Not yet";
+  }
+
+  const elapsedMs = Math.max(0, Date.now() - timestampMs);
+  const minuteMs = 60 * 1000;
+  const hourMs = 60 * minuteMs;
+  const dayMs = 24 * hourMs;
+
+  if (elapsedMs < hourMs) {
+    return `${Math.max(1, Math.round(elapsedMs / minuteMs))} min ago`;
+  }
+
+  if (elapsedMs < dayMs) {
+    return `${Math.max(1, Math.round(elapsedMs / hourMs))} hr ago`;
+  }
+
+  return `${Math.max(1, Math.round(elapsedMs / dayMs))} day ago`;
+}
+
+function describeFamiliarityEntry(entry) {
+  const openCount = Number(entry?.openCount || 0);
+  const routeCount = Number(entry?.routeCount || 0);
+
+  if (routeCount >= 6 || openCount >= 14) {
+    return {
+      label: "Highly familiar",
+      detail: "You revisit this place enough that DGM should keep surfacing your local context here.",
+    };
+  }
+
+  if (routeCount >= 2 || openCount >= 5) {
+    return {
+      label: "Familiar",
+      detail: "You have enough local history here for side-by-side comparisons to start becoming useful.",
+    };
+  }
+
+  return {
+    label: "Fresh read",
+    detail: "This place is still mostly a live field read, not a habit-driven one.",
+  };
 }
 
 function getResolvedCompassPermissionState() {
@@ -2102,6 +3449,10 @@ function startContinuousLocationWatch() {
 async function refreshActiveRouteFromOrigin(origin, options = {}) {
   if (!activeRoute?.destination) return null;
   const now = Date.now();
+  const previousRoute = activeRoute;
+  const previousSnapshot = previousRoute
+    ? (previousRoute.navigationSnapshot || buildNavigationSnapshot(previousRoute))
+    : null;
   const shouldThrottle = !options.force;
   const movedEnough = !lastRouteOriginForRefresh
     || haversineMeters(
@@ -2127,11 +3478,18 @@ async function refreshActiveRouteFromOrigin(origin, options = {}) {
   activeRouteAbort = new AbortController();
   const routeResult = await fetchDrivingRoute(origin, activeRoute.destination, { signal: activeRouteAbort.signal });
 
-  activeRoute = {
+  const nextRoute = {
     ...routeResult,
     origin,
     destination: activeRoute.destination,
+    destinationState: activeRoute.destinationState,
   };
+  const nextSnapshot = buildNavigationSnapshot(nextRoute);
+  nextRoute.navigationSnapshot = nextSnapshot;
+  nextRoute.destinationState = nextSnapshot.destinationState;
+  nextRoute.rerouteDelta = buildNavigationRerouteDelta(previousRoute, nextRoute, previousSnapshot, nextSnapshot);
+
+  activeRoute = nextRoute;
 
   setSourceData(SOURCE_ROUTE, featureCollection([{
     type: "Feature",
@@ -2141,8 +3499,10 @@ async function refreshActiveRouteFromOrigin(origin, options = {}) {
 
   renderNavigationCard(activeRoute);
 
-  if (options.fitToRoute) {
+  if (options.fitToRoute || navigationCameraMode === "overview") {
     fitRouteToView(activeRoute);
+  } else if (isNavigationFollowCameraActive()) {
+    syncActiveNavigationCamera({ latlng: origin, heading: lastKnownHeading, speed: lastKnownHeadingSpeed, force: true });
   }
 
   return activeRoute;
@@ -2197,15 +3557,21 @@ async function startInAppNavigation(destination, options = {}) {
     lat: Number(destination?.lat),
     lng: Number(destination?.lng),
     title: String(destination?.title || "Destination"),
+    placeState: destination?.placeState ? { ...destination.placeState } : null,
   };
 
   if (!Number.isFinite(resolvedDestination.lat) || !Number.isFinite(resolvedDestination.lng)) {
     throw new Error("Destination coordinates are invalid.");
   }
 
+  closePlaceSheet();
+  closeActivePopup();
+  setNavigationCameraMode("driver");
   setNavigationCardVisible(true);
   if (elNavigationTitle) elNavigationTitle.textContent = resolvedDestination.title;
   if (elNavigationMeta) elNavigationMeta.textContent = "";
+  if (elNavigationMetricGrid) elNavigationMetricGrid.innerHTML = "";
+  if (elNavigationIntel) elNavigationIntel.innerHTML = "";
   if (elNavigationSteps) elNavigationSteps.innerHTML = "";
   setNavigationStatus(lastCurrentLocation ? "Calculating route…" : "Locating you…", "info");
 
@@ -2222,9 +3588,14 @@ async function startInAppNavigation(destination, options = {}) {
     ...routeResult,
     origin,
     destination: resolvedDestination,
+    destinationState: resolveNavigationDestinationState(resolvedDestination),
+    rerouteDelta: null,
   };
+  activeRoute.navigationSnapshot = buildNavigationSnapshot(activeRoute);
+  activeRoute.destinationState = activeRoute.navigationSnapshot.destinationState;
   lastRouteOriginForRefresh = origin;
   lastRouteRefreshAt = Date.now();
+  lastNavigationCameraSyncAt = 0;
 
   setSourceData(SOURCE_ROUTE, featureCollection([{
     type: "Feature",
@@ -2235,8 +3606,11 @@ async function startInAppNavigation(destination, options = {}) {
   renderNavigationCard(activeRoute);
   ensureNavigationWatch();
 
-  if (options.fitToRoute !== false) {
+  if (options.fitToRoute === true) {
     fitRouteToView(activeRoute);
+    setNavigationCameraMode("overview");
+  } else {
+    focusActiveNavigationCamera({ force: true });
   }
 
   return activeRoute;
@@ -2252,15 +3626,21 @@ function clearInAppNavigation() {
   activeRoute = null;
   lastRouteOriginForRefresh = null;
   lastRouteRefreshAt = 0;
+  lastNavigationCameraSyncAt = 0;
   lastSpokenInstructionKey = "";
   clearRouteOverlay();
   setNavigationStatus("", "info");
   if (elNavigationBanner) elNavigationBanner.hidden = true;
+  if (elNavigationBannerGlyph) elNavigationBannerGlyph.innerHTML = "";
   if (elNavigationBannerInstruction) elNavigationBannerInstruction.textContent = "";
   if (elNavigationBannerMeta) elNavigationBannerMeta.textContent = "";
+  if (elNavigationModePills) elNavigationModePills.innerHTML = "";
+  if (elNavigationMetricGrid) elNavigationMetricGrid.innerHTML = "";
+  if (elNavigationIntel) elNavigationIntel.innerHTML = "";
   if (elNavigationSteps) elNavigationSteps.innerHTML = "";
   if (elNavigationMeta) elNavigationMeta.textContent = "";
   if (elNavigationTitle) elNavigationTitle.textContent = "";
+  resetNavigationCamera();
   setNavigationCardVisible(false);
 }
 
@@ -2605,6 +3985,7 @@ function selectRenderedSearchResult(index) {
 
 function setLayerVisibility(layerId, visible) {
   if (!map.getLayer(layerId)) return;
+
   map.setLayoutProperty(layerId, "visibility", visible ? "visible" : "none");
 }
 
@@ -2834,7 +4215,7 @@ function ensureMapSourcesAndLayers() {
       const restaurant = restaurantById.get(feature.properties?.id);
       if (!restaurant) return;
 
-      openPopupAtLngLat(event.lngLat, renderRestaurantPopupHtml(restaurant), { closeButton: true });
+      openRestaurantSheet(restaurant);
     });
 
     map.on("click", LAYER_PARKING, (event) => {
@@ -3059,6 +4440,11 @@ function setCurrentLocationFollowEnabled(isEnabled) {
 }
 
 function syncMapToCurrentLocation(latlng, { force = false } = {}) {
+  if (activeRoute) {
+    syncActiveNavigationCamera({ latlng, force, allowBearing: false });
+    return;
+  }
+
   if (!isFollowingCurrentLocation || !latlng || !map) {
     return;
   }
@@ -3083,23 +4469,11 @@ function syncMapToCurrentLocation(latlng, { force = false } = {}) {
 }
 
 function syncMapBearingToHeading(heading, { force = false } = {}) {
-  if (!isFollowingCurrentLocation || !isTouchInteractionDevice() || !map) {
+  if (!activeRoute) {
     return;
   }
 
-  const resolvedHeading = normalizeHeadingDegrees(heading);
-  if (resolvedHeading === null) {
-    return;
-  }
-
-  const bearingDelta = getHeadingDeltaDegrees(resolvedHeading, getMapBearingHeading());
-  if (!force && Number.isFinite(bearingDelta) && bearingDelta < AUTO_FOLLOW_HEADING_MIN_DELTA_DEGREES) {
-    return;
-  }
-
-  map.rotateTo(resolvedHeading, {
-    duration: force ? LOCATION_FLY_DURATION_MS : AUTO_FOLLOW_HEADING_ROTATION_DURATION_MS,
-  });
+  syncActiveNavigationCamera({ heading, force, allowBearing: true });
 }
 
 function clearPendingMapTapPopup() {
@@ -3135,6 +4509,13 @@ function scheduleMapTapPopup(lngLat) {
 
 function handleManualMapCameraStart(event) {
   if (!event?.originalEvent) {
+    return;
+  }
+
+  if (activeRoute) {
+    setNavigationCameraMode("free");
+    setNavigationStatus("Driver camera paused. Tap Drive to resume heading-follow.", "info");
+    suppressMapTapPopupTemporarily();
     return;
   }
 
@@ -3292,13 +4673,7 @@ function openStatsPopupAtLatLng(latlng) {
     return;
   }
 
-  const { hour, tauMeters } = lastParams;
-  setSpotMarker(latlng);
-  openPopupAtLngLat(
-    latlng,
-    renderSpotPopupHtml(latlngToObject(latlng), lastRestaurants, tauMeters, hour),
-    { closeButton: true }
-  );
+  openSpotSheet(latlng);
 }
 
 function latlngToObject(value) {
@@ -3634,6 +5009,751 @@ function renderSpotPopupHtml(latlng, restaurants, tauMeters, hour) {
 `;
 }
 
+function buildRestaurantSheetState(restaurant) {
+  const tags = restaurant?.tags ?? {};
+  const name = getPlaceDisplayName(restaurant);
+  const amenityLabel = getPlaceAmenityLabel(tags);
+  const cuisineLabels = getRestaurantCuisineLabels(tags);
+  const serviceLabels = getRestaurantServiceLabels(tags);
+  const address = getPlaceAddress(tags);
+  const openingHours = formatOpeningHoursText(tags?.opening_hours);
+  const phoneNumber = getPlacePhoneNumber(tags);
+  const websiteUrl = getPlaceWebsiteUrl(tags);
+  const score = lastStats
+    ? getPopupPointScore({ lat: restaurant.lat, lon: restaurant.lon }, lastRestaurants, lastParams.tauMeters, lastParams.hour)
+    : null;
+
+  return {
+    kind: "restaurant",
+    key: `restaurant:${restaurant.id}`,
+    title: name,
+    subtitle: [amenityLabel, cuisineLabels[0] || null].filter(Boolean).join(" · "),
+    lat: restaurant.lat,
+    lng: restaurant.lon,
+    tags,
+    score,
+    chips: [...cuisineLabels, ...serviceLabels],
+    amenityLabel,
+    address,
+    openingHours,
+    phoneNumber,
+    websiteUrl,
+    currentDistance: getDistanceFromCurrentLocation(restaurant.lat, restaurant.lon),
+    likely: topLikelyMerchantsForParking(restaurant, lastRestaurants, lastParams.tauMeters, lastParams.hour, POPUP_NEARBY_RESTAURANT_LIMIT),
+  };
+}
+
+function buildSpotSheetState(latlng) {
+  const point = latlngToObject(latlng);
+  const score = getPopupPointScore(point, lastRestaurants, lastParams.tauMeters, lastParams.hour);
+
+  return {
+    kind: "spot",
+    key: `spot:${point.lat.toFixed(5)}:${point.lng.toFixed(5)}`,
+    title: "Selected spot",
+    subtitle: score ? describeSignal(getProbabilityMid(score)) : "Custom field analysis",
+    lat: point.lat,
+    lng: point.lng,
+    tags: {},
+    score,
+    chips: ["Stat ping", "10-minute read"],
+    currentDistance: getDistanceFromCurrentLocation(point.lat, point.lng),
+    likely: topLikelyMerchantsForParking(
+      { lat: point.lat, lon: point.lng, tags: { name: "Selected spot" } },
+      lastRestaurants,
+      lastParams.tauMeters,
+      lastParams.hour,
+      POPUP_NEARBY_RESTAURANT_LIMIT
+    ),
+    warning: lastStats === null
+      ? "Load or refresh the current view to calibrate this stat ping against the visible field."
+      : "",
+  };
+}
+
+function buildPlaceSheetComparable(state) {
+  return {
+    key: state.key,
+    kind: state.kind,
+    title: state.title,
+    subtitle: state.subtitle,
+    lat: state.lat,
+    lng: state.lng,
+    score: state.score,
+    tags: state.tags ?? {},
+    currentDistance: state.currentDistance || getDistanceFromCurrentLocation(state.lat, state.lng),
+    routeSummary: state.routeSummary ?? null,
+    routeStatus: state.routeStatus || (state.routeSummary ? "ready" : "unavailable"),
+    routeError: state.routeError || "",
+    history: state.history || getPlaceHistoryEntry(state.key),
+  };
+}
+
+function findBestNearbyParkingCandidate(lat, lng, maxDistanceMeters = 550) {
+  return Array.from(parkingById.values())
+    .map((candidate) => ({
+      candidate,
+      distanceMeters: Math.round(haversineMeters(lat, lng, candidate.lat, candidate.lon)),
+    }))
+    .filter(({ distanceMeters }) => distanceMeters <= maxDistanceMeters)
+    .sort((left, right) => {
+      const byScore = getProbabilityMid(right.candidate) - getProbabilityMid(left.candidate);
+      if (Math.abs(byScore) > 0.0001) {
+        return byScore;
+      }
+      return left.distanceMeters - right.distanceMeters;
+    })[0] ?? null;
+}
+
+function describeDemandMixCard(score) {
+  const merchantShare = clamp01(score?.merchantShare ?? 0);
+  const residentialShare = clamp01(score?.residentialShare ?? 0);
+
+  if (merchantShare >= 0.68) {
+    return {
+      value: "Merchant-led",
+      detail: `${formatPercent(merchantShare)} of the field is coming from nearby restaurants right now.`,
+    };
+  }
+
+  if (residentialShare >= 0.42) {
+    return {
+      value: "Residential cushion",
+      detail: `${formatPercent(residentialShare)} of the field is home-driven, which usually smooths out spikes.`,
+    };
+  }
+
+  return {
+    value: "Balanced mix",
+    detail: `${formatPercent(merchantShare)} merchant pull and ${formatPercent(residentialShare)} residential support are both contributing.`,
+  };
+}
+
+function describeCrowdingCard(score) {
+  const crowding = clamp01(score?.signals?.D ?? score?.competitionIntensity ?? 0);
+
+  if (crowding >= 0.7) {
+    return {
+      value: "Heavy",
+      detail: "Parking density is high here, so the score is fighting more likely driver competition.",
+    };
+  }
+
+  if (crowding >= 0.45) {
+    return {
+      value: "Moderate",
+      detail: "There is some competition pressure nearby, but it is not overwhelming the field.",
+    };
+  }
+
+  return {
+    value: "Light",
+    detail: "Competition pressure is relatively low around this spot right now.",
+  };
+}
+
+function describeSupportDepthCard(score) {
+  const merchants = Math.round(score?.effectiveMerchants ?? 0);
+
+  if (merchants >= 6 && (score?.stabilityWidth ?? 1) <= 0.16) {
+    return {
+      value: `${merchants} merchants`,
+      detail: "This read is well-supported by a deeper nearby merchant field.",
+    };
+  }
+
+  if (merchants >= 3) {
+    return {
+      value: `${merchants} merchants`,
+      detail: "There is enough nearby support to trust the signal, but it can still swing.",
+    };
+  }
+
+  return {
+    value: `${merchants} merchants`,
+    detail: "This read is thin. A couple of store changes could move it quickly.",
+  };
+}
+
+function formatRouteSummaryValue(routeSummary, routeStatus) {
+  if (routeStatus === "loading") return "Calculating";
+  if (routeStatus === "unavailable") return "Need location";
+  if (routeStatus === "error") return "Unavailable";
+  if (!routeSummary) return "Unavailable";
+  return formatRouteDuration(routeSummary.durationSeconds);
+}
+
+function formatRouteSummaryDetail(routeSummary, routeStatus, routeError = "") {
+  if (routeStatus === "loading") return "Fetching drive time from your current location.";
+  if (routeStatus === "unavailable") return "Turn on location to estimate drive time.";
+  if (routeStatus === "error") return routeError || "No drivable route was returned for this place.";
+  if (!routeSummary) return "Route summary unavailable.";
+  return `${formatRouteDistance(routeSummary.distanceMeters)} drive distance`;
+}
+
+function renderRouteMetricCard(subject) {
+  return renderPopupMetricCard(
+    "Drive",
+    formatRouteSummaryValue(subject?.routeSummary, subject?.routeStatus),
+    formatRouteSummaryDetail(subject?.routeSummary, subject?.routeStatus, subject?.routeError)
+  );
+}
+
+function getDirectionLabel(fromLatLng, toLatLng) {
+  const dy = Number(toLatLng?.lat ?? 0) - Number(fromLatLng?.lat ?? 0);
+  const avgLatRad = (((Number(fromLatLng?.lat ?? 0) + Number(toLatLng?.lat ?? 0)) / 2) * Math.PI) / 180;
+  const dx = (Number(toLatLng?.lng ?? 0) - Number(fromLatLng?.lng ?? 0)) * Math.cos(avgLatRad);
+  const angle = (Math.atan2(dx, dy) * 180) / Math.PI;
+  const normalized = (angle + 360) % 360;
+  const directions = ["north", "northeast", "east", "southeast", "south", "southwest", "west", "northwest"];
+  return directions[Math.round(normalized / 45) % directions.length];
+}
+
+function getParkingCandidateLabel(candidate) {
+  return candidate?.tags?.name || candidate?.tags?.operator || "Visible parking";
+}
+
+function formatProbabilityDelta(delta) {
+  if (!Number.isFinite(delta)) {
+    return "score delta unavailable";
+  }
+
+  const deltaPoints = Math.round(Math.abs(delta) * 100);
+  if (deltaPoints === 0) {
+    return "field is effectively tied";
+  }
+
+  return `${delta > 0 ? "+" : "-"}${deltaPoints} pts versus here`;
+}
+
+function getParkingSuitabilityScore(candidate, anchorDistanceMeters = 0) {
+  const fieldStrength = getProbabilityMid(candidate);
+  const competitionRelief = 1 - clamp01(candidate?.signals?.D ?? candidate?.competitionIntensity ?? 0);
+  const stability = 1 - clamp01((candidate?.stabilityWidth ?? 0.18) / 0.35);
+  const distanceEase = 1 - clamp01(anchorDistanceMeters / STAGING_SPOT_MAX_DISTANCE_METERS);
+  return clamp01(0.46 * fieldStrength + 0.22 * competitionRelief + 0.18 * stability + 0.14 * distanceEase);
+}
+
+function findNearestRankedParkingCandidate(lat, lng, maxDistanceMeters = 480) {
+  return lastRankedParkingAll
+    .map((candidate) => ({
+      candidate,
+      distanceMeters: Math.round(haversineMeters(lat, lng, candidate.lat, candidate.lon)),
+    }))
+    .filter(({ distanceMeters }) => distanceMeters <= maxDistanceMeters)
+    .sort((left, right) => left.distanceMeters - right.distanceMeters)[0] ?? null;
+}
+
+function getPickupFrictionDetails(state) {
+  if (!state?.score) {
+    return null;
+  }
+
+  const nearestParking = findNearestRankedParkingCandidate(state.lat, state.lng);
+  const pickupDistanceFactor = clamp01(((state.score.expectedDistMeters ?? 0) - 120) / 700);
+  const crowdFactor = clamp01(state.score?.signals?.D ?? state.score?.competitionIntensity ?? 0);
+  const parkingFactor = nearestParking ? clamp01(nearestParking.distanceMeters / 360) : 1;
+  const tags = state.tags ?? {};
+  let serviceEase = 0;
+  if (tags.drive_through === "yes") serviceEase += 0.18;
+  if (tags.takeaway === "yes" || tags.takeaway === "only") serviceEase += 0.12;
+  if (tags.delivery === "yes" || tags.delivery === "only") serviceEase += 0.08;
+
+  const friction = clamp01(0.46 * pickupDistanceFactor + 0.32 * crowdFactor + 0.22 * parkingFactor - serviceEase);
+  let label = "Easy";
+  if (friction >= 0.72) {
+    label = "High friction";
+  } else if (friction >= 0.5) {
+    label = "Sticky";
+  } else if (friction >= 0.28) {
+    label = "Manageable";
+  }
+
+  const parkingText = nearestParking
+    ? `${nearestParking.distanceMeters} m to the nearest visible parking option.`
+    : "No visible parking option is currently loaded around this place.";
+
+  return {
+    score: friction,
+    value: `${Math.round(friction * 100)}/100`,
+    label,
+    detail: `${parkingText} ${describePickup(state.score.expectedDistMeters)}`,
+    nearestParking,
+  };
+}
+
+function getCompetitionPressureDetails(score) {
+  if (!score) {
+    return null;
+  }
+
+  const crowding = clamp01(score?.signals?.D ?? score?.competitionIntensity ?? 0);
+  const density = clamp01((score?.nearbyMerchants ?? score?.effectiveMerchants ?? 0) / 8);
+  const pressure = clamp01(0.68 * crowding + 0.32 * density);
+  let label = "Low";
+  if (pressure >= 0.72) {
+    label = "High";
+  } else if (pressure >= 0.42) {
+    label = "Moderate";
+  }
+
+  return {
+    score: pressure,
+    value: `${Math.round(pressure * 100)}/100`,
+    label,
+    detail: label === "High"
+      ? "This field is crowded enough that waiting discipline matters more than raw merchant count."
+      : label === "Moderate"
+        ? "Competition is present, but the spot is still carrying enough support to be usable."
+        : "Competition pressure is relatively calm here right now.",
+  };
+}
+
+function buildParkingCandidateInsights(
+  state,
+  { minDistanceMeters = STAGING_SPOT_MIN_DISTANCE_METERS, maxDistanceMeters = STAGING_SPOT_MAX_DISTANCE_METERS, limit = 3 } = {}
+) {
+  if (!state?.score || !lastRankedParkingAll.length) {
+    return [];
+  }
+
+  return lastRankedParkingAll
+    .map((candidate) => {
+      const distanceMeters = Math.round(haversineMeters(state.lat, state.lng, candidate.lat, candidate.lon));
+      const suitability = getParkingSuitabilityScore(candidate, distanceMeters);
+      const probabilityDelta = getProbabilityMid(candidate) - getProbabilityMid(state.score);
+      return {
+        candidate,
+        distanceMeters,
+        suitability,
+        probabilityDelta,
+        direction: getDirectionLabel(state, { lat: candidate.lat, lng: candidate.lon }),
+      };
+    })
+    .filter(({ distanceMeters }) => distanceMeters >= minDistanceMeters && distanceMeters <= maxDistanceMeters)
+    .sort((left, right) => {
+      if (Math.abs(right.suitability - left.suitability) > 0.0001) {
+        return right.suitability - left.suitability;
+      }
+      return right.probabilityDelta - left.probabilityDelta;
+    })
+    .slice(0, limit);
+}
+
+function renderParkingCandidateInsightList(items, emptyMessage) {
+  if (!items.length) {
+    return `<div class="popup-empty">${escapeHtml(emptyMessage)}</div>`;
+  }
+
+  return `
+    <div class="popup-nearby-list">
+      ${items.map((item, index) => `
+        <article class="popup-nearby-item">
+          <div class="popup-nearby-rank">${index + 1}</div>
+          <div class="popup-nearby-copy">
+            <div class="popup-nearby-name">${escapeHtml(getParkingCandidateLabel(item.candidate))}</div>
+            <div class="popup-nearby-meta">${escapeHtml(`${item.distanceMeters} m ${item.direction} · suitability ${Math.round(item.suitability * 100)}/100`)}</div>
+            <div class="popup-nearby-meta">${escapeHtml(`${formatProbabilityRange(getProbabilityLow(item.candidate), getProbabilityHigh(item.candidate))} · ${formatProbabilityDelta(item.probabilityDelta)}`)}</div>
+          </div>
+        </article>`).join("")}
+    </div>`;
+}
+
+function renderPlaceSheetHistorySection(state) {
+  const history = state.history || getPlaceHistoryEntry(state.key);
+  const familiarity = describeFamiliarityEntry(history);
+
+  return `
+    <div class="popup-banner popup-banner--accent">Stored locally only. DGM uses this history for clarity and familiarity, not for prediction.</div>
+    ${renderPopupMetricGrid([
+      renderPopupMetricCard("Familiarity", familiarity.label, familiarity.detail),
+      renderPopupMetricCard("Opens", `${Number(history?.openCount || 0)}`, `Last viewed ${formatRelativeTimestamp(history?.lastOpenedAt)}`),
+      renderPopupMetricCard("Routes", `${Number(history?.routeCount || 0)}`, history?.lastRouteAt ? `Last routed ${formatRelativeTimestamp(history.lastRouteAt)}` : "You have not launched navigation from here yet."),
+    ])}
+    ${renderPopupFactRows([
+      { label: "First seen", value: formatRelativeTimestamp(history?.firstSeenAt) },
+      { label: "Last opened", value: formatRelativeTimestamp(history?.lastOpenedAt) },
+      { label: "Last routed", value: formatRelativeTimestamp(history?.lastRouteAt) },
+    ])}`;
+}
+
+function renderPlaceSheetCompareButton(state) {
+  const buttonLabel = placeSheetCompareBaseline?.key === state.key
+    ? "Pick second place"
+    : placeSheetCompareBaseline
+      ? "Replace baseline"
+      : "Start compare";
+
+  return `<button type="button" class="popup-action popup-action--secondary" data-place-sheet-compare="set">${escapeHtml(buttonLabel)}</button>`;
+}
+
+function renderPlaceSheetHero(state) {
+  if (!state.score) {
+    return `
+      <div class="place-sheet-hero place-sheet-hero--empty">
+        <div class="place-sheet-hero-value">Field refresh needed</div>
+        <div class="place-sheet-hero-label">Load or refresh the current view to calibrate this location against the live map.</div>
+      </div>`;
+  }
+
+  return `
+    <div class="place-sheet-hero">
+      <div class="place-sheet-hero-value">${formatProbabilityRange(getProbabilityLow(state.score), getProbabilityHigh(state.score))}</div>
+      <div class="place-sheet-hero-label">${escapeHtml(state.kind === "restaurant" ? "Nearby 10-minute field" : "10-minute probability of a good order")}</div>
+      <div class="place-sheet-hero-detail">${escapeHtml(state.kind === "restaurant" ? formatRelativeRank(state.score) : describeAdvisory(state.score.advisory))}</div>
+    </div>`;
+}
+
+function renderPlaceSheetOverviewSection(state) {
+  if (state.kind === "restaurant") {
+    return `
+      ${renderPopupMetricGrid([
+        state.currentDistance ? renderPopupMetricCard("From you", state.currentDistance, "Straight-line distance") : "",
+        renderRouteMetricCard(state),
+        state.score ? renderPopupMetricCard("Nearby field", formatProbabilityRange(getProbabilityLow(state.score), getProbabilityHigh(state.score)), "10-minute hold strength") : "",
+        state.websiteUrl
+          ? renderPopupMetricCard("Website", getWebsiteDisplayLabel(state.websiteUrl), "Official source")
+          : state.openingHours
+            ? renderPopupMetricCard("Hours", "Listed", "See the overview below")
+            : "",
+      ])}
+
+      ${renderPopupActions([
+        renderPopupActionButton(state.lat, state.lng, "Route here", state.title, "popup-action--primary"),
+        renderPlaceSheetCompareButton(state),
+        state.websiteUrl ? renderPopupActionLink(state.websiteUrl, "Website") : "",
+        renderPopupActionLink(buildPlaceSearchUrl(`${state.title} menu`), "Menu"),
+        renderPopupActionLink(buildPlaceSearchUrl(`${state.title} reviews`), "Reviews"),
+        state.phoneNumber ? renderPopupActionLink(`tel:${encodeURIComponent(state.phoneNumber)}`, "Call", { className: "popup-action--secondary", newTab: false }) : "",
+      ])}
+
+      ${renderPopupFactRows([
+        state.address ? { label: "Address", value: state.address } : null,
+        state.openingHours ? { label: "Hours", value: state.openingHours } : null,
+        state.phoneNumber ? { label: "Phone", value: state.phoneNumber, href: `tel:${encodeURIComponent(state.phoneNumber)}`, newTab: false } : null,
+        state.websiteUrl ? { label: "Website", value: getWebsiteDisplayLabel(state.websiteUrl), href: state.websiteUrl } : null,
+      ])}`;
+  }
+
+  return `
+    ${state.warning ? `<div class="popup-banner popup-banner--warn">${escapeHtml(state.warning)}</div>` : ""}
+    ${renderPopupMetricGrid([
+      state.score ? renderPopupMetricCard("Rank", formatCompactRank(state.score), formatRelativeRank(state.score)) : "",
+      renderRouteMetricCard(state),
+      state.score ? renderPopupMetricCard("Pickup", formatRouteDistance(state.score.expectedDistMeters), describePickup(state.score.expectedDistMeters)) : "",
+      state.score ? renderPopupMetricCard("Stability", `${Math.round(state.score.effectiveMerchants ?? 0)} merchants`, describeStability(state.score)) : "",
+      state.currentDistance ? renderPopupMetricCard("From you", state.currentDistance, "Straight-line distance") : "",
+    ])}
+
+    ${renderPopupActions([
+      renderPopupActionButton(state.lat, state.lng, "Route here", state.title, "popup-action--primary"),
+      renderPlaceSheetCompareButton(state),
+    ])}
+
+    ${renderPopupFactRows([
+      { label: "Coordinates", value: `${state.lat.toFixed(5)}, ${state.lng.toFixed(5)}` },
+      { label: "Visible restaurants", value: `${lastRestaurants.length}` },
+      { label: "Model window", value: `${PROBABILITY_HORIZON_MINUTES} minutes` },
+    ])}`;
+}
+
+function renderPlaceSheetDgmSection(state) {
+  if (!state.score) {
+    return '<div class="popup-empty">Refresh the current view to unlock DGM-only field intelligence for this place.</div>';
+  }
+
+  const demandMix = describeDemandMixCard(state.score);
+  const crowding = describeCrowdingCard(state.score);
+  const supportDepth = describeSupportDepthCard(state.score);
+  const nearbyHold = findBestNearbyParkingCandidate(state.lat, state.lng);
+  const nearbyHoldCard = nearbyHold
+    ? renderPopupMetricCard(
+      "Best nearby hold",
+      nearbyHold.candidate.tags?.name || nearbyHold.candidate.tags?.operator || "Visible parking",
+      `${nearbyHold.distanceMeters} m away · ${formatProbabilityRange(getProbabilityLow(nearbyHold.candidate), getProbabilityHigh(nearbyHold.candidate))}`
+    )
+    : renderPopupMetricCard("Best nearby hold", "None visible", "Zoom or refresh to expose visible parking candidates nearby.");
+
+  return `
+    ${renderPopupMetricGrid([
+      renderPopupMetricCard(
+        "Wait bias",
+        state.score.advisory === "hold" ? "Wait here" : "Rotate soon",
+        state.kind === "restaurant" ? "Restaurant-centered field read" : "Spot-centered field read"
+      ),
+      renderPopupMetricCard("Support depth", supportDepth.value, supportDepth.detail),
+      renderPopupMetricCard("Demand mix", demandMix.value, demandMix.detail),
+      renderPopupMetricCard("Crowding", crowding.value, crowding.detail),
+      nearbyHoldCard,
+    ])}
+
+    <div class="popup-detail">Uncertainty band (λ ±30%): ${formatProbabilityRange(getProbabilityLow(state.score), getProbabilityHigh(state.score))} · ${escapeHtml(describeProbabilityBand(state.score))}</div>
+    <div class="popup-detail">${escapeHtml(describePickup(state.score.expectedDistMeters))}</div>
+    ${renderExplainabilityDetails(state.score)}
+    ${renderSignalBarsHtml(state.score.signals, lastStats?.timeBucketLabel ?? timeBucket(lastParams.hour).label)}`;
+}
+
+function renderPlaceSheetParkingSection(state) {
+  if (!state.score) {
+    return '<div class="popup-empty">Refresh the current view to unlock parking and staging analysis.</div>';
+  }
+
+  const pickupFriction = getPickupFrictionDetails(state);
+  const nearestParking = pickupFriction?.nearestParking;
+  const stagingCandidates = buildParkingCandidateInsights(state, {
+    minDistanceMeters: STAGING_SPOT_MIN_DISTANCE_METERS,
+    maxDistanceMeters: STAGING_SPOT_MAX_DISTANCE_METERS,
+    limit: 3,
+  });
+  const bestStaging = stagingCandidates[0] || null;
+
+  return `
+    ${renderPopupMetricGrid([
+      pickupFriction ? renderPopupMetricCard("Pickup friction", pickupFriction.label, `${pickupFriction.value} · ${pickupFriction.detail}`) : "",
+      nearestParking
+        ? renderPopupMetricCard("Nearest parking", `${nearestParking.distanceMeters} m`, getParkingCandidateLabel(nearestParking.candidate))
+        : renderPopupMetricCard("Nearest parking", "Not visible", "Zoom or refresh to expose nearby parking candidates."),
+      bestStaging
+        ? renderPopupMetricCard(
+          "Best staging hold",
+          getParkingCandidateLabel(bestStaging.candidate),
+          `${bestStaging.distanceMeters} m ${bestStaging.direction} · suitability ${Math.round(bestStaging.suitability * 100)}/100`
+        )
+        : renderPopupMetricCard("Best staging hold", "Not visible", "No scored hold was found in the 0.2–0.5 mile band."),
+    ])}
+    ${renderParkingCandidateInsightList(
+      stagingCandidates,
+      "No scored staging hold is currently visible in the 0.2–0.5 mile band around this place."
+    )}`;
+}
+
+function renderPlaceSheetCompetitionSection(state) {
+  if (!state.score) {
+    return '<div class="popup-empty">Refresh the current view to unlock competition pressure and stability analysis.</div>';
+  }
+
+  const pressure = getCompetitionPressureDetails(state.score);
+  const supportDepth = describeSupportDepthCard(state.score);
+  const crowding = describeCrowdingCard(state.score);
+
+  return `
+    ${renderPopupMetricGrid([
+      pressure ? renderPopupMetricCard("Pressure index", pressure.label, `${pressure.value} · ${pressure.detail}`) : "",
+      renderPopupMetricCard("Support depth", supportDepth.value, supportDepth.detail),
+      renderPopupMetricCard("Crowding", crowding.value, crowding.detail),
+    ])}
+    <div class="popup-detail">${escapeHtml(describeProbabilityBand(state.score))}</div>
+    ${renderSignalBarsHtml(state.score.signals, lastStats?.timeBucketLabel ?? timeBucket(lastParams.hour).label)}`;
+}
+
+function renderPlaceSheetAlternativesSection(state) {
+  const microCorridors = buildParkingCandidateInsights(state, {
+    minDistanceMeters: MICRO_CORRIDOR_MIN_DISTANCE_METERS,
+    maxDistanceMeters: MICRO_CORRIDOR_MAX_DISTANCE_METERS,
+    limit: 3,
+  });
+  const merchantAlternatives = (state.likely || []).slice(0, 4);
+
+  return `
+    <div class="popup-banner">Micro-corridor suggestions are short shifts in position that can improve stability, access, or staging quality without copying any proprietary routing behavior.</div>
+    ${renderParkingCandidateInsightList(
+      microCorridors,
+      "No short-shift micro-corridor improvement is currently visible around this place."
+    )}
+    <section class="popup-section">
+      <div class="popup-section-head">
+        <div class="popup-section-title">Nearby merchants</div>
+        <div class="popup-section-meta">Top ${merchantAlternatives.length || 0}</div>
+      </div>
+      ${renderNearbyRestaurantsList(merchantAlternatives)}
+    </section>`;
+}
+
+function renderPlaceSheetComparisonCard(subject, label, isWinner = false) {
+  const pickupFriction = getPickupFrictionDetails(subject);
+  return `
+    <article class="place-sheet-compare-card${isWinner ? ' is-winner' : ''}">
+      <div class="place-sheet-compare-label">${escapeHtml(label)}</div>
+      <div class="place-sheet-compare-title">${escapeHtml(subject.title)}</div>
+      ${subject.subtitle ? `<div class="place-sheet-compare-subtitle">${escapeHtml(subject.subtitle)}</div>` : ""}
+      <div class="place-sheet-compare-range">${subject.score ? formatProbabilityRange(getProbabilityLow(subject.score), getProbabilityHigh(subject.score)) : "Unavailable"}</div>
+      <div class="place-sheet-compare-detail">${escapeHtml(subject.score ? describeSignal(getProbabilityMid(subject.score)) : "Refresh the current view to score this place.")}</div>
+      ${subject.currentDistance ? `<div class="place-sheet-compare-meta">From you: ${escapeHtml(subject.currentDistance)}</div>` : ""}
+      <div class="place-sheet-compare-meta">Drive: ${escapeHtml(formatRouteSummaryValue(subject.routeSummary, subject.routeStatus))}${subject.routeSummary ? ` · ${escapeHtml(formatRouteDistance(subject.routeSummary.distanceMeters))}` : ""}</div>
+      ${subject.score ? `<div class="place-sheet-compare-meta">Pickup: ${escapeHtml(describePickup(subject.score.expectedDistMeters))}</div>` : ""}
+      ${pickupFriction ? `<div class="place-sheet-compare-meta">Friction: ${escapeHtml(`${pickupFriction.label} (${pickupFriction.value})`)}</div>` : ""}
+    </article>`;
+}
+
+function getPlaceSheetComparisonSummary(current, baseline) {
+  if (!current.score || !baseline.score) {
+    return `${current.title} and ${baseline.title} are saved for comparison. Refresh the current view to unlock the full score read.`;
+  }
+
+  if (current.routeSummary && baseline.routeSummary) {
+    const routeDeltaMinutes = Math.round((current.routeSummary.durationSeconds - baseline.routeSummary.durationSeconds) / 60);
+    if (Math.abs(routeDeltaMinutes) >= 2) {
+      const faster = routeDeltaMinutes < 0 ? current : baseline;
+      const slower = routeDeltaMinutes < 0 ? baseline : current;
+      return `${faster.title} is about ${Math.abs(routeDeltaMinutes)} min faster to drive than ${slower.title} from your current position.`;
+    }
+  }
+
+  const delta = getProbabilityMid(current.score) - getProbabilityMid(baseline.score);
+  const deltaPoints = Math.round(Math.abs(delta) * 100);
+
+  if (deltaPoints < 4) {
+    const pickupDelta = (baseline.score.expectedDistMeters ?? 0) - (current.score.expectedDistMeters ?? 0);
+    if (Math.abs(pickupDelta) >= 120) {
+      const faster = pickupDelta > 0 ? current : baseline;
+      return `${current.title} and ${baseline.title} are close on raw score. ${faster.title} has the quicker pickup field right now.`;
+    }
+    return `${current.title} and ${baseline.title} are close on raw field score. Use pickup speed and route convenience to break the tie.`;
+  }
+
+  const winner = delta > 0 ? current : baseline;
+  const loser = delta > 0 ? baseline : current;
+  return `${winner.title} projects about ${deltaPoints} points stronger than ${loser.title} on the current 10-minute field.`;
+}
+
+function renderPlaceSheetCompareSection(state) {
+  if (!placeSheetCompareBaseline) {
+    return `
+      <div class="popup-empty">Save this place as your baseline, then tap any other restaurant dot or stat ping to compare them side by side.</div>
+      ${renderPopupActions([renderPlaceSheetCompareButton(state)])}`;
+  }
+
+  const current = buildPlaceSheetComparable(state);
+  if (placeSheetCompareBaseline.key === current.key) {
+    return `
+      <div class="popup-banner">Baseline locked on ${escapeHtml(current.title)}. Tap another restaurant dot or stat ping on the map to complete the comparison.</div>
+      <div class="place-sheet-compare-grid">
+        ${renderPlaceSheetComparisonCard(placeSheetCompareBaseline, "Baseline")}
+      </div>
+      ${renderPopupActions([
+        '<button type="button" class="popup-action popup-action--secondary" data-place-sheet-compare="clear">Clear baseline</button>',
+      ])}`;
+  }
+
+  const baselineMid = getProbabilityMid(placeSheetCompareBaseline.score);
+  const currentMid = getProbabilityMid(current.score);
+
+  return `
+    <div class="popup-banner popup-banner--accent">${escapeHtml(getPlaceSheetComparisonSummary(current, placeSheetCompareBaseline))}</div>
+    <div class="place-sheet-compare-grid">
+      ${renderPlaceSheetComparisonCard(current, "Current", currentMid >= baselineMid)}
+      ${renderPlaceSheetComparisonCard(placeSheetCompareBaseline, "Baseline", baselineMid > currentMid)}
+    </div>
+    ${renderPopupActions([
+      renderPlaceSheetCompareButton(state),
+      '<button type="button" class="popup-action popup-action--secondary" data-place-sheet-compare="clear">Clear baseline</button>',
+    ])}`;
+}
+
+function renderPlaceSheetHtml(state) {
+  const navItems = [
+    { id: "placeSheetOverview", label: "Overview" },
+    { id: "placeSheetField", label: "Field" },
+    { id: "placeSheetParking", label: "Parking" },
+    { id: "placeSheetCompetition", label: "Competition" },
+    { id: "placeSheetAlternatives", label: "Alternatives" },
+    { id: "placeSheetHistory", label: "History" },
+    { id: "placeSheetCompare", label: "Compare" },
+  ];
+  const placeType = state.kind === "restaurant" ? "Restaurant intelligence" : "Stat ping intelligence";
+
+  return `
+    <div class="place-sheet-grabber" aria-hidden="true"></div>
+    <div class="place-sheet-head">
+      <div>
+        <div class="popup-kicker">${escapeHtml(placeType)}</div>
+        <h2 class="place-sheet-title" id="placeSheetTitle">${escapeHtml(state.title)}</h2>
+        ${state.subtitle ? `<div class="popup-subtitle">${escapeHtml(state.subtitle)}</div>` : ""}
+      </div>
+      <button type="button" class="place-sheet-close" aria-label="Close place sheet" data-place-sheet-close>Close</button>
+    </div>
+
+    ${renderPopupChips(state.chips || [])}
+    ${renderPlaceSheetHero(state)}
+
+    <nav class="place-sheet-nav" aria-label="Place sheet sections">
+      ${navItems.map((item) => `<button type="button" class="place-sheet-nav-pill" data-place-sheet-scroll="${item.id}">${escapeHtml(item.label)}</button>`).join("")}
+    </nav>
+
+    <section class="place-sheet-section" id="placeSheetOverview">
+      <div class="popup-section-head">
+        <div class="popup-section-title">Overview</div>
+        <div class="popup-section-meta">${escapeHtml(state.kind === "restaurant" ? state.amenityLabel : "Custom selection")}</div>
+      </div>
+      ${renderPlaceSheetOverviewSection(state)}
+    </section>
+
+    <section class="place-sheet-section" id="placeSheetField">
+      <div class="popup-section-head">
+        <div class="popup-section-title">Field</div>
+        <div class="popup-section-meta">${escapeHtml(lastStats?.timeBucketLabel ?? timeBucket(lastParams.hour).label)}</div>
+      </div>
+      ${renderPlaceSheetDgmSection(state)}
+    </section>
+
+    <section class="place-sheet-section" id="placeSheetParking">
+      <div class="popup-section-head">
+        <div class="popup-section-title">Parking</div>
+        <div class="popup-section-meta">Staging and access</div>
+      </div>
+      ${renderPlaceSheetParkingSection(state)}
+    </section>
+
+    <section class="place-sheet-section" id="placeSheetCompetition">
+      <div class="popup-section-head">
+        <div class="popup-section-title">Competition</div>
+        <div class="popup-section-meta">Pressure and stability</div>
+      </div>
+      ${renderPlaceSheetCompetitionSection(state)}
+    </section>
+
+    <section class="place-sheet-section" id="placeSheetAlternatives">
+      <div class="popup-section-head">
+        <div class="popup-section-title">Alternatives</div>
+        <div class="popup-section-meta">Micro-corridors and merchants</div>
+      </div>
+      ${renderPlaceSheetAlternativesSection(state)}
+    </section>
+
+    <section class="place-sheet-section" id="placeSheetHistory">
+      <div class="popup-section-head">
+        <div class="popup-section-title">History</div>
+        <div class="popup-section-meta">Local-only familiarity</div>
+      </div>
+      ${renderPlaceSheetHistorySection(state)}
+    </section>
+
+    <section class="place-sheet-section" id="placeSheetCompare">
+      <div class="popup-section-head">
+        <div class="popup-section-title">Compare mode</div>
+        <div class="popup-section-meta">Baseline vs current</div>
+      </div>
+      ${renderPlaceSheetCompareSection(state)}
+    </section>`;
+}
+
+function openRestaurantSheet(restaurant) {
+  if (!restaurant) {
+    return;
+  }
+
+  openPlaceSheet(buildRestaurantSheetState(restaurant));
+}
+
+function openSpotSheet(latlng) {
+  if (!latlng) {
+    return;
+  }
+
+  setSpotMarker(latlng);
+  openPlaceSheet(buildSpotSheetState(latlng));
+}
+
 function setSpotMarker(latlng) {
   const point = latlngToObject(latlng);
   lastSpotPoint = point;
@@ -3862,6 +5982,7 @@ async function loadForView() {
       lastStats,
       Math.max(parking.length, 1)
     );
+    lastRankedParkingAll = rankedAll;
 
     const coverageTauMeters = Math.max(300, tauMeters);
     const demandNodes = buildDemandCoverageNodes(restaurants, {
@@ -4051,7 +6172,23 @@ if (elSearchResults) {
 if (elNavigationRecenter) {
   elNavigationRecenter.addEventListener("click", () => {
     if (activeRoute) {
-      fitRouteToView(activeRoute);
+      focusActiveNavigationCamera({ force: true });
+    }
+  });
+}
+
+if (elNavigationArrival) {
+  elNavigationArrival.addEventListener("click", () => {
+    if (activeRoute) {
+      showActiveRouteArrivalView();
+    }
+  });
+}
+
+if (elNavigationOverview) {
+  elNavigationOverview.addEventListener("click", () => {
+    if (activeRoute) {
+      showActiveRouteOverview();
     }
   });
 }

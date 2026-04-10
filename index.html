@@ -11,7 +11,7 @@
       crossorigin=""
     />
 
-    <link rel="stylesheet" href="./styles.css?v=20260410-place-sheets" />
+    <link rel="stylesheet" href="./styles.css?v=20260410-nav-arrival" />
     <script>
       window.DASH_MAPTILER_KEY = window.DASH_MAPTILER_KEY || "3fnxdfXcA9sh6SX5x78N";
       window.DASH_MAPTILER_STYLE_ID = window.DASH_MAPTILER_STYLE_ID || "basic-v2";
@@ -119,10 +119,10 @@
 
           <div class="row">
             <label class="checkbox">
-              <input id="useMIP" type="checkbox" checked />
-              Use MIP optimizer for top parking set
+              <input id="useMIP" type="checkbox" />
+              Enable exact MIP solver for top parking set
             </label>
-            <div class="hint">Picks a spread-out set of K lots with hard separation constraints. If the solver is unavailable, DGM falls back to an approximate coverage-diversity selector.</div>
+            <div class="hint">Off by default. DGM now uses the faster coverage-diversity selector unless you explicitly ask for the exact spread-out solver. If the solver is unavailable, DGM stays on the approximate selector.</div>
           </div>
 
           <div class="row">
@@ -247,9 +247,15 @@
         </div>
         <section id="navigationCard" class="navigation-card" aria-live="polite" hidden>
           <div id="navigationBanner" class="navigation-banner" hidden>
-            <div id="navigationBannerInstruction" class="navigation-banner-instruction"></div>
-            <div id="navigationBannerMeta" class="navigation-banner-meta"></div>
+            <div class="navigation-banner-row">
+              <div id="navigationBannerGlyph" class="navigation-banner-glyph" aria-hidden="true"></div>
+              <div class="navigation-banner-copy">
+                <div id="navigationBannerInstruction" class="navigation-banner-instruction"></div>
+                <div id="navigationBannerMeta" class="navigation-banner-meta"></div>
+              </div>
+            </div>
           </div>
+          <div id="navigationModePills" class="navigation-mode-pills"></div>
           <div class="navigation-card-head">
             <div class="navigation-card-copy">
               <div class="navigation-card-label">DGM route</div>
@@ -257,11 +263,15 @@
               <div id="navigationMeta" class="navigation-card-meta"></div>
             </div>
             <div class="navigation-card-actions">
+              <button id="navigationRecenter" class="navigation-card-button" type="button" aria-pressed="true">Drive</button>
+              <button id="navigationArrival" class="navigation-card-button is-secondary" type="button" aria-pressed="false">Arrival</button>
+              <button id="navigationOverview" class="navigation-card-button is-secondary" type="button" aria-pressed="false">Overview</button>
               <button id="navigationVoice" class="navigation-card-button is-secondary" type="button" aria-pressed="true">Voice on</button>
-              <button id="navigationRecenter" class="navigation-card-button" type="button">Route</button>
               <button id="navigationClear" class="navigation-card-button is-secondary" type="button">Clear</button>
             </div>
           </div>
+          <div id="navigationMetricGrid" class="navigation-metric-grid"></div>
+          <div id="navigationIntel" class="navigation-intelligence"></div>
           <div id="navigationStatus" class="navigation-status" hidden></div>
           <ol id="navigationSteps" class="navigation-steps"></ol>
         </section>
@@ -280,6 +290,6 @@
       crossorigin=""
     ></script>
 
-    <script type="module" src="./app.js?v=20260410-place-sheets"></script>
+    <script type="module" src="./app.js?v=20260410-nav-arrival"></script>
   </body>
 </html>
