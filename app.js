@@ -64,7 +64,7 @@ import {
   formatCensusSourceSummary,
 } from "./census.js?v=20260410-census-data";
 
-const APP_BUILD_ID = "20260410-heading-damping";
+const APP_BUILD_ID = "20260410-place-sheets";
 console.info("[DGM] app build", APP_BUILD_ID);
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
@@ -331,6 +331,7 @@ const AUTO_FOLLOW_HEADING_MIN_DELTA_DEGREES = 10;
 const AUTO_FOLLOW_HEADING_ROTATION_DURATION_MS = 380;
 const MAP_TOUCH_TAP_POPUP_DELAY_MS = 260;
 const MAP_TOUCH_GESTURE_SUPPRESSION_MS = 420;
+const POPUP_NEARBY_RESTAURANT_LIMIT = 10;
 
 const INITIAL_LOCATION_ZOOM = 14;
 const INITIAL_LOCATION_TIMEOUT_MS = 8000;
@@ -682,6 +683,284 @@ function applyBaseStyle(mode) {
 
 function renderNavigationAction(lat, lon, label = "Start route", destinationTitle = "Destination") {
   return `<div class="popup-actions"><button class="popup-action" type="button" data-route-lat="${Number(lat).toFixed(6)}" data-route-lng="${Number(lon).toFixed(6)}" data-route-title="${escapeHtml(destinationTitle)}">${escapeHtml(label)}</button></div>`;
+}
+
+function formatTagLabel(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  return raw
+    .replaceAll("_", " ")
+    .split(" ")
+    .filter(Boolean)
+    .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
+    .join(" ");
+}
+
+function isTruthyOsmTag(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "yes" || normalized === "only" || normalized === "designated" || normalized === "true";
+}
+
+function getPlaceDisplayName(place) {
+  return place?.tags?.name || place?.tags?.brand || "Food place";
+}
+
+function getPlaceAmenityLabel(tags) {
+  return formatTagLabel(tags?.amenity || "food place");
+}
+
+function getRestaurantCuisineLabels(tags) {
+  return String(tags?.cuisine || "")
+    .split(/[;,]/)
+    .map((entry) => formatTagLabel(entry.trim()))
+    .filter(Boolean)
+    .slice(0, 4);
+}
+
+function getRestaurantServiceLabels(tags) {
+  const labels = [];
+  if (isTruthyOsmTag(tags?.delivery)) labels.push("Delivery");
+  if (isTruthyOsmTag(tags?.takeaway)) labels.push("Takeout");
+  if (isTruthyOsmTag(tags?.outdoor_seating)) labels.push("Outdoor seating");
+  if (isTruthyOsmTag(tags?.drive_through)) labels.push("Drive-thru");
+  return labels;
+}
+
+function normalizeExternalUrl(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return null;
+  return /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, "")}`;
+}
+
+function getPlaceWebsiteUrl(tags) {
+  return normalizeExternalUrl(tags?.website || tags?.["contact:website"]);
+}
+
+function getPlacePhoneNumber(tags) {
+  const raw = String(tags?.phone || tags?.["contact:phone"] || "").trim();
+  return raw || null;
+}
+
+function getPlaceAddress(tags) {
+  const streetLine = [tags?.["addr:housenumber"], tags?.["addr:street"]]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+  const localityLine = [
+    tags?.["addr:city"] || tags?.["addr:suburb"],
+    tags?.["addr:state"],
+    tags?.["addr:postcode"],
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+  return [streetLine, localityLine].filter(Boolean).join(", ") || null;
+}
+
+function formatOpeningHoursText(value) {
+  const raw = String(value || "").trim();
+  return raw ? raw.replaceAll(";", " · ") : null;
+}
+
+function buildPlaceSearchUrl(query) {
+  return `https://www.google.com/search?q=${encodeURIComponent(String(query || "").trim())}`;
+}
+
+function getWebsiteDisplayLabel(url) {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname.replace(/^www\./i, "");
+  } catch {
+    return String(url).replace(/^https?:\/\//i, "");
+  }
+}
+
+function getDistanceFromCurrentLocation(lat, lon) {
+  if (!lastCurrentLocation) return null;
+  return formatRouteDistance(haversineMeters(lastCurrentLocation.lat, lastCurrentLocation.lng, lat, lon));
+}
+
+function renderPopupActionButton(lat, lon, label, destinationTitle, className = "") {
+  return `<button class="popup-action${className ? ` ${className}` : ""}" type="button" data-route-lat="${Number(lat).toFixed(6)}" data-route-lng="${Number(lon).toFixed(6)}" data-route-title="${escapeHtml(destinationTitle)}">${escapeHtml(label)}</button>`;
+}
+
+function renderPopupActionLink(href, label, { className = "", newTab = true } = {}) {
+  if (!href) return "";
+  const linkAttrs = newTab ? ' target="_blank" rel="noreferrer noopener"' : "";
+  return `<a class="popup-action${className ? ` ${className}` : ""}" href="${escapeHtml(href)}"${linkAttrs}>${escapeHtml(label)}</a>`;
+}
+
+function renderPopupActions(actions) {
+  const content = actions.filter(Boolean).join("");
+  return content ? `<div class="popup-actions popup-actions--wrap">${content}</div>` : "";
+}
+
+function renderPopupChips(items) {
+  const chips = items.filter(Boolean).slice(0, 8);
+  return chips.length
+    ? `<div class="popup-chip-row">${chips.map((item) => `<span class="popup-chip">${escapeHtml(item)}</span>`).join("")}</div>`
+    : "";
+}
+
+function renderPopupFactRows(facts) {
+  const rows = facts
+    .filter((fact) => fact && fact.value)
+    .map(({ label, value, href, newTab = true }) => {
+      const linkAttrs = newTab ? ' target="_blank" rel="noreferrer noopener"' : "";
+      const renderedValue = href
+        ? `<a class="popup-fact-link" href="${escapeHtml(href)}"${linkAttrs}>${escapeHtml(value)}</a>`
+        : escapeHtml(value);
+      return `
+        <div class="popup-fact-row">
+          <span class="popup-fact-label">${escapeHtml(label)}</span>
+          <span class="popup-fact-value">${renderedValue}</span>
+        </div>`;
+    })
+    .join("");
+
+  return rows ? `<div class="popup-facts">${rows}</div>` : "";
+}
+
+function renderPopupMetricCard(label, value, detail) {
+  if (!value) return "";
+  return `
+    <article class="popup-metric-card">
+      <div class="popup-metric-label">${escapeHtml(label)}</div>
+      <div class="popup-metric-value">${escapeHtml(value)}</div>
+      ${detail ? `<div class="popup-metric-detail">${escapeHtml(detail)}</div>` : ""}
+    </article>`;
+}
+
+function renderPopupMetricGrid(cards) {
+  const content = cards.filter(Boolean).join("");
+  return content ? `<div class="popup-metric-grid">${content}</div>` : "";
+}
+
+function renderNearbyRestaurantsList(likely) {
+  if (!likely.length) {
+    return '<div class="popup-empty">No nearby restaurants were found in this view.</div>';
+  }
+
+  return `
+    <div class="popup-nearby-list">
+      ${likely.map((restaurant, index) => `
+        <article class="popup-nearby-item">
+          <div class="popup-nearby-rank">${index + 1}</div>
+          <div class="popup-nearby-copy">
+            <div class="popup-nearby-name">${escapeHtml(restaurant.name)}</div>
+            <div class="popup-nearby-meta">${escapeHtml(formatTagLabel(restaurant.amenity))} · ${restaurant.distMeters} m away</div>
+          </div>
+        </article>`).join("")}
+    </div>`;
+}
+
+function buildPopupScoringParams(tauMeters, hour) {
+  return {
+    tauMeters,
+    hour,
+    horizonMin: lastParams.horizonMin,
+    competitionStrength: lastParams.competitionStrength,
+    residentialAnchors: lastResidentialAnchors,
+    residentialDemandWeight: lastParams.residentialDemandWeight,
+    rainBoost: lastParams.rainBoost,
+    tipEmphasis: lastParams.tipEmphasis,
+    predictionModel: lastParams.predictionModel,
+    lambdaRef: lastStats?.lambdaRef,
+    useML: lastParams.useML,
+    mlBeta: lastParams.mlBeta,
+  };
+}
+
+function getPopupPointScore(latlng, restaurants, tauMeters, hour) {
+  if (!restaurants?.length) return null;
+
+  return probabilityOfGoodOrder(
+    { lat: latlng.lat, lon: latlng.lng ?? latlng.lon },
+    restaurants,
+    lastParkingCandidates,
+    buildPopupScoringParams(tauMeters, hour)
+  );
+}
+
+function formatCompactRank(score) {
+  const percentile = percentileFromSorted(getProbabilityMid(score), lastStats?.scoreSamplesSorted);
+  if (percentile === null) return "Unranked";
+  if (percentile >= 90) return `Top ${Math.max(1, 100 - percentile)}%`;
+  if (percentile >= 70) return "Above avg";
+  if (percentile >= 40) return "Mid pack";
+  return "Lower tier";
+}
+
+function renderRestaurantPopupHtml(restaurant) {
+  const tags = restaurant?.tags ?? {};
+  const name = getPlaceDisplayName(restaurant);
+  const amenityLabel = getPlaceAmenityLabel(tags);
+  const cuisineLabels = getRestaurantCuisineLabels(tags);
+  const serviceLabels = getRestaurantServiceLabels(tags);
+  const address = getPlaceAddress(tags);
+  const openingHours = formatOpeningHoursText(tags?.opening_hours);
+  const phoneNumber = getPlacePhoneNumber(tags);
+  const websiteUrl = getPlaceWebsiteUrl(tags);
+  const currentDistance = getDistanceFromCurrentLocation(restaurant.lat, restaurant.lon);
+  const areaScore = lastStats
+    ? getPopupPointScore({ lat: restaurant.lat, lon: restaurant.lon }, lastRestaurants, lastParams.tauMeters, lastParams.hour)
+    : null;
+  const subtitle = [amenityLabel, cuisineLabels[0] || null].filter(Boolean).join(" · ");
+
+  return `
+<div class="popup-sheet popup-friendly">
+  <div class="popup-header">
+    <div class="popup-kicker">Restaurant</div>
+    <div class="popup-title">${escapeHtml(name)}</div>
+    ${subtitle ? `<div class="popup-subtitle">${escapeHtml(subtitle)}</div>` : ""}
+  </div>
+
+  ${renderPopupChips([...cuisineLabels, ...serviceLabels])}
+
+  ${renderPopupMetricGrid([
+    currentDistance ? renderPopupMetricCard("From you", currentDistance, "Straight-line distance") : "",
+    areaScore ? renderPopupMetricCard("Nearby field", formatProbabilityRange(getProbabilityLow(areaScore), getProbabilityHigh(areaScore)), "10-minute hold strength") : "",
+    websiteUrl
+      ? renderPopupMetricCard("Website", getWebsiteDisplayLabel(websiteUrl), "Official source")
+      : openingHours
+        ? renderPopupMetricCard("Hours", "Listed", "See overview below")
+        : "",
+  ])}
+
+  ${renderPopupActions([
+    renderPopupActionButton(restaurant.lat, restaurant.lon, "Route here", name, "popup-action--primary"),
+    websiteUrl ? renderPopupActionLink(websiteUrl, "Website") : "",
+    renderPopupActionLink(buildPlaceSearchUrl(`${name} menu`), "Menu"),
+    renderPopupActionLink(buildPlaceSearchUrl(`${name} reviews`), "Reviews"),
+    phoneNumber ? renderPopupActionLink(`tel:${encodeURIComponent(phoneNumber)}`, "Call", { className: "popup-action--secondary", newTab: false }) : "",
+  ])}
+
+  <section class="popup-section">
+    <div class="popup-section-head">
+      <div class="popup-section-title">Overview</div>
+      <div class="popup-section-meta">${escapeHtml(amenityLabel)}</div>
+    </div>
+    ${renderPopupFactRows([
+      cuisineLabels.length ? { label: "Cuisine", value: cuisineLabels.join(", ") } : null,
+      address ? { label: "Address", value: address } : null,
+      openingHours ? { label: "Hours", value: openingHours } : null,
+      phoneNumber ? { label: "Phone", value: phoneNumber, href: `tel:${encodeURIComponent(phoneNumber)}`, newTab: false } : null,
+      websiteUrl ? { label: "Website", value: getWebsiteDisplayLabel(websiteUrl), href: websiteUrl } : null,
+    ])}
+  </section>
+
+  ${areaScore ? `
+    <section class="popup-section">
+      <div class="popup-section-head">
+        <div class="popup-section-title">Area context</div>
+        <div class="popup-section-meta">${escapeHtml(formatCompactRank(areaScore))}</div>
+      </div>
+      <div class="popup-detail">${escapeHtml(describeSignal(getProbabilityMid(areaScore)))}</div>
+      <div class="popup-detail">${escapeHtml(formatRelativeRank(areaScore))}</div>
+      ${renderExplainabilityDetails(areaScore)}
+    </section>` : ""}
+</div>`;
 }
 
 function stopNavigationSpeech() {
@@ -2555,9 +2834,7 @@ function ensureMapSourcesAndLayers() {
       const restaurant = restaurantById.get(feature.properties?.id);
       if (!restaurant) return;
 
-      const name = restaurant.tags?.name || restaurant.tags?.brand || "Food place";
-      const amenity = restaurant.tags?.amenity || "";
-      openPopupAtLngLat(event.lngLat, `<div class="popup-friendly"><b>${escapeHtml(name)}</b><div class="popup-detail">${escapeHtml(amenity)}</div>${renderNavigationAction(restaurant.lat, restaurant.lon, "Route here", name)}</div>`, { closeButton: true });
+      openPopupAtLngLat(event.lngLat, renderRestaurantPopupHtml(restaurant), { closeButton: true });
     });
 
     map.on("click", LAYER_PARKING, (event) => {
@@ -3252,84 +3529,107 @@ function addParkingMarkers(rankedParking, restaurants, tauMeters, hour) {
 }
 
 function renderParkingPopupHtml(p, name, restaurants, tauMeters, hour) {
-  const likely = topLikelyMerchantsForParking(p, restaurants, tauMeters, hour, 6);
-
-  const rows = likely
-    .map((x) => `<li>${escapeHtml(x.name)} <span class="mono">(${escapeHtml(x.amenity)}, ${x.distMeters}m)</span></li>`)
-    .join("");
+  const likely = topLikelyMerchantsForParking(p, restaurants, tauMeters, hour, POPUP_NEARBY_RESTAURANT_LIMIT);
+  const bucketLabel = lastStats?.timeBucketLabel ?? timeBucket(hour).label;
 
   return `
-<div class="popup-friendly">
-  <b>${escapeHtml(name)}</b>
+<div class="popup-sheet popup-friendly">
+  <div class="popup-header">
+    <div class="popup-kicker">Parking</div>
+    <div class="popup-title">${escapeHtml(name)}</div>
+    <div class="popup-subtitle">${escapeHtml(describeSignal(getProbabilityMid(p)))}</div>
+  </div>
+
   <div class="popup-score">${formatProbabilityRange(getProbabilityLow(p), getProbabilityHigh(p))}<span class="popup-score-label"> 10-minute probability of a good order</span></div>
-  <div class="popup-explain">${escapeHtml(describeSignal(getProbabilityMid(p)))}</div>
-  <div class="popup-rank">${escapeHtml(formatRelativeRank(p))}</div>
-  <div class="popup-detail">Uncertainty band (λ ±30%): ${formatProbabilityRange(getProbabilityLow(p), getProbabilityHigh(p))} · ${escapeHtml(describeProbabilityBand(p))}</div>
-  <div class="popup-detail">${escapeHtml(describePickup(p.expectedDistMeters))}</div>
-  ${renderExplainabilityDetails(p)}
+  <div class="popup-explain">${escapeHtml(formatRelativeRank(p))}</div>
 
-  ${renderNavigationAction(p.lat, p.lon, "Route here", name)}
+  ${renderPopupMetricGrid([
+    renderPopupMetricCard("Rank", formatCompactRank(p), formatRelativeRank(p)),
+    renderPopupMetricCard("Pickup", formatRouteDistance(p.expectedDistMeters), describePickup(p.expectedDistMeters)),
+    renderPopupMetricCard("Stability", `${Math.round(p.effectiveMerchants ?? 0)} merchants`, describeStability(p)),
+  ])}
 
-  <hr/>
+  ${renderPopupActions([
+    renderPopupActionButton(p.lat, p.lon, "Route here", name, "popup-action--primary"),
+  ])}
 
-  <div><b>Closest restaurants</b></div>
-  <ol style="margin:6px 0 0 18px; padding:0;">${rows}</ol>
+  <section class="popup-section">
+    <div class="popup-section-head">
+      <div class="popup-section-title">Why this spot rates well</div>
+      <div class="popup-section-meta">${escapeHtml(bucketLabel)}</div>
+    </div>
+    <div class="popup-detail">Uncertainty band (λ ±30%): ${formatProbabilityRange(getProbabilityLow(p), getProbabilityHigh(p))} · ${escapeHtml(describeProbabilityBand(p))}</div>
+    <div class="popup-detail">${escapeHtml(describePickup(p.expectedDistMeters))}</div>
+    ${renderExplainabilityDetails(p)}
+    ${renderSignalBarsHtml(p.signals, bucketLabel)}
+  </section>
+
+  <section class="popup-section">
+    <div class="popup-section-head">
+      <div class="popup-section-title">Closest restaurants</div>
+      <div class="popup-section-meta">Top ${likely.length}</div>
+    </div>
+    ${renderNearbyRestaurantsList(likely)}
+  </section>
 </div>
 `;
 }
 
 function renderSpotPopupHtml(latlng, restaurants, tauMeters, hour) {
-  const params = {
-    tauMeters,
-    hour,
-    horizonMin: lastParams.horizonMin,
-    competitionStrength: lastParams.competitionStrength,
-    residentialAnchors: lastResidentialAnchors,
-    residentialDemandWeight: lastParams.residentialDemandWeight,
-    rainBoost: lastParams.rainBoost,
-    tipEmphasis: lastParams.tipEmphasis,
-    predictionModel: lastParams.predictionModel,
-    lambdaRef: lastStats?.lambdaRef,
-    useML: lastParams.useML,
-    mlBeta: lastParams.mlBeta,
-  };
-
-  const r = probabilityOfGoodOrder(
-    { lat: latlng.lat, lon: latlng.lng }, // Leaflet uses .lng; model uses .lon — mapping here
-    restaurants,
-    lastParkingCandidates,
-    params
-  );
+  const r = getPopupPointScore(latlng, restaurants, tauMeters, hour);
 
   const likely = topLikelyMerchantsForParking(
     { lat: latlng.lat, lon: latlng.lng, tags: { name: "Selected spot" } },
     restaurants,
     tauMeters,
     hour,
-    6
+    POPUP_NEARBY_RESTAURANT_LIMIT
   );
-
-  const rows = likely
-    .map((x) => `<li>${escapeHtml(x.name)} <span class="mono">(${escapeHtml(x.amenity)}, ${x.distMeters}m)</span></li>`)
-    .join("");
+  const bucketLabel = lastStats?.timeBucketLabel ?? timeBucket(hour).label;
+  const warning = lastStats === null
+    ? '<div class="popup-banner popup-banner--warn">Load or refresh the current view to calibrate this stat ping against the visible field.</div>'
+    : "";
 
   return `
-<div class="popup-friendly">
-  <b>Spot you clicked</b>${lastStats === null ? ' <span style="color:#f5c542">(load data first for accurate scores)</span>' : ""}
+<div class="popup-sheet popup-friendly">
+  <div class="popup-header">
+    <div class="popup-kicker">Stat ping</div>
+    <div class="popup-title">Selected spot</div>
+    <div class="popup-subtitle">${escapeHtml(describeSignal(getProbabilityMid(r)))}</div>
+  </div>
 
+  ${warning}
   <div class="popup-score">${formatProbabilityRange(getProbabilityLow(r), getProbabilityHigh(r))}<span class="popup-score-label"> 10-minute probability of a good order</span></div>
-  <div class="popup-explain">${escapeHtml(describeSignal(getProbabilityMid(r)))}</div>
-  <div class="popup-rank">${escapeHtml(formatRelativeRank(r))}</div>
-  <div class="popup-detail">Uncertainty band (λ ±30%): ${formatProbabilityRange(getProbabilityLow(r), getProbabilityHigh(r))} · ${escapeHtml(describeProbabilityBand(r))}</div>
-  <div class="popup-detail">${escapeHtml(describePickup(r.expectedDistMeters))}</div>
-  ${renderExplainabilityDetails(r)}
+  <div class="popup-explain">${escapeHtml(describeAdvisory(r.advisory))}</div>
 
-  ${renderNavigationAction(latlng.lat, latlng.lng, "Route here", "Selected spot")}
+  ${renderPopupMetricGrid([
+    renderPopupMetricCard("Rank", formatCompactRank(r), formatRelativeRank(r)),
+    renderPopupMetricCard("Pickup", formatRouteDistance(r.expectedDistMeters), describePickup(r.expectedDistMeters)),
+    renderPopupMetricCard("Stability", `${Math.round(r.effectiveMerchants ?? 0)} merchants`, describeStability(r)),
+  ])}
 
-  <hr/>
+  ${renderPopupActions([
+    renderPopupActionButton(latlng.lat, latlng.lng, "Route here", "Selected spot", "popup-action--primary"),
+  ])}
 
-  <div><b>Closest restaurants</b></div>
-  <ol style="margin:6px 0 0 18px; padding:0;">${rows}</ol>
+  <section class="popup-section">
+    <div class="popup-section-head">
+      <div class="popup-section-title">Why this spot looks the way it does</div>
+      <div class="popup-section-meta">${escapeHtml(bucketLabel)}</div>
+    </div>
+    <div class="popup-detail">Uncertainty band (λ ±30%): ${formatProbabilityRange(getProbabilityLow(r), getProbabilityHigh(r))} · ${escapeHtml(describeProbabilityBand(r))}</div>
+    <div class="popup-detail">${escapeHtml(describePickup(r.expectedDistMeters))}</div>
+    ${renderExplainabilityDetails(r)}
+    ${renderSignalBarsHtml(r.signals, bucketLabel)}
+  </section>
+
+  <section class="popup-section">
+    <div class="popup-section-head">
+      <div class="popup-section-title">Closest restaurants</div>
+      <div class="popup-section-meta">Top ${likely.length}</div>
+    </div>
+    ${renderNearbyRestaurantsList(likely)}
+  </section>
 </div>
 `;
 }
