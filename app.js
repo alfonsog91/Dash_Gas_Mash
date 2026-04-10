@@ -196,6 +196,19 @@ if (isTouchInteractionDevice() && map.doubleClickZoom) {
   map.doubleClickZoom.disable();
 }
 
+const mapCanvasContainer = typeof map.getCanvasContainer === "function"
+  ? map.getCanvasContainer()
+  : null;
+if (mapCanvasContainer) {
+  mapCanvasContainer.addEventListener("touchstart", handleMapTouchStart, { passive: true });
+  mapCanvasContainer.addEventListener("touchmove", () => {
+    suppressMapTapPopupTemporarily();
+  }, { passive: true });
+  mapCanvasContainer.addEventListener("touchcancel", () => {
+    suppressMapTapPopupTemporarily();
+  }, { passive: true });
+}
+
 let activePopup = null;
 let activeAbort = null;
 let lastCurrentLocation = null;
@@ -313,6 +326,10 @@ const CONTINUOUS_WATCH_TIMEOUT_MS = 30000;
 const LIVE_LOCATION_WATCH_MAXIMUM_AGE_MS = 0;
 const AUTO_FOLLOW_LOCATION_MIN_CENTER_OFFSET_METERS = 6;
 const AUTO_FOLLOW_LOCATION_PAN_DURATION_MS = 450;
+const AUTO_FOLLOW_HEADING_MIN_DELTA_DEGREES = 5;
+const AUTO_FOLLOW_HEADING_ROTATION_DURATION_MS = 220;
+const MAP_TOUCH_TAP_POPUP_DELAY_MS = 260;
+const MAP_TOUCH_GESTURE_SUPPRESSION_MS = 420;
 
 const INITIAL_LOCATION_ZOOM = 14;
 const INITIAL_LOCATION_TIMEOUT_MS = 8000;
@@ -367,6 +384,9 @@ let compassDebugOverlay = null;
 let compassDebugOverlayBody = null;
 let isCompassDebugOverlayVisible = COMPASS_DEBUG_MODE_ENABLED;
 let isFollowingCurrentLocation = isTouchInteractionDevice();
+let pendingMapTapPopupTimer = null;
+let lastMapTouchStartAt = 0;
+let suppressMapTapPopupUntil = 0;
 
 function featureCollection(features = []) {
   return { type: "FeatureCollection", features };
@@ -1387,6 +1407,7 @@ function renderHeadingConeFrame(nowMs = getHeadingNowMs()) {
   }
 
   lastHeadingConeLoopHeading = resolvedHeading;
+  syncMapBearingToHeading(resolvedHeading);
   if (shouldRenderHeadingConeFrame(currentLocation, resolvedHeading, headingState.storedSpeed)) {
     updateHeadingCone(currentLocation, resolvedHeading, headingState.storedSpeed);
   }
@@ -2713,6 +2734,66 @@ function syncMapToCurrentLocation(latlng, { force = false } = {}) {
   });
 }
 
+function syncMapBearingToHeading(heading, { force = false } = {}) {
+  if (!isFollowingCurrentLocation || !isTouchInteractionDevice() || !map) {
+    return;
+  }
+
+  const resolvedHeading = normalizeHeadingDegrees(heading);
+  if (resolvedHeading === null) {
+    return;
+  }
+
+  const bearingDelta = getHeadingDeltaDegrees(resolvedHeading, getMapBearingHeading());
+  if (!force && Number.isFinite(bearingDelta) && bearingDelta < AUTO_FOLLOW_HEADING_MIN_DELTA_DEGREES) {
+    return;
+  }
+
+  map.rotateTo(resolvedHeading, {
+    duration: force ? LOCATION_FLY_DURATION_MS : AUTO_FOLLOW_HEADING_ROTATION_DURATION_MS,
+  });
+}
+
+function clearPendingMapTapPopup() {
+  if (pendingMapTapPopupTimer !== null && typeof window !== "undefined") {
+    window.clearTimeout(pendingMapTapPopupTimer);
+    pendingMapTapPopupTimer = null;
+  }
+}
+
+function suppressMapTapPopupTemporarily(durationMs = MAP_TOUCH_GESTURE_SUPPRESSION_MS) {
+  suppressMapTapPopupUntil = Date.now() + durationMs;
+  clearPendingMapTapPopup();
+}
+
+function handleMapTouchStart() {
+  const now = Date.now();
+  if (now - lastMapTouchStartAt <= MAP_TOUCH_TAP_POPUP_DELAY_MS) {
+    suppressMapTapPopupTemporarily();
+  }
+  lastMapTouchStartAt = now;
+}
+
+function scheduleMapTapPopup(lngLat) {
+  clearPendingMapTapPopup();
+  pendingMapTapPopupTimer = window.setTimeout(() => {
+    pendingMapTapPopupTimer = null;
+    if (Date.now() < suppressMapTapPopupUntil) {
+      return;
+    }
+    openStatsPopupAtLatLng(lngLat);
+  }, MAP_TOUCH_TAP_POPUP_DELAY_MS);
+}
+
+function handleManualMapCameraStart(event) {
+  if (!event?.originalEvent) {
+    return;
+  }
+
+  setCurrentLocationFollowEnabled(false);
+  suppressMapTapPopupTemporarily();
+}
+
 function describeGeolocationError(error) {
   if (!error) return "Unable to determine your location.";
   if (error.code === error.PERMISSION_DENIED) return "Location access was denied. Enable location permission and try again.";
@@ -3617,15 +3698,10 @@ if (elNavigationVoice) {
 map.on("moveend", checkDataFreshness);
 map.on("zoom", refreshHeadingConeFromState);
 map.on("rotate", refreshHeadingConeFromState);
-map.on("dragstart", () => {
-  setCurrentLocationFollowEnabled(false);
-});
-map.on("rotatestart", () => {
-  setCurrentLocationFollowEnabled(false);
-});
-map.on("pitchstart", () => {
-  setCurrentLocationFollowEnabled(false);
-});
+map.on("dragstart", handleManualMapCameraStart);
+map.on("rotatestart", handleManualMapCameraStart);
+map.on("pitchstart", handleManualMapCameraStart);
+map.on("zoomstart", handleManualMapCameraStart);
 
 map.on("click", (event) => {
   const featuresAtPoint = map.queryRenderedFeatures(event.point, {
@@ -3633,6 +3709,11 @@ map.on("click", (event) => {
   });
 
   if (featuresAtPoint.length) return;
+
+  if (isTouchInteractionDevice() && Date.now() - lastMapTouchStartAt <= MAP_TOUCH_TAP_POPUP_DELAY_MS) {
+    scheduleMapTapPopup(event.lngLat);
+    return;
+  }
 
   openStatsPopupAtLatLng(event.lngLat);
 });
