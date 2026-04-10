@@ -48,7 +48,7 @@ import {
   hasFreshHeadingSensorData,
   interpolateHeadingDegrees,
   normalizeHeadingDegrees,
-} from "./heading_cone.js?v=20260410-mobile-motion";
+} from "./heading_cone.js?v=20260410-heading-damping";
 import {
   getLocationCourseHeading,
   isHeadingRenderLoopDocumentActive,
@@ -64,7 +64,7 @@ import {
   formatCensusSourceSummary,
 } from "./census.js?v=20260410-census-data";
 
-const APP_BUILD_ID = "20260410-course-heading";
+const APP_BUILD_ID = "20260410-heading-damping";
 console.info("[DGM] app build", APP_BUILD_ID);
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
@@ -83,9 +83,9 @@ const BLUE_DOT_HALO_RADIUS_SCALE = 2.35;
 const FULL_CYCLE_RADIANS = Math.PI * 2;
 const HEADING_RENDER_LOOP_MAX_HZ = 30;
 const HEADING_RENDER_LOOP_FRAME_INTERVAL_MS = 1000 / HEADING_RENDER_LOOP_MAX_HZ;
-const HEADING_RENDER_LOOP_MAP_BEARING_SMOOTHING_TIME_MS = 140;
+const HEADING_RENDER_LOOP_MAP_BEARING_SMOOTHING_TIME_MS = 240;
 const HEADING_RENDER_LOOP_GPS_SMOOTHING_TIME_MS = 180;
-const HEADING_RENDER_LOOP_MIN_DELTA_DEGREES = 0.5;
+const HEADING_RENDER_LOOP_MIN_DELTA_DEGREES = 1.5;
 const HEADING_RENDER_LOOP_MIN_LOCATION_DELTA_METERS = 0.25;
 const HEADING_RENDER_LOOP_MIN_SPEED_DELTA_MPS = 0.1;
 const HEADING_CONE_RENDER_SCALE_BIAS = 1.15;
@@ -327,8 +327,8 @@ const CONTINUOUS_WATCH_TIMEOUT_MS = 30000;
 const LIVE_LOCATION_WATCH_MAXIMUM_AGE_MS = 0;
 const AUTO_FOLLOW_LOCATION_MIN_CENTER_OFFSET_METERS = 6;
 const AUTO_FOLLOW_LOCATION_PAN_DURATION_MS = 450;
-const AUTO_FOLLOW_HEADING_MIN_DELTA_DEGREES = 5;
-const AUTO_FOLLOW_HEADING_ROTATION_DURATION_MS = 220;
+const AUTO_FOLLOW_HEADING_MIN_DELTA_DEGREES = 10;
+const AUTO_FOLLOW_HEADING_ROTATION_DURATION_MS = 380;
 const MAP_TOUCH_TAP_POPUP_DELAY_MS = 260;
 const MAP_TOUCH_GESTURE_SUPPRESSION_MS = 420;
 
