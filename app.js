@@ -48,14 +48,22 @@ import {
   hasFreshHeadingSensorData,
   interpolateHeadingDegrees,
   normalizeHeadingDegrees,
-} from "./heading_cone.js?v=20260404-visual-amplification";
+} from "./heading_cone.js?v=20260410-mobile-motion";
 import {
   isHeadingRenderLoopDocumentActive,
   resolveCompassPermissionState,
   resolveEffectiveHeadingState,
 } from "./heading_runtime.js";
+import {
+  fetchCurrentWeatherSignal,
+  formatWeatherSourceSummary,
+} from "./weather.js?v=20260410-live-weather";
+import {
+  fetchCensusResidentialAnchors,
+  formatCensusSourceSummary,
+} from "./census.js?v=20260410-census-data";
 
-const APP_BUILD_ID = "20260404-debug-gate-gestures";
+const APP_BUILD_ID = "20260410-mobile-motion";
 console.info("[DGM] app build", APP_BUILD_ID);
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
@@ -80,6 +88,7 @@ const HEADING_RENDER_LOOP_MIN_DELTA_DEGREES = 0.5;
 const HEADING_RENDER_LOOP_MIN_LOCATION_DELTA_METERS = 0.25;
 const HEADING_RENDER_LOOP_MIN_SPEED_DELTA_MPS = 0.1;
 const HEADING_CONE_RENDER_SCALE_BIAS = 1.15;
+const ALLOW_RELATIVE_COMPASS_ALPHA_FALLBACK = isTouchInteractionDevice();
 const COMPASS_PERMISSION_REQUIRED_STATE = "required";
 const COMPASS_PERMISSION_GRANTED_STATE = "granted";
 const COMPASS_PERMISSION_DENIED_STATE = "denied";
@@ -217,8 +226,11 @@ const parkingById = new Map();
 let lastRestaurants = [];
 let lastParkingCandidates = [];
 let lastResidentialAnchors = [];
+let lastCensusResidentialAnchors = [];
+let lastCensusDataset = null;
 let lastStats = null;
 let lastLoadedBounds = null; // tracks the bounds used for the last successful load
+let lastWeatherSignal = null;
 
 let lastParams = {
   hour: 0,
@@ -227,6 +239,8 @@ let lastParams = {
   competitionStrength: 0.35,
   residentialDemandWeight: 0.35,
   rainBoost: 0,
+  useCensusData: true,
+  useLiveWeather: true,
   tipEmphasis: 0.55,
   predictionModel: PREDICTION_MODEL,
 };
@@ -243,8 +257,12 @@ const elCompetition = document.getElementById("competition");
 const elCompetitionVal = document.getElementById("competitionVal");
 const elResidentialWeight = document.getElementById("residentialWeight");
 const elResidentialWeightVal = document.getElementById("residentialWeightVal");
+const elUseCensusData = document.getElementById("useCensusData");
+const elCensusStatus = document.getElementById("censusStatus");
 const elRainBoost = document.getElementById("rainBoost");
 const elRainBoostVal = document.getElementById("rainBoostVal");
+const elUseLiveWeather = document.getElementById("useLiveWeather");
+const elWeatherStatus = document.getElementById("weatherStatus");
 const elTipEmphasis = document.getElementById("tipEmphasis");
 const elTipEmphasisVal = document.getElementById("tipEmphasisVal");
 const elUseML = document.getElementById("useML");
@@ -292,6 +310,7 @@ const LOCATION_FLY_DURATION_MS = 850;
 const LOCATION_ZOOM_STEP = 3;
 const MAX_VISIBLE_ACCURACY_RADIUS_METERS = 45;
 const CONTINUOUS_WATCH_TIMEOUT_MS = 30000;
+const LIVE_LOCATION_WATCH_MAXIMUM_AGE_MS = 0;
 
 const INITIAL_LOCATION_ZOOM = 14;
 const INITIAL_LOCATION_TIMEOUT_MS = 8000;
@@ -1662,6 +1681,7 @@ function startDeviceOrientationWatch() {
   const onOrientationChange = (event) => {
     const sensorReading = getDeviceOrientationReading(event, {
       maxWebkitCompassAccuracyDegrees: HEADING_SENSOR_MAX_WEBKIT_COMPASS_ACCURACY_DEGREES,
+      allowRelativeAlphaFallback: ALLOW_RELATIVE_COMPASS_ALPHA_FALLBACK,
     });
 
     const nowMs = getHeadingNowMs();
@@ -1701,7 +1721,7 @@ function startContinuousLocationWatch() {
     {
       enableHighAccuracy: true,
       timeout: CONTINUOUS_WATCH_TIMEOUT_MS,
-      maximumAge: 2000,
+      maximumAge: LIVE_LOCATION_WATCH_MAXIMUM_AGE_MS,
     }
   );
 }
@@ -1778,7 +1798,7 @@ function ensureNavigationWatch() {
     {
       enableHighAccuracy: true,
       timeout: 12000,
-      maximumAge: 2000,
+      maximumAge: LIVE_LOCATION_WATCH_MAXIMUM_AGE_MS,
     }
   );
 }
@@ -2484,8 +2504,57 @@ function updateLabels() {
   elMinSepVal.textContent = `${Number(elMinSep.value)} m`;
 }
 
+function setWeatherStatus(message) {
+  if (!elWeatherStatus) return;
+  elWeatherStatus.textContent = String(message || "").trim();
+}
+
+function setCensusStatus(message) {
+  if (!elCensusStatus) return;
+  elCensusStatus.textContent = String(message || "").trim();
+}
+
+function updateCensusUi() {
+  const useCensusData = elUseCensusData ? Boolean(elUseCensusData.checked) : false;
+  if (!useCensusData) {
+    lastCensusResidentialAnchors = [];
+    lastCensusDataset = null;
+    setCensusStatus("Census tract anchors off. Using OSM residential anchors only.");
+    return;
+  }
+
+  setCensusStatus(
+    lastCensusResidentialAnchors.length
+      ? formatCensusSourceSummary(lastCensusDataset, lastCensusResidentialAnchors)
+      : "Static Census tract anchors for the default Rancho/Ontario region will be blended into residential demand when they overlap the current view."
+  );
+}
+
+function updateWeatherUi() {
+  const useLiveWeather = elUseLiveWeather ? Boolean(elUseLiveWeather.checked) : false;
+
+  if (elRainBoost) {
+    elRainBoost.disabled = useLiveWeather;
+    elRainBoost.setAttribute("aria-disabled", String(useLiveWeather));
+  }
+
+  if (useLiveWeather) {
+    setWeatherStatus(
+      lastWeatherSignal
+        ? formatWeatherSourceSummary(lastWeatherSignal)
+        : "Live weather will be fetched from Open-Meteo on refresh. If it fails, the manual rain lift slider remains the fallback."
+    );
+    return;
+  }
+
+  lastWeatherSignal = null;
+  setWeatherStatus("Live weather off. Using the manual rain lift slider.");
+}
+
 setHourDefaults();
 updateLabels();
+updateCensusUi();
+updateWeatherUi();
 
 elHour.addEventListener("input", updateLabels);
 elTau.addEventListener("input", updateLabels);
@@ -2493,7 +2562,13 @@ elGrid.addEventListener("input", updateLabels);
 elHorizon.addEventListener("input", updateLabels);
 elCompetition.addEventListener("input", updateLabels);
 elResidentialWeight.addEventListener("input", updateLabels);
+if (elUseCensusData) {
+  elUseCensusData.addEventListener("change", updateCensusUi);
+}
 elRainBoost.addEventListener("input", updateLabels);
+if (elUseLiveWeather) {
+  elUseLiveWeather.addEventListener("change", updateWeatherUi);
+}
 elTipEmphasis.addEventListener("input", updateLabels);
 elUseML.addEventListener("change", updateLabels);
 elMlBeta.addEventListener("input", updateLabels);
@@ -2556,6 +2631,8 @@ function clearLayers() {
   restaurantById.clear();
   parkingById.clear();
   lastResidentialAnchors = [];
+  lastCensusResidentialAnchors = [];
+  lastCensusDataset = null;
   lastHeatFeatures = [];
   lastSpotPoint = null;
 
@@ -2898,7 +2975,7 @@ function renderSignalBarsHtml(signals, bucketLabel) {
   return `<div class="sig-bars"><div class="sig-header">What makes this spot score the way it does (${escapeHtml(bucketLabel)})</div>${rows}</div>`;
 }
 
-function renderSummaryCards(rankedParking, restaurants, parking, residentialAnchors) {
+function renderSummaryCards(rankedParking, restaurants, parking, residentialAnchors, censusAnchors = []) {
   if (!elSummaryCards) return;
 
   if (!rankedParking.length) {
@@ -2939,8 +3016,8 @@ function renderSummaryCards(rankedParking, restaurants, parking, residentialAnch
 
 <article class="summary-card">
   <span class="summary-label">Data loaded</span>
-  <strong>${restaurants.length} restaurants · ${residentialAnchors.length} residential anchors · ${parking.length} parking lots</strong>
-  <p>This probability field is built from ${restaurants.length} restaurants, ${residentialAnchors.length} residential anchors, and ${parking.length} parking lots visible on the map. Zoom in for a tighter local read.</p>
+  <strong>${restaurants.length} restaurants · ${residentialAnchors.length} residential anchors · ${censusAnchors.length} Census tracts · ${parking.length} parking lots</strong>
+  <p>This probability field is built from ${restaurants.length} restaurants, ${residentialAnchors.length} residential anchors, ${censusAnchors.length} nearby Census tracts, and ${parking.length} parking lots visible on the map. ${escapeHtml(lastWeatherSignal ? formatWeatherSourceSummary(lastWeatherSignal) : "Manual rain lift is active.")} Zoom in for a tighter local read.</p>
 </article>
 `;
 }
@@ -3143,7 +3220,9 @@ async function loadForView() {
     const horizonMin = PROBABILITY_HORIZON_MINUTES;
     const competitionStrength = Number(elCompetition.value);
     const residentialDemandWeight = Number(elResidentialWeight.value);
-    const rainBoost = Number(elRainBoost.value);
+    const useCensusData = elUseCensusData ? Boolean(elUseCensusData.checked) : false;
+    const useLiveWeather = elUseLiveWeather ? Boolean(elUseLiveWeather.checked) : false;
+    let rainBoost = Number(elRainBoost.value);
     const tipEmphasis = Number(elTipEmphasis.value);
     const useML = Boolean(elUseML.checked);
     const mlBeta = Number(elMlBeta.value);
@@ -3169,6 +3248,8 @@ async function loadForView() {
       competitionStrength,
       residentialDemandWeight,
       rainBoost,
+      useCensusData,
+      useLiveWeather,
       tipEmphasis,
       predictionModel: PREDICTION_MODEL,
       useML,
@@ -3180,19 +3261,58 @@ async function loadForView() {
 
     const bbox = mapBoundsToAdapter(map.getBounds());
     const queryBounds = clampQueryBounds(bbox);
+    const weatherPoint = lngLatToObject(lastCurrentLocation || map.getCenter());
+    const censusPromise = useCensusData
+      ? fetchCensusResidentialAnchors(queryBounds, activeAbort.signal)
+        .then((result) => ({ ok: true, ...result }))
+        .catch((error) => ({ ok: false, error }))
+      : Promise.resolve({ ok: false, skipped: true, anchors: [] });
+    const weatherPromise = useLiveWeather
+      ? fetchCurrentWeatherSignal(weatherPoint, activeAbort.signal)
+        .then((weatherSignal) => ({ ok: true, weatherSignal }))
+        .catch((error) => ({ ok: false, error }))
+      : Promise.resolve({ ok: false, skipped: true });
 
-    const [allRestaurants, parking, residentialAnchors] = await Promise.all([
+    const [allRestaurants, parking, residentialAnchors, censusResult, weatherResult] = await Promise.all([
       fetchFoodPlaces(queryBounds, activeAbort.signal),
       fetchParkingCandidates(queryBounds, activeAbort.signal),
       fetchResidentialAnchors(queryBounds, activeAbort.signal),
+      censusPromise,
+      weatherPromise,
     ]);
+
+    const censusResidentialAnchors = censusResult?.ok && Array.isArray(censusResult.anchors)
+      ? censusResult.anchors
+      : [];
+    if (censusResult?.ok) {
+      lastCensusDataset = censusResult.dataset || null;
+      lastCensusResidentialAnchors = censusResidentialAnchors;
+      setCensusStatus(formatCensusSourceSummary(lastCensusDataset, censusResidentialAnchors));
+    } else if (useCensusData && censusResult && !censusResult.skipped) {
+      lastCensusDataset = null;
+      lastCensusResidentialAnchors = [];
+      console.warn("[DGM] Census data load failed:", censusResult.error);
+      setCensusStatus("Census tract anchors unavailable. Using OSM residential anchors only.");
+    }
+
+    if (weatherResult?.ok && weatherResult.weatherSignal) {
+      lastWeatherSignal = weatherResult.weatherSignal;
+      rainBoost = weatherResult.weatherSignal.rainBoost;
+      elRainBoost.value = rainBoost.toFixed(2);
+      updateLabels();
+    } else if (useLiveWeather && weatherResult && !weatherResult.skipped) {
+      lastWeatherSignal = null;
+      console.warn("[DGM] Live weather fetch failed:", weatherResult.error);
+      setWeatherStatus("Live weather unavailable. Using the manual rain lift slider.");
+    }
 
     // Freeze local time once so hours-based eligibility stays consistent for this refresh.
     const restaurants = filterOpenRestaurants(allRestaurants, new Date());
+    const combinedResidentialAnchors = [...residentialAnchors, ...censusResidentialAnchors];
 
     lastRestaurants = restaurants;
     lastParkingCandidates = parking;
-    lastResidentialAnchors = residentialAnchors;
+    lastResidentialAnchors = combinedResidentialAnchors;
 
     addRestaurantMarkers(restaurants);
 
@@ -3205,7 +3325,7 @@ async function loadForView() {
         tauMeters,
         horizonMin,
         competitionStrength,
-        residentialAnchors,
+        residentialAnchors: combinedResidentialAnchors,
         residentialDemandWeight,
         rainBoost,
         tipEmphasis,
@@ -3244,7 +3364,7 @@ async function loadForView() {
         tauMeters,
         horizonMin,
         competitionStrength,
-        residentialAnchors,
+        residentialAnchors: combinedResidentialAnchors,
         residentialDemandWeight,
         rainBoost,
         tipEmphasis,
@@ -3260,7 +3380,7 @@ async function loadForView() {
     const demandNodes = buildDemandCoverageNodes(restaurants, {
       hour,
       dayOfWeek: lastStats?.dayOfWeek,
-      residentialAnchors,
+      residentialAnchors: combinedResidentialAnchors,
       residentialDemandWeight,
     });
 
@@ -3325,7 +3445,9 @@ async function loadForView() {
 
     addParkingMarkers(ranked, restaurants, tauMeters, hour);
     renderParkingList(ranked);
-    renderSummaryCards(ranked, restaurants, parking, residentialAnchors);
+    renderSummaryCards(ranked, restaurants, parking, residentialAnchors, censusResidentialAnchors);
+    updateCensusUi();
+    updateWeatherUi();
 
     setLayerVisibility(LAYER_RESTAURANTS, elShowRestaurants.checked);
     setLayerVisibility(LAYER_PARKING, elShowParking.checked);

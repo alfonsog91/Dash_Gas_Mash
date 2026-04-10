@@ -178,8 +178,19 @@ export function runHeadingConeTests() {
     );
   });
 
-  runTest("getDeviceOrientationHeading ignores relative or invalid events", () => {
-    assert(getDeviceOrientationHeading({ type: "deviceorientation", absolute: false, alpha: 15 }) === null, "relative alpha should be ignored");
+  runTest("getDeviceOrientationHeading keeps relative alpha opt-in", () => {
+    assert(getDeviceOrientationHeading({ type: "deviceorientation", absolute: false, alpha: 15 }) === null, "relative alpha should stay disabled by default");
+    assertEqual(
+      getDeviceOrientationHeading(
+        { type: "deviceorientation", absolute: false, alpha: 15 },
+        { allowRelativeAlphaFallback: true }
+      ),
+      345,
+      "relative alpha fallback should produce a compass heading when explicitly enabled"
+    );
+  });
+
+  runTest("getDeviceOrientationHeading ignores invalid events", () => {
     assert(getDeviceOrientationHeading({ type: "deviceorientationabsolute", alpha: Number.NaN }) === null, "invalid alpha should be ignored");
     assert(getDeviceOrientationHeading(null) === null, "null events should be ignored");
   });

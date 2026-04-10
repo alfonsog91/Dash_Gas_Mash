@@ -20,6 +20,17 @@ import {
   expectedCalibrationError,
   generateSyntheticPredictionDataset,
 } from "../learned_predictor.js";
+import {
+  buildOpenMeteoWeatherUrl,
+  deriveRainBoostFromPrecipitationMm,
+  deriveWeatherSignal,
+  formatWeatherSourceSummary,
+} from "../weather.js";
+import {
+  filterCensusAnchorsForBounds,
+  formatCensusSourceSummary,
+  normalizeDatasetBounds,
+} from "../census.js";
 
 const PASS = "\u2705";
 const FAIL = "\u274c";
@@ -367,6 +378,97 @@ function testResidentialDemandPromotion() {
   assert(ranked[0].id === "node/park-east", "parking ranking reflects residential demand after promotion");
 }
 
+function testStaticCensusAnchorPromotion() {
+  log("\n--- Static Census anchor promotion ---");
+
+  const symmetricRestaurants = [
+    { id: "node/rest-west", lat: 34.1005, lon: -117.5900, tags: { amenity: "restaurant", cuisine: "pizza", name: "West Pizza" } },
+    { id: "node/rest-east", lat: 34.1005, lon: -117.5800, tags: { amenity: "restaurant", cuisine: "pizza", name: "East Pizza" } },
+  ];
+  const symmetricParking = [
+    { id: "node/park-west", lat: 34.1000, lon: -117.5900, tags: { amenity: "parking" } },
+    { id: "node/park-east", lat: 34.1000, lon: -117.5800, tags: { amenity: "parking" } },
+  ];
+  const censusAnchors = [
+    {
+      id: "census-tract/near-east",
+      lat: 34.1002,
+      lon: -117.5801,
+      tags: {
+        source: "census-acs-2023-tract",
+        dgm_weight: 1.45,
+        census_population: 5200,
+        census_households: 1800,
+      },
+    },
+  ];
+
+  const westNoCensus = probabilityOfGoodOrder(symmetricParking[0], symmetricRestaurants, symmetricParking, {
+    ...baseParams,
+    hour: 18,
+    lambdaRef: 1.0,
+    residentialDemandWeight: 0.65,
+    residentialAnchors: [],
+  });
+  const eastNoCensus = probabilityOfGoodOrder(symmetricParking[1], symmetricRestaurants, symmetricParking, {
+    ...baseParams,
+    hour: 18,
+    lambdaRef: 1.0,
+    residentialDemandWeight: 0.65,
+    residentialAnchors: [],
+  });
+  const westWithCensus = probabilityOfGoodOrder(symmetricParking[0], symmetricRestaurants, symmetricParking, {
+    ...baseParams,
+    hour: 18,
+    lambdaRef: 1.0,
+    residentialDemandWeight: 0.65,
+    residentialAnchors: censusAnchors,
+  });
+  const eastWithCensus = probabilityOfGoodOrder(symmetricParking[1], symmetricRestaurants, symmetricParking, {
+    ...baseParams,
+    hour: 18,
+    lambdaRef: 1.0,
+    residentialDemandWeight: 0.65,
+    residentialAnchors: censusAnchors,
+  });
+
+  assert(approx(westNoCensus.pGood, eastNoCensus.pGood, 1e-4), "without Census anchors the symmetric parking points match");
+  assert(eastWithCensus.pGood > westWithCensus.pGood, "nearby Census anchors lift the closer parking score");
+  assert(eastWithCensus.residentialShare > westWithCensus.residentialShare, "Census anchors contribute through the residential demand path");
+}
+
+function testCensusBoundsFiltering() {
+  log("\n--- Census bounds filtering ---");
+
+  const dataset = {
+    bounds: { south: 34.0, west: -117.7, north: 34.2, east: -117.5 },
+    source: { dataset: "ACS 2023 5-year + TIGERweb 2025 Census Tracts" },
+    anchors: [
+      { id: "a", lat: 34.10, lon: -117.60, tags: { dgm_weight: 1.2 } },
+      { id: "b", lat: 34.18, lon: -117.52, tags: { dgm_weight: 1.1 } },
+    ],
+  };
+
+  const overlappingBounds = {
+    getSouth: () => 34.05,
+    getWest: () => -117.65,
+    getNorth: () => 34.12,
+    getEast: () => -117.55,
+  };
+  const outsideBounds = {
+    getSouth: () => 33.8,
+    getWest: () => -118.2,
+    getNorth: () => 33.9,
+    getEast: () => -118.0,
+  };
+
+  const normalizedBounds = normalizeDatasetBounds(dataset);
+  assert(normalizedBounds.south === 34.0 && normalizedBounds.east === -117.5, "dataset bounds normalize cleanly");
+  assert(filterCensusAnchorsForBounds(dataset, overlappingBounds).length === 1, "only overlapping Census anchors are returned for the current view");
+  assert(filterCensusAnchorsForBounds(dataset, outsideBounds).length === 0, "non-overlapping views return no Census anchors");
+  assert(formatCensusSourceSummary(dataset, dataset.anchors).includes("ACS 2023 5-year"), "Census summary cites the dataset provenance");
+}
+
 function testRainDemandLift() {
   log("\n--- Rain demand lift ---");
 
@@ -398,6 +500,40 @@ function testRainDemandLift() {
   const dryMean = dryHeat.heatPoints.reduce((sum, [, , value]) => sum + value, 0) / dryHeat.heatPoints.length;
   const rainyMean = rainyHeat.heatPoints.reduce((sum, [, , value]) => sum + value, 0) / rainyHeat.heatPoints.length;
   assert(rainyMean > dryMean, "rain lift raises average heatmap intensity");
+}
+
+function testLiveWeatherSignalMapping() {
+  log("\n--- Live weather signal mapping ---");
+
+  assert(deriveRainBoostFromPrecipitationMm(0) === 0, "zero precipitation yields zero rain lift");
+  assert(deriveRainBoostFromPrecipitationMm(1.5) > deriveRainBoostFromPrecipitationMm(0.2), "higher precipitation yields a stronger rain lift");
+  assert(deriveRainBoostFromPrecipitationMm(999) <= 0.25, "rain lift remains bounded by the contract cap");
+
+  const weatherUrl = buildOpenMeteoWeatherUrl(34.1064, -117.5931);
+  assert(weatherUrl.includes("current=precipitation%2Crain%2Cshowers%2Cweather_code"), "weather URL requests only current public precipitation fields");
+  assert(weatherUrl.includes("latitude=34.1064"), "weather URL includes latitude");
+  assert(weatherUrl.includes("longitude=-117.5931"), "weather URL includes longitude");
+
+  const signal = deriveWeatherSignal({
+    latitude: 34.1,
+    longitude: -117.59,
+    current: {
+      time: "2026-04-10T13:45",
+      precipitation: 2.4,
+      rain: 1.8,
+      showers: 0.6,
+      weather_code: 63,
+    },
+  });
+
+  assert(signal.source === "open-meteo", "weather signal records its public source");
+  assert(signal.precipitationMm === 2.4, "weather signal keeps precipitation intensity in mm/h");
+  assert(signal.rainBoost > 0 && signal.rainBoost <= 0.25, "weather signal maps precipitation into the bounded rain lift");
+  assert(signal.weatherLabel === "rain", "weather signal interprets WMO weather codes conservatively");
+
+  const summary = formatWeatherSourceSummary(signal);
+  assert(summary.includes("Open-Meteo"), "weather summary cites the public source");
+  assert(summary.includes("2.4 mm/h"), "weather summary includes precipitation intensity");
 }
 
 function combinations(items, pickCount) {
@@ -534,7 +670,10 @@ export function runPreservationTests() {
   testOpeningHoursHelper();
   testClosedRestaurantsExcludedFromPipeline();
   testResidentialDemandPromotion();
+  testStaticCensusAnchorPromotion();
+  testCensusBoundsFiltering();
   testRainDemandLift();
+  testLiveWeatherSignalMapping();
   testSubmodularFallbackSelection();
   testLearnedModelAgreement();
   testLearnedModelSyntheticCalibration();

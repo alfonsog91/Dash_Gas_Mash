@@ -135,6 +135,7 @@ function getDeviceOrientationReading(
   event,
   {
     maxWebkitCompassAccuracyDegrees = HEADING_SENSOR_MAX_WEBKIT_COMPASS_ACCURACY_DEGREES,
+    allowRelativeAlphaFallback = false,
   } = {}
 ) {
   const webkitHeading = normalizeHeadingDegrees(event?.webkitCompassHeading);
@@ -157,6 +158,20 @@ function getDeviceOrientationReading(
 
   const isAbsoluteHeading = event?.type === "deviceorientationabsolute" || event?.absolute === true;
   if (!isAbsoluteHeading) {
+    if (allowRelativeAlphaFallback) {
+      const fallbackAlphaHeading = normalizeHeadingDegrees(event?.alpha);
+      if (fallbackAlphaHeading !== null) {
+        const fallbackHeading = normalizeHeadingDegrees(360 - fallbackAlphaHeading);
+        return {
+          heading: fallbackHeading,
+          rawHeading: fallbackHeading,
+          accuracy: null,
+          source: "alpha-fallback",
+          reliable: false,
+        };
+      }
+    }
+
     return {
       heading: null,
       rawHeading: null,

@@ -191,6 +191,18 @@ function foodWeight(tags, hour) {
 }
 
 function residentialWeight(tags, hour, dayOfWeek) {
+  const explicitWeight = Number(tags?.dgm_weight);
+  if (Number.isFinite(explicitWeight) && explicitWeight > 0) {
+    let base = explicitWeight;
+    const weekend = dayOfWeek === 0 || dayOfWeek === 6;
+
+    if (hour >= 17 && hour < 22) base *= weekend ? 1.18 : 1.1;
+    else if (hour >= 11 && hour < 14) base *= weekend ? 0.95 : 0.85;
+    else if (hour >= 22 || hour < 5) base *= weekend ? 1.05 : 0.92;
+
+    return base;
+  }
+
   const building = (tags?.building ?? "").toLowerCase();
   const landuse = (tags?.landuse ?? "").toLowerCase();
   const weekend = dayOfWeek === 0 || dayOfWeek === 6;

@@ -55,6 +55,8 @@ DGM does not attempt to predict individual assignments or override platform beha
 - Loads **food merchant proxies** from OpenStreetMap via Overpass (amenity: restaurant / fast_food / cafe / food_court)
 - Loads **parking candidate proxies** from OpenStreetMap (amenity=parking and parking=*)
 - Loads **residential demand anchors** from OpenStreetMap (apartments / residential buildings / residential landuse) and blends them into the demand field with a user-controlled weight
+- Loads a **small static Census tract slice** for the default Rancho/Ontario region from public U.S. Census ACS + TIGER data and blends it into the residential demand path when enabled
+- Loads **live precipitation context** from the public Open-Meteo API and maps it into the bounded rain-lift control when live weather is enabled
 - Excludes restaurants with parseable OSM `opening_hours` tags when they are currently closed in the client’s local time
 - Uses an exact MIP selector when available, and otherwise falls back to a monotone submodular coverage selector instead of a naive top-K slice
 - Includes a default-off monotone, calibrated dual-head GLM scorer behind a code-level feature flag; legacy and softplus scoring remain the default behavior
@@ -191,7 +193,7 @@ References (public):
 
 The app is hosted on GitHub Pages and is publicly accessible at:
 
-[https://alfonsog91.github.io/Dash_Gas_Mash/] https://alfonsog91.github.io/Dash_Gas_Mash/
+[https://alfonsog91.github.io/Dash_Gas_Mash/](https://alfonsog91.github.io/Dash_Gas_Mash/)
 No installation or local server required — just open that URL in any modern browser.
 
 > The live site is automatically updated whenever changes are pushed to the `main` branch via the GitHub Actions workflow in `.github/workflows/deploy.yml`.
@@ -243,6 +245,9 @@ To enable `MapTiler`, edit [index.html](index.html) and set:
 - **Grid step (meters)**: Heatmap resolution. Larger values are faster but less detailed.
 - **Competition strength (proxy)**: Applies a penalty using nearby parking POI density as a crude proxy for “other drivers may also be staged here”. Set to 0 to disable.
 - **Residential demand blend**: Blends in nearby housing and apartment anchors as structural demand support. Set to 0 to revert to the earlier merchant-only model.
+- **Use nearby Census tract anchors**: Blends a small preprocessed public Census tract dataset into the same residential demand path when the current view overlaps the default Rancho/Ontario region.
+- **Use live public weather**: When enabled, DGM fetches current precipitation for the map center from Open-Meteo and converts it into the same bounded rain-lift control. If the request fails, the manual slider stays the fallback.
+- **Rain demand lift**: Adds a bounded weather uplift to the demand field. With live weather on, the slider is driven by the current Open-Meteo precipitation signal; with live weather off, it remains manual.
 - **Tip emphasis (vs short pickup)**: Blends two “good order” proxies:
   - short pickup distance (expected distance to nearby merchants)
   - a higher-ticket “ticket proxy” inferred from OSM cuisine/type tags
@@ -272,10 +277,13 @@ Use the range to compare two parking choices under the same settings: a higher b
 
 - The app uses `MapLibre GL JS` with either `MapTiler` vector tiles or the public `MapLibre` demo style for development.
 - Map data © OpenStreetMap contributors.
+- Census tract anchors in `data/census-rancho-ontario-tracts-2023.json` are derived from public U.S. Census Bureau ACS 2023 5-year tables and TIGERweb tract centroids for a small default-region slice.
+- Live weather data comes from the public Open-Meteo forecast API.
 
 ## Limitations
 
 - OSM POIs are incomplete in some areas.
+- The bundled Census tract slice is intentionally small and currently covers only the default Rancho/Ontario region near the app’s default center.
 - Many OSM merchants do not publish `opening_hours`; those restaurants remain eligible because the dataset does not provide a reliable closed/open state.
 - “Lane-accurate” geometry depends on OSM tagging; many roads will not include lane-level detail.
 - This does **not** know real order volume, real-time supply, DoorDash acceptance, batching, zones, or anything private.

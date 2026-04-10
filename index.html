@@ -75,10 +75,24 @@
           </div>
 
           <div class="row">
+            <label class="checkbox">
+              <input id="useCensusData" type="checkbox" checked />
+              Use nearby Census tract anchors
+            </label>
+            <div id="censusStatus" class="hint">Static Census tract anchors for the default Rancho/Ontario region will be blended into residential demand when they overlap the current view.</div>
+            <div class="hint">This uses a small preprocessed public U.S. Census tract dataset. Outside the default region, DGM falls back to OSM residential anchors only.</div>
+          </div>
+
+          <div class="row">
             <label for="rainBoost">Rain demand lift</label>
             <input id="rainBoost" type="range" min="0" max="0.25" step="0.01" value="0" />
             <span id="rainBoostVal" class="mono"></span>
-            <div class="hint">Simple bounded weather proxy. Higher rain lift nudges modeled demand upward, with a slightly stronger effect on residential demand.</div>
+            <label class="checkbox">
+              <input id="useLiveWeather" type="checkbox" checked />
+              Use live public weather
+            </label>
+            <div id="weatherStatus" class="hint">Live weather will be fetched from Open-Meteo on refresh. If it fails, the manual rain lift slider remains the fallback.</div>
+            <div class="hint">Bounded weather proxy. With live weather enabled, DGM derives this lift from public Open-Meteo precipitation data for the current map center; otherwise the slider stays manual.</div>
           </div>
 
           <div class="row">
@@ -177,7 +191,8 @@
                 <li><b>Distance decay</b>: How far restaurants count. Smaller = only very close restaurants matter.</li>
                 <li><b>Competition strength</b>: Penalizes spots near many parking lots (rough proxy for other drivers). Set to 0 to ignore.</li>
                 <li><b>Residential demand blend</b>: Adds nearby housing and apartment anchors as a structural demand field. Set to 0 for the pre-promotion merchant-only model.</li>
-                <li><b>Rain demand lift</b>: Adds a bounded weather uplift to the demand field. This is a manual proxy, not live weather ingestion.</li>
+                <li><b>Use nearby Census tract anchors</b>: Blends a small preprocessed public Census tract dataset into the same residential demand path when the current view overlaps the default Rancho/Ontario region.</li>
+                <li><b>Rain demand lift</b>: Adds a bounded weather uplift to the demand field. With live weather enabled, DGM derives this from public Open-Meteo precipitation data for the current map center; if the request fails, the manual slider remains the fallback.</li>
                 <li><b>Tip emphasis</b>: Slide right to favor higher-ticket restaurants. Slide left to favor short pickup distance.</li>
                 <li><b>Grid step</b>: Heatmap detail. Smaller = prettier but slower.</li>
                 <li><b>K spots / Min separation</b>: How many parking suggestions to show. Min separation applies to MIP mode; the approximate fallback spreads picks using diminishing returns instead of a hard spacing rule.</li>
@@ -265,6 +280,6 @@
       crossorigin=""
     ></script>
 
-    <script type="module" src="./app.js?v=20260404-debug-gate-gestures"></script>
+    <script type="module" src="./app.js?v=20260410-mobile-motion"></script>
   </body>
 </html>

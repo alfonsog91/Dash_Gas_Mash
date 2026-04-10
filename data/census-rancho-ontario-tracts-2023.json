@@ -1,0 +1,404 @@
+{
+  "generatedAt": "2026-04-10T18:59:02.063Z",
+  "source": {
+    "provider": "U.S. Census Bureau",
+    "dataset": "ACS 2023 5-year + TIGERweb 2025 Census Tracts",
+    "geography": "24 nearest tracts around the default Rancho/Ontario center",
+    "defaultCenter": {
+      "lat": 34.1064,
+      "lon": -117.5931
+    }
+  },
+  "bounds": {
+    "south": 34.077211,
+    "west": -117.628046,
+    "north": 34.138221,
+    "east": -117.552597
+  },
+  "anchors": [
+    {
+      "id": "census-tract/06071002027",
+      "lat": 34.113941,
+      "lon": -117.595933,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 20.27",
+        "geoid": "06071002027",
+        "census_population": 5915,
+        "census_households": 2134,
+        "census_occupied_housing": 2134,
+        "census_renter_share": 0.3341,
+        "census_distance_from_default_center_m": 878,
+        "dgm_weight": 1.467
+      }
+    },
+    {
+      "id": "census-tract/06071002107",
+      "lat": 34.100556,
+      "lon": -117.58667,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 21.07",
+        "geoid": "06071002107",
+        "census_population": 5218,
+        "census_households": 1837,
+        "census_occupied_housing": 1837,
+        "census_renter_share": 0.6206,
+        "census_distance_from_default_center_m": 879,
+        "dgm_weight": 1.468
+      }
+    },
+    {
+      "id": "census-tract/06071002028",
+      "lat": 34.114202,
+      "lon": -117.582716,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 20.28",
+        "geoid": "06071002028",
+        "census_population": 6595,
+        "census_households": 2216,
+        "census_occupied_housing": 2216,
+        "census_renter_share": 0.181,
+        "census_distance_from_default_center_m": 1291,
+        "dgm_weight": 1.462
+      }
+    },
+    {
+      "id": "census-tract/06071002105",
+      "lat": 34.097884,
+      "lon": -117.60459,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 21.05",
+        "geoid": "06071002105",
+        "census_population": 5784,
+        "census_households": 2038,
+        "census_occupied_housing": 2038,
+        "census_renter_share": 0.2655,
+        "census_distance_from_default_center_m": 1420,
+        "dgm_weight": 1.43
+      }
+    },
+    {
+      "id": "census-tract/06071002103",
+      "lat": 34.103023,
+      "lon": -117.608047,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 21.03",
+        "geoid": "06071002103",
+        "census_population": 4842,
+        "census_households": 1788,
+        "census_occupied_housing": 1788,
+        "census_renter_share": 0.726,
+        "census_distance_from_default_center_m": 1426,
+        "dgm_weight": 1.476
+      }
+    },
+    {
+      "id": "census-tract/06071002016",
+      "lat": 34.115982,
+      "lon": -117.607414,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 20.16",
+        "geoid": "06071002016",
+        "census_population": 3890,
+        "census_households": 1330,
+        "census_occupied_housing": 1330,
+        "census_renter_share": 0.2038,
+        "census_distance_from_default_center_m": 1695,
+        "dgm_weight": 1.24
+      }
+    },
+    {
+      "id": "census-tract/06071002111",
+      "lat": 34.088144,
+      "lon": -117.583113,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 21.11",
+        "geoid": "06071002111",
+        "census_population": 3883,
+        "census_households": 1558,
+        "census_occupied_housing": 1558,
+        "census_renter_share": 0.7837,
+        "census_distance_from_default_center_m": 2229,
+        "dgm_weight": 1.424
+      }
+    },
+    {
+      "id": "census-tract/06071001311",
+      "lat": 34.085601,
+      "lon": -117.598905,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 13.11",
+        "geoid": "06071001311",
+        "census_population": 3889,
+        "census_households": 1054,
+        "census_occupied_housing": 1054,
+        "census_renter_share": 0.2201,
+        "census_distance_from_default_center_m": 2374,
+        "dgm_weight": 1.197
+      }
+    },
+    {
+      "id": "census-tract/06071002051",
+      "lat": 34.110562,
+      "lon": -117.566214,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 20.51",
+        "geoid": "06071002051",
+        "census_population": 4638,
+        "census_households": 1576,
+        "census_occupied_housing": 1576,
+        "census_renter_share": 0.7697,
+        "census_distance_from_default_center_m": 2518,
+        "dgm_weight": 1.445
+      }
+    },
+    {
+      "id": "census-tract/06071002023",
+      "lat": 34.129423,
+      "lon": -117.593011,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 20.23",
+        "geoid": "06071002023",
+        "census_population": 5195,
+        "census_households": 2276,
+        "census_occupied_housing": 2276,
+        "census_renter_share": 0.681,
+        "census_distance_from_default_center_m": 2560,
+        "dgm_weight": 1.552
+      }
+    },
+    {
+      "id": "census-tract/06071002025",
+      "lat": 34.128254,
+      "lon": -117.582168,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 20.25",
+        "geoid": "06071002025",
+        "census_population": 5284,
+        "census_households": 1906,
+        "census_occupied_housing": 1906,
+        "census_renter_share": 0.1432,
+        "census_distance_from_default_center_m": 2630,
+        "dgm_weight": 1.363
+      }
+    },
+    {
+      "id": "census-tract/06071002015",
+      "lat": 34.127106,
+      "lon": -117.607166,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 20.15",
+        "geoid": "06071002015",
+        "census_population": 4335,
+        "census_households": 1422,
+        "census_occupied_housing": 1422,
+        "census_renter_share": 0.3024,
+        "census_distance_from_default_center_m": 2642,
+        "dgm_weight": 1.293
+      }
+    },
+    {
+      "id": "census-tract/06071000812",
+      "lat": 34.116277,
+      "lon": -117.620345,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 8.12",
+        "geoid": "06071000812",
+        "census_population": 4102,
+        "census_households": 1306,
+        "census_occupied_housing": 1306,
+        "census_renter_share": 0.1669,
+        "census_distance_from_default_center_m": 2738,
+        "dgm_weight": 1.233
+      }
+    },
+    {
+      "id": "census-tract/06071002049",
+      "lat": 34.11602,
+      "lon": -117.565698,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 20.49",
+        "geoid": "06071002049",
+        "census_population": 3474,
+        "census_households": 1138,
+        "census_occupied_housing": 1138,
+        "census_renter_share": 0.8128,
+        "census_distance_from_default_center_m": 2740,
+        "dgm_weight": 1.348
+      }
+    },
+    {
+      "id": "census-tract/06071002101",
+      "lat": 34.098787,
+      "lon": -117.624298,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 21.01",
+        "geoid": "06071002101",
+        "census_population": 4139,
+        "census_households": 1509,
+        "census_occupied_housing": 1509,
+        "census_renter_share": 0.5315,
+        "census_distance_from_default_center_m": 2995,
+        "dgm_weight": 1.36
+      }
+    },
+    {
+      "id": "census-tract/06071001307",
+      "lat": 34.088508,
+      "lon": -117.619873,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 13.07",
+        "geoid": "06071001307",
+        "census_population": 3793,
+        "census_households": 935,
+        "census_occupied_housing": 935,
+        "census_renter_share": 0.1872,
+        "census_distance_from_default_center_m": 3168,
+        "dgm_weight": 1.165
+      }
+    },
+    {
+      "id": "census-tract/06071002035",
+      "lat": 34.120203,
+      "lon": -117.562673,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 20.35",
+        "geoid": "06071002035",
+        "census_population": 7530,
+        "census_households": 2559,
+        "census_occupied_housing": 2559,
+        "census_renter_share": 0.3556,
+        "census_distance_from_default_center_m": 3194,
+        "dgm_weight": 1.536
+      }
+    },
+    {
+      "id": "census-tract/06071001312",
+      "lat": 34.077211,
+      "lon": -117.603917,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 13.12",
+        "geoid": "06071001312",
+        "census_population": 6083,
+        "census_households": 2130,
+        "census_occupied_housing": 2130,
+        "census_renter_share": 0.5362,
+        "census_distance_from_default_center_m": 3395,
+        "dgm_weight": 1.522
+      }
+    },
+    {
+      "id": "census-tract/06071002112",
+      "lat": 34.091803,
+      "lon": -117.560512,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 21.12",
+        "geoid": "06071002112",
+        "census_population": 4405,
+        "census_households": 1952,
+        "census_occupied_housing": 1952,
+        "census_renter_share": 0.8566,
+        "census_distance_from_default_center_m": 3411,
+        "dgm_weight": 1.525
+      }
+    },
+    {
+      "id": "census-tract/06071002029",
+      "lat": 34.130983,
+      "lon": -117.56708,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 20.29",
+        "geoid": "06071002029",
+        "census_population": 5593,
+        "census_households": 1809,
+        "census_occupied_housing": 1809,
+        "census_renter_share": 0.1504,
+        "census_distance_from_default_center_m": 3634,
+        "dgm_weight": 1.356
+      }
+    },
+    {
+      "id": "census-tract/06071001308",
+      "lat": 34.078896,
+      "lon": -117.615316,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 13.08",
+        "geoid": "06071001308",
+        "census_population": 4271,
+        "census_households": 1182,
+        "census_occupied_housing": 1182,
+        "census_renter_share": 0.3917,
+        "census_distance_from_default_center_m": 3679,
+        "dgm_weight": 1.272
+      }
+    },
+    {
+      "id": "census-tract/06071002013",
+      "lat": 34.138221,
+      "lon": -117.607289,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 20.13",
+        "geoid": "06071002013",
+        "census_population": 3674,
+        "census_households": 1485,
+        "census_occupied_housing": 1485,
+        "census_renter_share": 0.266,
+        "census_distance_from_default_center_m": 3772,
+        "dgm_weight": 1.276
+      }
+    },
+    {
+      "id": "census-tract/06071002050",
+      "lat": 34.111813,
+      "lon": -117.552597,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 20.50",
+        "geoid": "06071002050",
+        "census_population": 5584,
+        "census_households": 2061,
+        "census_occupied_housing": 2061,
+        "census_renter_share": 0.7637,
+        "census_distance_from_default_center_m": 3777,
+        "dgm_weight": 1.553
+      }
+    },
+    {
+      "id": "census-tract/06071001305",
+      "lat": 34.084603,
+      "lon": -117.628046,
+      "tags": {
+        "source": "census-acs-2023-tract",
+        "name": "Census Tract 13.05",
+        "geoid": "06071001305",
+        "census_population": 5693,
+        "census_households": 1439,
+        "census_occupied_housing": 1439,
+        "census_renter_share": 0.5789,
+        "census_distance_from_default_center_m": 4029,
+        "dgm_weight": 1.403
+      }
+    }
+  ]
+}
