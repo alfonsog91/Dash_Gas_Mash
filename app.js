@@ -311,6 +311,8 @@ const LOCATION_ZOOM_STEP = 3;
 const MAX_VISIBLE_ACCURACY_RADIUS_METERS = 45;
 const CONTINUOUS_WATCH_TIMEOUT_MS = 30000;
 const LIVE_LOCATION_WATCH_MAXIMUM_AGE_MS = 0;
+const AUTO_FOLLOW_LOCATION_MIN_CENTER_OFFSET_METERS = 6;
+const AUTO_FOLLOW_LOCATION_PAN_DURATION_MS = 450;
 
 const INITIAL_LOCATION_ZOOM = 14;
 const INITIAL_LOCATION_TIMEOUT_MS = 8000;
@@ -364,6 +366,7 @@ let compassDebugToggleButton = null;
 let compassDebugOverlay = null;
 let compassDebugOverlayBody = null;
 let isCompassDebugOverlayVisible = COMPASS_DEBUG_MODE_ENABLED;
+let isFollowingCurrentLocation = isTouchInteractionDevice();
 
 function featureCollection(features = []) {
   return { type: "FeatureCollection", features };
@@ -897,6 +900,7 @@ function setCurrentLocationState(latlng, accuracyMeters, { openPopup = true } = 
   }]));
 
   refreshHeadingConeWithEffectiveHeading(currentLngLat, lastKnownHeadingSpeed);
+  syncMapToCurrentLocation(currentLngLat);
 
   if (openPopup) {
     openPopupAtLngLat(currentLngLat, `You are here<br/><span class="mono">Accuracy ±${Math.round(accuracyRadius)} m</span>`);
@@ -2681,6 +2685,34 @@ function setLocateButtonState(isLoading) {
   elLocateMe.textContent = isLoading ? "..." : "ME";
 }
 
+function setCurrentLocationFollowEnabled(isEnabled) {
+  isFollowingCurrentLocation = Boolean(isEnabled);
+}
+
+function syncMapToCurrentLocation(latlng, { force = false } = {}) {
+  if (!isFollowingCurrentLocation || !latlng || !map) {
+    return;
+  }
+
+  const resolvedLatLng = lngLatToObject(latlng);
+  const mapCenter = map.getCenter();
+  const centerOffsetMeters = haversineMeters(
+    mapCenter.lat,
+    mapCenter.lng,
+    resolvedLatLng.lat,
+    resolvedLatLng.lng
+  );
+
+  if (!force && centerOffsetMeters < AUTO_FOLLOW_LOCATION_MIN_CENTER_OFFSET_METERS) {
+    return;
+  }
+
+  map.easeTo({
+    center: [resolvedLatLng.lng, resolvedLatLng.lat],
+    duration: force ? LOCATION_FLY_DURATION_MS : AUTO_FOLLOW_LOCATION_PAN_DURATION_MS,
+  });
+}
+
 function describeGeolocationError(error) {
   if (!error) return "Unable to determine your location.";
   if (error.code === error.PERMISSION_DENIED) return "Location access was denied. Enable location permission and try again.";
@@ -2768,6 +2800,7 @@ async function locateUser() {
 
   // If continuous tracking already has a known position, just recenter — no new GPS call needed.
   if (lastCurrentLocation) {
+    setCurrentLocationFollowEnabled(true);
     closePanelIfOpen();
     const latlng = { lat: lastCurrentLocation.lat, lng: lastCurrentLocation.lng };
     const targetZoom = clampMapZoom(LOCATION_TARGET_ZOOM);
@@ -2793,6 +2826,7 @@ async function locateUser() {
   try {
     const position = await getCurrentPosition();
     const latlng = { lat: position.coords.latitude, lng: position.coords.longitude };
+    setCurrentLocationFollowEnabled(true);
 
     const animateLocate = shouldAnimateLocate(latlng);
     const targetZoom = clampMapZoom(LOCATION_TARGET_ZOOM);
@@ -3583,6 +3617,15 @@ if (elNavigationVoice) {
 map.on("moveend", checkDataFreshness);
 map.on("zoom", refreshHeadingConeFromState);
 map.on("rotate", refreshHeadingConeFromState);
+map.on("dragstart", () => {
+  setCurrentLocationFollowEnabled(false);
+});
+map.on("rotatestart", () => {
+  setCurrentLocationFollowEnabled(false);
+});
+map.on("pitchstart", () => {
+  setCurrentLocationFollowEnabled(false);
+});
 
 map.on("click", (event) => {
   const featuresAtPoint = map.queryRenderedFeatures(event.point, {
