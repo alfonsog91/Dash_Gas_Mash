@@ -20,6 +20,7 @@ import {
   normalizeHeadingDegrees,
 } from "../heading_cone.js?v=20260403-sensor-presence";
 import {
+  getLocationCourseHeading,
   isHeadingRenderLoopDocumentActive,
   resolveCompassPermissionState,
   resolveEffectiveHeadingState,
@@ -193,6 +194,28 @@ export function runHeadingConeTests() {
   runTest("getDeviceOrientationHeading ignores invalid events", () => {
     assert(getDeviceOrientationHeading({ type: "deviceorientationabsolute", alpha: Number.NaN }) === null, "invalid alpha should be ignored");
     assert(getDeviceOrientationHeading(null) === null, "null events should be ignored");
+  });
+
+  runTest("getLocationCourseHeading derives course from successive fixes", () => {
+    assertApprox(
+      getLocationCourseHeading(
+        { lat: 34.1064, lng: -117.5931 },
+        { lat: 34.1064, lng: -117.5920 }
+      ),
+      90,
+      2,
+      "eastbound movement should yield an easterly course"
+    );
+  });
+
+  runTest("getLocationCourseHeading ignores tiny GPS jitter", () => {
+    assert(
+      getLocationCourseHeading(
+        { lat: 34.1064, lng: -117.5931 },
+        { lat: 34.1064005, lng: -117.5931005 }
+      ) === null,
+      "tiny movement should not produce a fake heading"
+    );
   });
 
   runTest("resolveEffectiveHeadingState prefers fresh sensor heading", () => {

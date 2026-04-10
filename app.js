@@ -50,10 +50,11 @@ import {
   normalizeHeadingDegrees,
 } from "./heading_cone.js?v=20260410-mobile-motion";
 import {
+  getLocationCourseHeading,
   isHeadingRenderLoopDocumentActive,
   resolveCompassPermissionState,
   resolveEffectiveHeadingState,
-} from "./heading_runtime.js";
+} from "./heading_runtime.js?v=20260410-course-heading";
 import {
   fetchCurrentWeatherSignal,
   formatWeatherSourceSummary,
@@ -63,7 +64,7 @@ import {
   formatCensusSourceSummary,
 } from "./census.js?v=20260410-census-data";
 
-const APP_BUILD_ID = "20260410-mobile-motion";
+const APP_BUILD_ID = "20260410-course-heading";
 console.info("[DGM] app build", APP_BUILD_ID);
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
@@ -379,6 +380,7 @@ let isCompassPermissionRequestPending = false;
 let hasInstalledCompassPermissionAutoRequest = false;
 let hasTriggeredCompassPermissionAutoRequest = false;
 let compassUiRoot = null;
+let compassPermissionButton = null;
 let compassDebugToggleButton = null;
 let compassDebugOverlay = null;
 let compassDebugOverlayBody = null;
@@ -1101,6 +1103,10 @@ function getHeadingSourceLabel(source) {
     return "GPS";
   }
 
+  if (source === "course") {
+    return "course";
+  }
+
   if (source === "bearing" || source === "map-bearing") {
     return "bearing";
   }
@@ -1131,14 +1137,30 @@ function updateCompassDebugOverlay(nowMs = getHeadingNowMs(), headingState = get
 }
 
 function syncCompassUi(nowMs = getHeadingNowMs()) {
-  if (!compassUiRoot || !compassDebugToggleButton || !compassDebugOverlay) {
+  if (!compassUiRoot) {
     return;
   }
 
   compassPermissionState = getResolvedCompassPermissionState();
-  compassDebugOverlay.hidden = !isCompassDebugOverlayVisible;
-  compassDebugToggleButton.textContent = isCompassDebugOverlayVisible ? "Hide Debug" : "Show Debug";
-  compassDebugToggleButton.setAttribute("aria-pressed", String(isCompassDebugOverlayVisible));
+  if (compassPermissionButton) {
+    const shouldShowPermissionButton = compassPermissionState === COMPASS_PERMISSION_REQUIRED_STATE
+      || compassPermissionState === COMPASS_PERMISSION_DENIED_STATE
+      || isCompassPermissionRequestPending;
+    compassPermissionButton.hidden = !shouldShowPermissionButton;
+    compassPermissionButton.disabled = isCompassPermissionRequestPending;
+    compassPermissionButton.textContent = isCompassPermissionRequestPending
+      ? "Enabling..."
+      : compassPermissionState === COMPASS_PERMISSION_DENIED_STATE
+        ? "Retry Compass"
+        : "Enable Compass";
+  }
+
+  if (compassDebugToggleButton && compassDebugOverlay) {
+    compassDebugOverlay.hidden = !isCompassDebugOverlayVisible;
+    compassDebugToggleButton.textContent = isCompassDebugOverlayVisible ? "Hide Debug" : "Show Debug";
+    compassDebugToggleButton.setAttribute("aria-pressed", String(isCompassDebugOverlayVisible));
+  }
+
   updateCompassDebugOverlay(nowMs);
 }
 
@@ -1149,7 +1171,12 @@ function setCompassPermissionState(nextState, nowMs = getHeadingNowMs()) {
 }
 
 function ensureCompassUi() {
-  if (typeof document === "undefined" || compassUiRoot || !COMPASS_DEBUG_MODE_ENABLED) {
+  const canRequestCompassPermission = Boolean(getCompassPermissionRequestTarget());
+  if (
+    typeof document === "undefined"
+    || compassUiRoot
+    || (!COMPASS_DEBUG_MODE_ENABLED && !canRequestCompassPermission)
+  ) {
     return;
   }
 
@@ -1166,6 +1193,35 @@ function ensureCompassUi() {
     maxWidth: "min(82vw, 280px)",
     pointerEvents: "none",
   });
+
+  if (canRequestCompassPermission) {
+    compassPermissionButton = document.createElement("button");
+    compassPermissionButton.type = "button";
+    compassPermissionButton.hidden = true;
+    Object.assign(compassPermissionButton.style, {
+      pointerEvents: "auto",
+      border: "0",
+      borderRadius: "999px",
+      padding: "10px 14px",
+      fontSize: "12px",
+      fontWeight: "700",
+      color: "#08111d",
+      background: "rgba(238, 246, 255, 0.92)",
+      boxShadow: "0 8px 20px rgba(8, 17, 29, 0.22)",
+    });
+    compassPermissionButton.addEventListener("click", () => {
+      requestCompassPermissionFromUserGesture().catch((error) => {
+        console.warn("[DGM] Compass permission request failed:", error);
+      });
+    });
+    compassUiRoot.append(compassPermissionButton);
+  }
+
+  if (!COMPASS_DEBUG_MODE_ENABLED) {
+    document.body.append(compassUiRoot);
+    syncCompassUi();
+    return;
+  }
 
   compassDebugToggleButton = document.createElement("button");
   compassDebugToggleButton.type = "button";
@@ -1338,7 +1394,7 @@ function getHeadingRenderLoopSmoothingTimeMs(source) {
     return HEADING_SENSOR_SMOOTHING_TIME_MS;
   }
 
-  if (source === "gps") {
+  if (source === "gps" || source === "course") {
     return HEADING_RENDER_LOOP_GPS_SMOOTHING_TIME_MS;
   }
 
@@ -1515,7 +1571,15 @@ function installRuntimeDebugSurface() {
   };
 }
 
-function syncHeadingFromLocation(latlng, gpsHeading, speed, nowMs = getHeadingNowMs()) {
+function syncHeadingFromLocation(
+  latlng,
+  gpsHeading,
+  speed,
+  {
+    nowMs = getHeadingNowMs(),
+    previousLocation = null,
+  } = {}
+) {
   updateStoredHeadingSpeed(speed);
 
   if (lastSensorHeading !== null && hasFreshHeadingSensorData(lastSensorHeadingAt, nowMs, HEADING_SENSOR_STALE_AFTER_MS)) {
@@ -1523,18 +1587,22 @@ function syncHeadingFromLocation(latlng, gpsHeading, speed, nowMs = getHeadingNo
   }
 
   const normalizedGpsHeading = normalizeHeadingDegrees(gpsHeading);
-  if (normalizedGpsHeading === null) {
+  const derivedCourseHeading = normalizedGpsHeading === null
+    ? getLocationCourseHeading(previousLocation, latlng)
+    : null;
+  const fallbackHeading = normalizedGpsHeading ?? derivedCourseHeading;
+  if (fallbackHeading === null) {
     lastKnownHeading = null;
     lastKnownHeadingSource = null;
     return refreshHeadingConeWithEffectiveHeading(latlng, lastKnownHeadingSpeed, nowMs);
   }
 
-  return applyHeadingUpdate(normalizedGpsHeading, {
+  return applyHeadingUpdate(fallbackHeading, {
     latlng,
     speed,
     nowMs,
     timeConstantMs: HEADING_GPS_FALLBACK_SMOOTHING_TIME_MS,
-    source: "gps",
+    source: normalizedGpsHeading !== null ? "gps" : "course",
   });
 }
 
@@ -1736,9 +1804,10 @@ function startContinuousLocationWatch() {
 
   activeContinuousWatchId = navigator.geolocation.watchPosition(
     (position) => {
+      const previousLocation = lastCurrentLocation ? { ...lastCurrentLocation } : null;
       const latlng = { lat: position.coords.latitude, lng: position.coords.longitude };
       setCurrentLocationState(latlng, position.coords.accuracy, { openPopup: false });
-      syncHeadingFromLocation(latlng, position.coords.heading, position.coords.speed);
+      syncHeadingFromLocation(latlng, position.coords.heading, position.coords.speed, { previousLocation });
     },
     (error) => {
       console.warn("[DGM] Continuous location watch error:", error.code, error.message);
@@ -1805,11 +1874,13 @@ function ensureNavigationWatch() {
 
   activeNavigationWatchId = navigator.geolocation.watchPosition(
     (position) => {
+      const previousLocation = lastCurrentLocation ? { ...lastCurrentLocation } : null;
       const origin = setCurrentLocationState(
         { lat: position.coords.latitude, lng: position.coords.longitude },
         position.coords.accuracy,
         { openPopup: false }
       );
+      syncHeadingFromLocation(origin, position.coords.heading, position.coords.speed, { previousLocation });
 
       refreshActiveRouteFromOrigin(origin, { fitToRoute: false }).catch((error) => {
         if (error?.name === "AbortError") return;
@@ -2907,6 +2978,7 @@ async function locateUser() {
   try {
     const position = await getCurrentPosition();
     const latlng = { lat: position.coords.latitude, lng: position.coords.longitude };
+    const previousLocation = lastCurrentLocation ? { ...lastCurrentLocation } : null;
     setCurrentLocationFollowEnabled(true);
 
     const animateLocate = shouldAnimateLocate(latlng);
@@ -2914,7 +2986,7 @@ async function locateUser() {
 
     closePanelIfOpen();
     setCurrentLocationState(latlng, position.coords.accuracy, { openPopup: false });
-    syncHeadingFromLocation(latlng, position.coords.heading, position.coords.speed);
+    syncHeadingFromLocation(latlng, position.coords.heading, position.coords.speed, { previousLocation });
 
     if (animateLocate) {
       map.flyTo({ center: lngLatToArray(latlng), zoom: targetZoom, duration: LOCATION_FLY_DURATION_MS });

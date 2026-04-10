@@ -3,6 +3,41 @@ import {
   normalizeHeadingDegrees,
 } from "./heading_cone.js";
 
+function getLocationCourseHeading(previousLocation, nextLocation, { minDistanceMeters = 1.5 } = {}) {
+  const previousLat = Number(previousLocation?.lat);
+  const previousLng = Number(previousLocation?.lng ?? previousLocation?.lon);
+  const nextLat = Number(nextLocation?.lat);
+  const nextLng = Number(nextLocation?.lng ?? nextLocation?.lon);
+
+  if (
+    !Number.isFinite(previousLat)
+    || !Number.isFinite(previousLng)
+    || !Number.isFinite(nextLat)
+    || !Number.isFinite(nextLng)
+  ) {
+    return null;
+  }
+
+  const earthRadiusMeters = 6371000;
+  const previousLatRad = (previousLat * Math.PI) / 180;
+  const nextLatRad = (nextLat * Math.PI) / 180;
+  const deltaLatRad = ((nextLat - previousLat) * Math.PI) / 180;
+  const deltaLngRad = ((nextLng - previousLng) * Math.PI) / 180;
+  const haversineA = Math.sin(deltaLatRad / 2) ** 2
+    + Math.cos(previousLatRad) * Math.cos(nextLatRad) * Math.sin(deltaLngRad / 2) ** 2;
+  const haversineC = 2 * Math.atan2(Math.sqrt(haversineA), Math.sqrt(1 - haversineA));
+  const distanceMeters = earthRadiusMeters * haversineC;
+
+  if (!(distanceMeters >= minDistanceMeters)) {
+    return null;
+  }
+
+  const y = Math.sin(deltaLngRad) * Math.cos(nextLatRad);
+  const x = Math.cos(previousLatRad) * Math.sin(nextLatRad)
+    - Math.sin(previousLatRad) * Math.cos(nextLatRad) * Math.cos(deltaLngRad);
+  return normalizeHeadingDegrees((Math.atan2(y, x) * 180) / Math.PI);
+}
+
 function resolveCompassPermissionState({
   hasDeviceOrientationEvent,
   canRequestPermission,
@@ -84,6 +119,7 @@ function isHeadingRenderLoopDocumentActive(documentLike) {
 }
 
 export {
+  getLocationCourseHeading,
   isHeadingRenderLoopDocumentActive,
   resolveCompassPermissionState,
   resolveEffectiveHeadingState,
