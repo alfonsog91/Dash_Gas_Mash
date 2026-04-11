@@ -251,6 +251,10 @@ let navigationCameraModeAutoArrival = false;
 let lastNavigationCameraSyncAt = 0;
 let navigationVoiceEnabled = true;
 let lastSpokenInstructionKey = "";
+let lastNavigationStatusMessage = "";
+let lastNavigationStatusTone = "info";
+let isRoutePopupVisible = false;
+let shouldOpenRoutePopupOnNextRender = false;
 
 const restaurantById = new Map();
 const parkingById = new Map();
@@ -323,23 +327,6 @@ const elSearchButton = document.getElementById("searchButton");
 const elSearchResults = document.getElementById("searchResults");
 const elStreetMode = document.getElementById("streetMode");
 const elSatelliteMode = document.getElementById("satelliteMode");
-const elNavigationCard = document.getElementById("navigationCard");
-const elNavigationBanner = document.getElementById("navigationBanner");
-const elNavigationBannerGlyph = document.getElementById("navigationBannerGlyph");
-const elNavigationBannerInstruction = document.getElementById("navigationBannerInstruction");
-const elNavigationBannerMeta = document.getElementById("navigationBannerMeta");
-const elNavigationTitle = document.getElementById("navigationTitle");
-const elNavigationMeta = document.getElementById("navigationMeta");
-const elNavigationModePills = document.getElementById("navigationModePills");
-const elNavigationMetricGrid = document.getElementById("navigationMetricGrid");
-const elNavigationIntel = document.getElementById("navigationIntel");
-const elNavigationStatus = document.getElementById("navigationStatus");
-const elNavigationSteps = document.getElementById("navigationSteps");
-const elNavigationRecenter = document.getElementById("navigationRecenter");
-const elNavigationArrival = document.getElementById("navigationArrival");
-const elNavigationOverview = document.getElementById("navigationOverview");
-const elNavigationClear = document.getElementById("navigationClear");
-const elNavigationVoice = document.getElementById("navigationVoice");
 
 const LOCATION_TARGET_ZOOM = 16;
 const LOCATION_ANIMATION_MIN_START_ZOOM = 14;
@@ -519,6 +506,53 @@ function openPopupAtLngLat(lngLat, html, popupOptions = {}) {
 
   const popupElement = popup.getElement();
   const popupActionHandler = (event) => {
+    const routeModeButton = event.target.closest("[data-route-camera-mode]");
+    if (routeModeButton && popupElement.contains(routeModeButton)) {
+      event.preventDefault();
+      if (!activeRoute) return;
+
+      const nextMode = String(routeModeButton.dataset.routeCameraMode || "driver");
+      if (nextMode === "overview") {
+        showActiveRouteOverview();
+      } else if (nextMode === "arrival") {
+        showActiveRouteArrivalView();
+      } else {
+        focusActiveNavigationCamera({ force: true, mode: "driver" });
+      }
+      return;
+    }
+
+    const routeVoiceToggle = event.target.closest("[data-route-voice-toggle]");
+    if (routeVoiceToggle && popupElement.contains(routeVoiceToggle)) {
+      event.preventDefault();
+      setNavigationVoiceEnabled(!navigationVoiceEnabled);
+      if (activeRoute) {
+        syncRoutePopup(activeRoute, { forceOpen: isRoutePopupVisible });
+      }
+      return;
+    }
+
+    const routeClearButton = event.target.closest("[data-route-clear]");
+    if (routeClearButton && popupElement.contains(routeClearButton)) {
+      event.preventDefault();
+      clearInAppNavigation();
+      return;
+    }
+
+    const restaurantButton = event.target.closest("[data-place-sheet-restaurant-id]");
+    if (restaurantButton && popupElement.contains(restaurantButton)) {
+      event.preventDefault();
+      const restaurant = restaurantById.get(restaurantButton.dataset.placeSheetRestaurantId);
+      if (restaurant) {
+        openPopupAtLngLat(
+          { lat: restaurant.lat, lng: restaurant.lon },
+          renderRestaurantPopupHtml(restaurant),
+          { closeButton: true }
+        );
+      }
+      return;
+    }
+
     const routeButton = event.target.closest("[data-route-lat][data-route-lng]");
     if (!routeButton || !popupElement.contains(routeButton)) return;
 
@@ -531,6 +565,14 @@ function openPopupAtLngLat(lngLat, html, popupOptions = {}) {
     }).catch((error) => {
       console.error(error);
       setNavigationStatus(error?.message ?? String(error), "error");
+      openPopupAtLngLat(
+        {
+          lat: Number(routeButton.dataset.routeLat),
+          lng: Number(routeButton.dataset.routeLng),
+        },
+        `<div class="popup-sheet popup-friendly"><div class="popup-header"><div class="popup-kicker">Route</div><div class="popup-title">Could not start route</div><div class="popup-subtitle">${escapeHtml(error?.message ?? String(error))}</div></div></div>`,
+        { closeButton: true }
+      );
     });
   };
 
@@ -538,6 +580,10 @@ function openPopupAtLngLat(lngLat, html, popupOptions = {}) {
 
   popup.on("close", () => {
     popupElement.removeEventListener("click", popupActionHandler);
+    if (popup.__dgmPopupType === "route") {
+      isRoutePopupVisible = false;
+      shouldOpenRoutePopupOnNextRender = false;
+    }
     if (activePopup === popup) {
       activePopup = null;
     }
@@ -1099,6 +1145,95 @@ function renderPopupActions(actions) {
   return content ? `<div class="popup-actions popup-actions--wrap">${content}</div>` : "";
 }
 
+function renderPopupControlButton(label, attributes, className = "") {
+  const renderedAttributes = Object.entries(attributes || {})
+    .filter(([, value]) => value !== undefined && value !== null && value !== false)
+    .map(([name, value]) => `${name}="${escapeHtml(String(value))}"`)
+    .join(" ");
+  return `<button class="popup-action${className ? ` ${className}` : ""}" type="button" ${renderedAttributes}>${escapeHtml(label)}</button>`;
+}
+
+function renderRoutePopupHtml(route) {
+  if (!route?.destination) {
+    return "";
+  }
+
+  const snapshot = route.navigationSnapshot || buildNavigationSnapshot(route);
+  const primaryStep = snapshot.primaryStep;
+  const destinationScore = snapshot.destinationScore;
+  const nextInstruction = primaryStep ? buildRouteStepInstruction(primaryStep) : "Route ready";
+  const nextTurnMeta = primaryStep
+    ? `${formatRouteDistance(primaryStep.distance)} to next turn`
+    : `${formatRouteDistance(route.distanceMeters)} remaining`;
+  const routeStatusText = lastNavigationStatusMessage
+    ? `${lastNavigationStatusTone === "error" ? "Issue: " : ""}${lastNavigationStatusMessage}`
+    : "";
+  const stepFacts = route.steps.slice(0, 3).map((step, index) => ({
+    label: index === 0 ? "Now" : `${index + 1}`,
+    value: `${buildRouteStepInstruction(step)} · ${formatRouteDistance(step.distance)}`,
+  }));
+
+  return `
+<div class="popup-sheet popup-friendly">
+  <div class="popup-header">
+    <div class="popup-kicker">Route</div>
+    <div class="popup-title">${escapeHtml(route.destination.title || "Destination")}</div>
+    <div class="popup-subtitle">${escapeHtml(nextInstruction)}</div>
+  </div>
+
+  ${renderPopupMetricGrid([
+    renderPopupMetricCard("Remaining", formatRouteDistance(route.distanceMeters), `${formatRouteDuration(route.durationSeconds)} left`),
+    renderPopupMetricCard("Arrive by", formatArrivalClock(route.durationSeconds), nextTurnMeta),
+    renderPopupMetricCard("Camera", getNavigationCameraModeLabel(), navigationCameraMode === "overview" ? "Full route in view" : "Popup-first navigation"),
+    destinationScore
+      ? renderPopupMetricCard("Arrival field", formatProbabilityRange(getProbabilityLow(destinationScore), getProbabilityHigh(destinationScore)), describeSignal(getProbabilityMid(destinationScore)))
+      : renderPopupMetricCard("Arrival field", "Route only", "Refresh the field to bring back DGM scoring"),
+  ])}
+
+  ${renderPopupActions([
+    renderPopupControlButton("Drive", { "data-route-camera-mode": "driver" }, navigationCameraMode === "driver" ? "popup-action--primary" : ""),
+    renderPopupControlButton("Arrival", { "data-route-camera-mode": "arrival" }, navigationCameraMode === "arrival" ? "popup-action--primary" : ""),
+    renderPopupControlButton("Overview", { "data-route-camera-mode": "overview" }, navigationCameraMode === "overview" ? "popup-action--primary" : ""),
+    renderPopupControlButton(navigationVoiceEnabled ? "Voice on" : "Voice off", { "data-route-voice-toggle": "true" }),
+    renderPopupControlButton("Clear route", { "data-route-clear": "true" }, "popup-action--secondary"),
+  ])}
+
+  <section class="popup-section">
+    <div class="popup-section-head">
+      <div class="popup-section-title">Route read</div>
+      <div class="popup-section-meta">${escapeHtml(getNavigationCameraModeLabel())}</div>
+    </div>
+    ${routeStatusText ? `<div class="popup-detail">${escapeHtml(routeStatusText)}</div>` : ""}
+    <div class="popup-detail">${escapeHtml(snapshot.arrivalSummary || "Route is active.")}</div>
+    ${route.rerouteDelta ? `<div class="popup-detail">${escapeHtml(`${route.rerouteDelta.headline} · ${route.rerouteDelta.detail}`)}</div>` : ""}
+    ${renderPopupFactRows(stepFacts)}
+  </section>
+</div>`;
+}
+
+function syncRoutePopup(route, { forceOpen = false } = {}) {
+  if (!route?.destination) {
+    return;
+  }
+
+  const popupHtml = renderRoutePopupHtml(route);
+  if (activePopup?.__dgmPopupType === "route") {
+    activePopup
+      .setLngLat(lngLatToArray(route.destination))
+      .setHTML(popupHtml);
+    isRoutePopupVisible = true;
+    return;
+  }
+
+  if (!forceOpen) {
+    return;
+  }
+
+  const popup = openPopupAtLngLat(route.destination, popupHtml, { closeButton: true });
+  popup.__dgmPopupType = "route";
+  isRoutePopupVisible = true;
+}
+
 function renderPopupChips(items) {
   const chips = items.filter(Boolean).slice(0, 8);
   return chips.length
@@ -1281,17 +1416,9 @@ function stopNavigationSpeech() {
 }
 
 function updateNavigationVoiceButton() {
-  if (!elNavigationVoice) return;
-  if (!("speechSynthesis" in window)) {
-    elNavigationVoice.textContent = "Voice unavailable";
-    elNavigationVoice.disabled = true;
-    elNavigationVoice.setAttribute("aria-pressed", "false");
-    return;
+  if (activePopup?.__dgmPopupType === "route" && activeRoute) {
+    syncRoutePopup(activeRoute);
   }
-
-  elNavigationVoice.disabled = false;
-  elNavigationVoice.textContent = navigationVoiceEnabled ? "Voice on" : "Voice off";
-  elNavigationVoice.setAttribute("aria-pressed", String(navigationVoiceEnabled));
 }
 
 function formatRouteDistance(distanceMeters) {
@@ -1341,19 +1468,13 @@ function clearRouteOverlay() {
   setSourceData(SOURCE_ROUTE, featureCollection());
 }
 
-function setNavigationCardVisible(isVisible) {
-  if (!elNavigationCard) return;
-  elNavigationCard.hidden = !isVisible;
-  elNavigationCard.classList.toggle("is-active", Boolean(isVisible));
-  updateNavigationCameraUi();
-}
-
 function setNavigationStatus(message, tone = "info") {
-  if (!elNavigationStatus) return;
-  const text = String(message || "").trim();
-  elNavigationStatus.textContent = text;
-  elNavigationStatus.dataset.tone = tone;
-  elNavigationStatus.hidden = !text;
+  lastNavigationStatusMessage = String(message || "").trim();
+  lastNavigationStatusTone = lastNavigationStatusMessage ? tone : "info";
+
+  if (activePopup?.__dgmPopupType === "route" && activeRoute) {
+    syncRoutePopup(activeRoute);
+  }
 }
 
 function findRestaurantByDestination(destination, maxDistanceMeters = 40) {
@@ -1420,28 +1541,12 @@ function getNavigationCameraModeLabel() {
   return "Browse";
 }
 
-function updateNavigationCameraUi() {
-  if (elNavigationCard) {
-    elNavigationCard.dataset.mode = activeRoute ? navigationCameraMode : "browse";
-  }
-  if (elNavigationRecenter) {
-    elNavigationRecenter.setAttribute("aria-pressed", String(activeRoute && navigationCameraMode === "driver"));
-  }
-  if (elNavigationArrival) {
-    elNavigationArrival.setAttribute("aria-pressed", String(activeRoute && navigationCameraMode === "arrival"));
-  }
-  if (elNavigationOverview) {
-    elNavigationOverview.setAttribute("aria-pressed", String(activeRoute && navigationCameraMode === "overview"));
-  }
-}
-
 function setNavigationCameraMode(mode, { auto = false } = {}) {
   navigationCameraMode = mode;
   navigationCameraModeAutoArrival = Boolean(auto && mode === "arrival");
   if (mode !== "arrival") {
     navigationCameraModeAutoArrival = false;
   }
-  updateNavigationCameraUi();
 }
 
 function isNavigationFollowCameraActive() {
@@ -1595,33 +1700,6 @@ function resetNavigationCamera() {
   }
 }
 
-function renderNavigationModePills(route, snapshot) {
-  if (!elNavigationModePills) {
-    return;
-  }
-
-  const destinationState = snapshot?.destinationState || null;
-  const pills = [
-    { label: getNavigationCameraModeLabel(), active: activeRoute && (navigationCameraMode === "driver" || navigationCameraMode === "arrival") },
-    { label: destinationState?.score ? "Field aware" : "Route only", active: Boolean(destinationState?.score) },
-    { label: snapshot?.arrivalReadiness?.headline || "Cruise", active: Boolean(snapshot?.arrivalReadiness?.isFinalApproach) },
-    { label: navigationVoiceEnabled ? "Voice on" : "Voice muted", active: navigationVoiceEnabled },
-  ];
-
-  elNavigationModePills.innerHTML = pills.map((pill) => `
-    <span class="navigation-mode-pill${pill.active ? ' is-active' : ''}">${escapeHtml(pill.label)}</span>
-  `).join("");
-}
-
-function renderNavigationIntelCard(label, value, detail) {
-  if (!value) return "";
-  return `
-    <article class="navigation-intel-card">
-      <div class="navigation-intel-label">${escapeHtml(label)}</div>
-      <div class="navigation-intel-value">${escapeHtml(value)}</div>
-      <div class="navigation-intel-detail">${escapeHtml(detail)}</div>
-    </article>`;
-}
 
 function getPrimaryRouteStep(route) {
   if (!route?.steps?.length) return null;
@@ -1827,84 +1905,6 @@ function getTurnDeltaDegrees(bearingBefore, bearingAfter) {
   return ((bearingAfter - bearingBefore + 540) % 360) - 180;
 }
 
-function getNavigationGlyphRotationDegrees(modifier) {
-  switch (String(modifier || "straight").toLowerCase().replace(/_/g, " ")) {
-    case "uturn":
-      return 180;
-    case "sharp right":
-      return 58;
-    case "right":
-      return 90;
-    case "slight right":
-      return 34;
-    case "slight left":
-      return -34;
-    case "left":
-      return -90;
-    case "sharp left":
-      return -58;
-    default:
-      return 0;
-  }
-}
-
-function renderNavigationManeuverGlyph(step, { compact = false } = {}) {
-  const maneuver = step?.maneuver || {};
-  const type = String(maneuver.type || "continue").toLowerCase().replace(/_/g, " ");
-  const modifier = String(maneuver.modifier || "straight").toLowerCase().replace(/_/g, " ");
-  const rotation = getNavigationGlyphRotationDegrees(modifier);
-  const exitNumber = Number.isFinite(Number(maneuver.exit)) ? Math.round(Number(maneuver.exit)) : null;
-  const variantClass = compact ? "navigation-glyph--compact" : "navigation-glyph--banner";
-
-  let svgMarkup = `
-    <svg viewBox="0 0 48 48" class="navigation-glyph-svg" aria-hidden="true">
-      <circle cx="24" cy="24" r="20" class="navigation-glyph-ring"></circle>
-      <g transform="rotate(${rotation} 24 24)">
-        <path d="M24 35V13" class="navigation-glyph-stroke"></path>
-        <path d="M15 22L24 13L33 22" class="navigation-glyph-stroke"></path>
-      </g>
-    </svg>`;
-
-  if (type === "depart") {
-    svgMarkup = `
-      <svg viewBox="0 0 48 48" class="navigation-glyph-svg" aria-hidden="true">
-        <circle cx="24" cy="24" r="20" class="navigation-glyph-ring"></circle>
-        <circle cx="24" cy="33" r="3.4" class="navigation-glyph-fill"></circle>
-        <g transform="rotate(${rotation} 24 24)">
-          <path d="M24 32V13" class="navigation-glyph-stroke"></path>
-          <path d="M15 22L24 13L33 22" class="navigation-glyph-stroke"></path>
-        </g>
-      </svg>`;
-  } else if (type === "arrive") {
-    svgMarkup = `
-      <svg viewBox="0 0 48 48" class="navigation-glyph-svg" aria-hidden="true">
-        <circle cx="24" cy="24" r="20" class="navigation-glyph-ring"></circle>
-        <circle cx="24" cy="24" r="8.5" class="navigation-glyph-stroke navigation-glyph-stroke--thin"></circle>
-        <circle cx="24" cy="24" r="3.5" class="navigation-glyph-fill"></circle>
-      </svg>`;
-  } else if (type === "roundabout" || type === "rotary" || type === "exit roundabout" || type === "exit rotary") {
-    svgMarkup = `
-      <svg viewBox="0 0 48 48" class="navigation-glyph-svg" aria-hidden="true">
-        <circle cx="24" cy="24" r="20" class="navigation-glyph-ring"></circle>
-        <path d="M29 14A10 10 0 1 0 34 27" class="navigation-glyph-stroke"></path>
-        <path d="M29 11L34 14L31 19" class="navigation-glyph-stroke"></path>
-        ${exitNumber ? `<text x="24" y="29" text-anchor="middle" class="navigation-glyph-exit">${exitNumber}</text>` : ""}
-      </svg>`;
-  } else if (type === "fork" || type === "merge" || type === "on ramp" || type === "off ramp" || type === "ramp") {
-    svgMarkup = `
-      <svg viewBox="0 0 48 48" class="navigation-glyph-svg" aria-hidden="true">
-        <circle cx="24" cy="24" r="20" class="navigation-glyph-ring"></circle>
-        <g transform="rotate(${rotation} 24 24)">
-          <path d="M24 35V23" class="navigation-glyph-stroke"></path>
-          <path d="M24 23L16 13" class="navigation-glyph-stroke"></path>
-          <path d="M24 23L32 13" class="navigation-glyph-stroke"></path>
-          <path d="M32 13V25" class="navigation-glyph-stroke navigation-glyph-stroke--thin"></path>
-        </g>
-      </svg>`;
-  }
-
-  return `<span class="navigation-glyph ${variantClass}">${svgMarkup}</span>`;
-}
 
 function buildRouteStepInstruction(step) {
   const maneuver = step?.maneuver || {};
@@ -2077,13 +2077,6 @@ function buildRouteApproachProfile(route, destinationState, { pickupFriction, st
   };
 }
 
-function getNavigationReadinessTone(score) {
-  if (score >= 0.72) return "good";
-  if (score >= 0.52) return "steady";
-  if (score >= 0.34) return "watch";
-  return "risk";
-}
-
 function buildNavigationArrivalReadiness({
   route,
   destinationScore,
@@ -2156,29 +2149,6 @@ function buildNavigationArrivalReadiness({
   };
 }
 
-function renderNavigationReadinessStrip(readiness) {
-  if (!readiness?.items?.length) {
-    return "";
-  }
-
-  return `
-    <section class="navigation-readiness" aria-label="Arrival readiness">
-      <div class="navigation-readiness-head">
-        <div class="navigation-readiness-title">${escapeHtml(readiness.headline)}</div>
-        <div class="navigation-readiness-detail">${escapeHtml(readiness.detail)}</div>
-      </div>
-      <div class="navigation-readiness-strip">
-        ${readiness.items.map((item) => `
-          <article class="navigation-readiness-chip" data-tone="${escapeHtml(getNavigationReadinessTone(item.score))}">
-            <div class="navigation-readiness-label">${escapeHtml(item.label)}</div>
-            <div class="navigation-readiness-value">${escapeHtml(item.value)}</div>
-            <div class="navigation-readiness-meta">${escapeHtml(item.detail)}</div>
-            <div class="navigation-readiness-bar"><span style="width:${Math.round(clamp01(item.score) * 100)}%"></span></div>
-          </article>
-        `).join("")}
-      </div>
-    </section>`;
-}
 
 function getParkingCandidateIdentity(candidate) {
   if (!candidate) {
@@ -2343,134 +2313,28 @@ function setNavigationVoiceEnabled(isEnabled) {
 
   if (!navigationVoiceEnabled) {
     stopNavigationSpeech();
-    return;
+  } else if (activeRoute) {
+    speakNavigationInstruction(activeRoute, { force: true });
   }
 
-  if (activeRoute) {
-    speakNavigationInstruction(activeRoute, { force: true });
+  if (activePopup?.__dgmPopupType === "route" && activeRoute) {
+    syncRoutePopup(activeRoute);
   }
 }
 
 function renderNavigationCard(route) {
-  if (!elNavigationCard || !elNavigationTitle || !elNavigationMeta || !elNavigationSteps) return;
+  if (!route) return;
 
   syncNavigationCameraModeForRoute(route);
 
   const snapshot = route.navigationSnapshot || buildNavigationSnapshot(route);
-  const {
-    primaryStep,
-    destinationState,
-    destinationScore,
-    pickupFriction,
-    competition,
-    stagingCandidate,
-    microCandidate,
-    approachProfile,
-    arrivalReadiness,
-    arrivalSummary,
-  } = snapshot;
-
   route.navigationSnapshot = snapshot;
-  route.destinationState = destinationState;
-  renderNavigationModePills(route, snapshot);
-
-  if (elNavigationBanner) {
-    elNavigationBanner.hidden = false;
-  }
-  if (elNavigationBannerGlyph) {
-    elNavigationBannerGlyph.innerHTML = primaryStep
-      ? renderNavigationManeuverGlyph(primaryStep)
-      : renderNavigationManeuverGlyph({ maneuver: { type: "depart", modifier: "straight" } });
-  }
-  if (elNavigationBannerInstruction) {
-    elNavigationBannerInstruction.textContent = primaryStep
-      ? buildRouteStepInstruction(primaryStep)
-      : "Route ready";
-  }
-  if (elNavigationBannerMeta) {
-    elNavigationBannerMeta.textContent = primaryStep
-      ? `${formatRouteDistance(primaryStep.distance)} to next turn · arrive ${formatArrivalClock(route.durationSeconds)}`
-      : `${formatRouteDistance(route.distanceMeters)} remaining · arrive ${formatArrivalClock(route.durationSeconds)}`;
-  }
-
-  elNavigationTitle.textContent = route.destination.title || "Route";
-  elNavigationMeta.textContent = `${formatRouteDistance(route.distanceMeters)} · ${formatRouteDuration(route.durationSeconds)} · arrive ${formatArrivalClock(route.durationSeconds)}`;
-
-  if (elNavigationMetricGrid) {
-    elNavigationMetricGrid.innerHTML = renderPopupMetricGrid([
-      renderPopupMetricCard("Remaining", formatRouteDistance(route.distanceMeters), `${formatRouteDuration(route.durationSeconds)} left`),
-      renderPopupMetricCard("Arrive by", formatArrivalClock(route.durationSeconds), "Using open OSRM road geometry from your live position"),
-      renderPopupMetricCard(
-        "Camera",
-        getNavigationCameraModeLabel(),
-        navigationCameraMode === "arrival"
-          ? "Arrival camera is tightening the final approach and curbside read."
-          : navigationCameraMode === "driver"
-            ? "Heading-follow rotation is active only while this route is live."
-            : navigationCameraMode === "overview"
-              ? "Full-route framing is active. Tap Drive to resume heading-follow."
-              : "Manual camera is active. Tap Drive to resume heading-follow."
-      ),
-      destinationScore
-        ? renderPopupMetricCard("Arrival field", formatProbabilityRange(getProbabilityLow(destinationScore), getProbabilityHigh(destinationScore)), describeSignal(getProbabilityMid(destinationScore)))
-        : renderPopupMetricCard("Arrival field", "Route only", "Load or refresh the field to unlock destination intelligence."),
-    ]);
-  }
-
-  if (elNavigationIntel) {
-    elNavigationIntel.innerHTML = `
-      <div class="navigation-intel-banner">${escapeHtml(arrivalSummary)}</div>
-      ${renderNavigationReadinessStrip(arrivalReadiness)}
-      ${route.rerouteDelta
-        ? `<div class="navigation-reroute-banner" data-tone="${escapeHtml(route.rerouteDelta.tone || "steady")}"><strong>${escapeHtml(route.rerouteDelta.headline)}</strong><span>${escapeHtml(route.rerouteDelta.detail)}</span></div>`
-        : ""}
-      <div class="navigation-intel-grid">
-        ${pickupFriction
-          ? renderNavigationIntelCard("Pickup friction", pickupFriction.label, `${pickupFriction.value} · ${pickupFriction.detail}`)
-          : renderNavigationIntelCard("Pickup friction", "Route only", "Field refresh is needed before DGM can grade arrival friction.")}
-        ${competition
-          ? renderNavigationIntelCard("Competition", competition.label, `${competition.value} · ${competition.detail}`)
-          : renderNavigationIntelCard("Competition", "Route only", "Competition pressure becomes available once the field is loaded.")}
-        ${approachProfile
-          ? renderNavigationIntelCard("Curbside", approachProfile.curbsideLabel, `${Math.round(approachProfile.curbsideConfidence * 100)}/100 · ${approachProfile.curbsideDetail}`)
-          : renderNavigationIntelCard("Curbside", "Unmapped", "Arrival-side confidence becomes available once the route finish is resolved.")}
-        ${approachProfile?.finalTurn
-          ? renderNavigationIntelCard("Final turn", approachProfile.finalTurn.label, `${approachProfile.approachDirection}bound finish · ${approachProfile.finalTurn.detail}`)
-          : renderNavigationIntelCard("Final turn", "Unmapped", "Turn complexity becomes available once OSRM returns the final intersection.")}
-        ${stagingCandidate
-          ? renderNavigationIntelCard(
-            "Best staging hold",
-            getParkingCandidateLabel(stagingCandidate.candidate),
-            `${stagingCandidate.distanceMeters} m ${stagingCandidate.direction} · ${formatProbabilityDelta(stagingCandidate.probabilityDelta)}`
-          )
-          : renderNavigationIntelCard("Best staging hold", "Not visible", "No 0.2–0.5 mile staging improvement is currently visible near the destination.")}
-        ${microCandidate
-          ? renderNavigationIntelCard(
-            "Micro-corridor",
-            `${microCandidate.distanceMeters} m ${microCandidate.direction}`,
-            `${getParkingCandidateLabel(microCandidate.candidate)} · suitability ${Math.round(microCandidate.suitability * 100)}/100`
-          )
-          : renderNavigationIntelCard("Micro-corridor", "No short shift", "DGM does not see a nearby short move that materially improves arrival readiness right now.")}
-      </div>`;
-  }
-
-  elNavigationSteps.innerHTML = route.steps.length
-    ? route.steps.map((step, index) => `
-      <li class="navigation-step">
-        <span class="navigation-step-glyph">${renderNavigationManeuverGlyph(step, { compact: true })}</span>
-        <div class="navigation-step-body">
-          <div class="navigation-step-text">${escapeHtml(buildRouteStepInstruction(step))}</div>
-          <div class="navigation-step-meta">${escapeHtml(`${index + 1}. ${formatRouteDistance(step.distance)}`)}</div>
-        </div>
-      </li>
-    `).join("")
-    : `<li class="navigation-step navigation-step--empty"><div class="navigation-step-body"><div class="navigation-step-text">Route ready.</div></div></li>`;
-
-  setNavigationCardVisible(true);
-  updateNavigationCameraUi();
+  route.destinationState = snapshot.destinationState;
+  syncRoutePopup(route, { forceOpen: shouldOpenRoutePopupOnNextRender });
+  shouldOpenRoutePopupOnNextRender = false;
   if (navigationCameraMode === "free" && activeRoute) {
     setNavigationStatus("Driver camera paused. Tap Drive to resume heading-follow.", "info");
-  } else {
+  } else if (lastNavigationStatusTone !== "error") {
     setNavigationStatus("", "info");
   }
   updateNavigationVoiceButton();
@@ -2843,41 +2707,6 @@ function getHeadingSourceLabel(source) {
   }
 
   if (source === "bearing" || source === "map-bearing") {
-    return "bearing";
-  }
-
-  return "none";
-}
-
-function updateCompassDebugOverlay(nowMs = getHeadingNowMs(), headingState = getHeadingState(nowMs)) {
-  if (!compassDebugOverlayBody) {
-    return;
-  }
-
-  const permissionState = getResolvedCompassPermissionState();
-  const accuracyText = typeof lastSensorHeadingAccuracy === "number" && Number.isFinite(lastSensorHeadingAccuracy)
-    ? ` (${lastSensorHeadingAccuracy.toFixed(1)}° acc)`
-    : "";
-  const eventAgeText = typeof lastSensorEventAt === "number" && Number.isFinite(lastSensorEventAt)
-    ? ` (${Math.round(Math.max(0, nowMs - lastSensorEventAt))} ms ago)`
-    : "";
-
-  compassDebugOverlayBody.textContent = [
-    `permission: ${permissionState}`,
-    `last event: ${formatCompassTimestamp(lastSensorEventWallClockMs)}${eventAgeText}`,
-    `raw heading: ${formatCompassHeadingValue(lastRawSensorHeading)}${accuracyText}`,
-    `source: ${getHeadingSourceLabel(headingState?.source)}`,
-    `sensor kind: ${lastSensorHeadingKind || "none"}`,
-  ].join("\n");
-}
-
-function syncCompassUi(nowMs = getHeadingNowMs()) {
-  if (!compassUiRoot) {
-    return;
-  }
-
-  compassPermissionState = getResolvedCompassPermissionState();
-  if (compassPermissionButton) {
     const shouldShowPermissionButton = compassPermissionState === COMPASS_PERMISSION_REQUIRED_STATE
       || compassPermissionState === COMPASS_PERMISSION_DENIED_STATE
       || isCompassPermissionRequestPending;
@@ -3676,12 +3505,7 @@ async function startInAppNavigation(destination, options = {}) {
   closePlaceSheet();
   closeActivePopup();
   setNavigationCameraMode("driver");
-  setNavigationCardVisible(true);
-  if (elNavigationTitle) elNavigationTitle.textContent = resolvedDestination.title;
-  if (elNavigationMeta) elNavigationMeta.textContent = "";
-  if (elNavigationMetricGrid) elNavigationMetricGrid.innerHTML = "";
-  if (elNavigationIntel) elNavigationIntel.innerHTML = "";
-  if (elNavigationSteps) elNavigationSteps.innerHTML = "";
+  shouldOpenRoutePopupOnNextRender = true;
   setNavigationStatus(lastCurrentLocation ? "Calculating route…" : "Locating you…", "info");
 
   const origin = await ensureNavigationOrigin();
@@ -3737,20 +3561,14 @@ function clearInAppNavigation() {
   lastRouteRefreshAt = 0;
   lastNavigationCameraSyncAt = 0;
   lastSpokenInstructionKey = "";
+  shouldOpenRoutePopupOnNextRender = false;
+  isRoutePopupVisible = false;
   clearRouteOverlay();
+  if (activePopup?.__dgmPopupType === "route") {
+    closeActivePopup();
+  }
   setNavigationStatus("", "info");
-  if (elNavigationBanner) elNavigationBanner.hidden = true;
-  if (elNavigationBannerGlyph) elNavigationBannerGlyph.innerHTML = "";
-  if (elNavigationBannerInstruction) elNavigationBannerInstruction.textContent = "";
-  if (elNavigationBannerMeta) elNavigationBannerMeta.textContent = "";
-  if (elNavigationModePills) elNavigationModePills.innerHTML = "";
-  if (elNavigationMetricGrid) elNavigationMetricGrid.innerHTML = "";
-  if (elNavigationIntel) elNavigationIntel.innerHTML = "";
-  if (elNavigationSteps) elNavigationSteps.innerHTML = "";
-  if (elNavigationMeta) elNavigationMeta.textContent = "";
-  if (elNavigationTitle) elNavigationTitle.textContent = "";
   resetNavigationCamera();
-  setNavigationCardVisible(false);
 }
 
 function setSearchResultsExpanded(isExpanded) {
@@ -6278,41 +6096,6 @@ if (elSearchResults) {
     if (!button || !elSearchResults.contains(button)) return;
     event.preventDefault();
     selectRenderedSearchResult(button.dataset.index);
-  });
-}
-
-if (elNavigationRecenter) {
-  elNavigationRecenter.addEventListener("click", () => {
-    if (activeRoute) {
-      focusActiveNavigationCamera({ force: true });
-    }
-  });
-}
-
-if (elNavigationArrival) {
-  elNavigationArrival.addEventListener("click", () => {
-    if (activeRoute) {
-      showActiveRouteArrivalView();
-    }
-  });
-}
-
-if (elNavigationOverview) {
-  elNavigationOverview.addEventListener("click", () => {
-    if (activeRoute) {
-      showActiveRouteOverview();
-    }
-  });
-}
-
-if (elNavigationClear) {
-  elNavigationClear.addEventListener("click", clearInAppNavigation);
-}
-
-if (elNavigationVoice) {
-  updateNavigationVoiceButton();
-  elNavigationVoice.addEventListener("click", () => {
-    setNavigationVoiceEnabled(!navigationVoiceEnabled);
   });
 }
 
