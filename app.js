@@ -6133,7 +6133,7 @@ map.on("load", () => {
   startHeadingConeRenderLoop();
 
   if (menuButton && panel) {
-    menuButton.addEventListener("click", () => {
+    addPreferredPressHandler(menuButton, () => {
       syncPanelState(!panel.classList.contains("open"));
     });
   }
