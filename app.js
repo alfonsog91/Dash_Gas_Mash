@@ -64,7 +64,7 @@ import {
   formatCensusSourceSummary,
 } from "./census.js?v=20260410-census-data";
 
-const APP_BUILD_ID = "20260410-nav-arrival";
+const APP_BUILD_ID = "20260410-nav-hotfix";
 console.info("[DGM] app build", APP_BUILD_ID);
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
@@ -1503,19 +1503,24 @@ function syncActiveNavigationCamera({
   force = false,
   allowBearing = true,
 } = {}) {
-  if (!isNavigationFollowCameraActive() || !latlng || !map) {
+  if (!isNavigationFollowCameraActive() || !map) {
     return;
   }
 
-  const resolvedLatLng = lngLatToObject(latlng);
+  const resolvedLatLng = lngLatToObject(latlng) || getRouteCameraAnchor(activeRoute);
+  if (!resolvedLatLng) {
+    return;
+  }
+
   const normalizedHeading = normalizeHeadingDegrees(heading);
   const primaryStep = getPrimaryRouteStep(activeRoute);
   const remainingDistanceMeters = Number(activeRoute?.distanceMeters) || 0;
   const targetZoom = getNavigationCameraZoom(navigationCameraMode, speed, primaryStep?.distance, remainingDistanceMeters);
   const targetPitch = getNavigationCameraPitch(navigationCameraMode, speed, remainingDistanceMeters);
+  const routeBearing = allowBearing ? getRouteCameraBearing(activeRoute, navigationCameraMode) : null;
   const targetBearing = allowBearing && normalizedHeading !== null
     ? normalizedHeading
-    : getMapBearingHeading();
+    : routeBearing ?? getMapBearingHeading() ?? 0;
 
   const now = Date.now();
   if (!force && now - lastNavigationCameraSyncAt < NAVIGATION_CAMERA_UPDATE_MIN_INTERVAL_MS) {
@@ -1555,9 +1560,10 @@ function focusActiveNavigationCamera({ force = false, mode = "driver" } = {}) {
   }
 
   setNavigationCameraMode(mode);
+  renderNavigationCard(activeRoute);
   syncActiveNavigationCamera({ force: true, allowBearing: true });
   if (force) {
-    setNavigationStatus("", "info");
+    setNavigationStatus(mode === "arrival" ? "Arrival camera active." : "Driver camera active.", "info");
   }
 }
 
@@ -1576,6 +1582,8 @@ function showActiveRouteOverview() {
 
   setNavigationCameraMode("overview");
   fitRouteToView(activeRoute);
+  renderNavigationCard(activeRoute);
+  setNavigationStatus("Overview active. Tap Drive to resume heading-follow.", "info");
 }
 
 function resetNavigationCamera() {
@@ -1664,6 +1672,107 @@ function getRouteApproachSegment(route) {
   }
 
   return null;
+}
+
+function getRouteSegmentBearingDegrees(start, end) {
+  const startLat = Number(start?.lat);
+  const startLng = Number(start?.lng);
+  const endLat = Number(end?.lat);
+  const endLng = Number(end?.lng);
+  if (![startLat, startLng, endLat, endLng].every(Number.isFinite)) {
+    return null;
+  }
+
+  const startLatRad = startLat * (Math.PI / 180);
+  const endLatRad = endLat * (Math.PI / 180);
+  const deltaLngRad = (endLng - startLng) * (Math.PI / 180);
+  const y = Math.sin(deltaLngRad) * Math.cos(endLatRad);
+  const x = Math.cos(startLatRad) * Math.sin(endLatRad)
+    - Math.sin(startLatRad) * Math.cos(endLatRad) * Math.cos(deltaLngRad);
+  if (Math.abs(x) < 1e-12 && Math.abs(y) < 1e-12) {
+    return null;
+  }
+
+  return normalizeHeadingDegrees((Math.atan2(y, x) * 180) / Math.PI);
+}
+
+function getRouteCoordinateBearing(coordinates, { fromEnd = false } = {}) {
+  if (!Array.isArray(coordinates) || coordinates.length < 2) {
+    return null;
+  }
+
+  if (fromEnd) {
+    let previous = coordinates[coordinates.length - 1];
+    for (let index = coordinates.length - 2; index >= 0; index -= 1) {
+      const current = coordinates[index];
+      const bearing = getRouteSegmentBearingDegrees(
+        { lng: current?.[0], lat: current?.[1] },
+        { lng: previous?.[0], lat: previous?.[1] }
+      );
+      if (bearing !== null) {
+        return bearing;
+      }
+      previous = current;
+    }
+    return null;
+  }
+
+  let previous = coordinates[0];
+  for (let index = 1; index < coordinates.length; index += 1) {
+    const current = coordinates[index];
+    const bearing = getRouteSegmentBearingDegrees(
+      { lng: previous?.[0], lat: previous?.[1] },
+      { lng: current?.[0], lat: current?.[1] }
+    );
+    if (bearing !== null) {
+      return bearing;
+    }
+    previous = current;
+  }
+
+  return null;
+}
+
+function getRouteStepBearingDegrees(step) {
+  const bearingAfter = normalizeHeadingDegrees(step?.maneuver?.bearing_after);
+  if (bearingAfter !== null) {
+    return bearingAfter;
+  }
+
+  const bearingBefore = normalizeHeadingDegrees(step?.maneuver?.bearing_before);
+  if (bearingBefore !== null) {
+    return bearingBefore;
+  }
+
+  return getRouteCoordinateBearing(step?.geometry?.coordinates);
+}
+
+function getRouteCameraBearing(route, mode = navigationCameraMode) {
+  const preferredStep = mode === "arrival"
+    ? getFinalTurnRouteStep(route) || getArrivalRouteStep(route)
+    : getPrimaryRouteStep(route);
+  const preferredBearing = getRouteStepBearingDegrees(preferredStep);
+  if (preferredBearing !== null) {
+    return preferredBearing;
+  }
+
+  if (mode === "arrival") {
+    const approachSegment = getRouteApproachSegment(route);
+    const approachBearing = getRouteSegmentBearingDegrees(approachSegment?.start, approachSegment?.end);
+    if (approachBearing !== null) {
+      return approachBearing;
+    }
+  }
+
+  return getRouteCoordinateBearing(route?.geometry?.coordinates, { fromEnd: mode === "arrival" });
+}
+
+function getRouteCameraAnchor(route, mode = navigationCameraMode) {
+  if (mode === "arrival") {
+    return lngLatToObject(route?.destination) || lngLatToObject(route?.origin);
+  }
+
+  return lngLatToObject(route?.origin) || lngLatToObject(route?.destination);
 }
 
 function getPlanarVectorMeters(fromLatLng, toLatLng) {
@@ -4664,16 +4773,19 @@ async function locateUser() {
 function openStatsPopupAtLatLng(latlng) {
   if (!latlng) return;
 
-  if (closePanelIfOpen()) {
-    return;
-  }
+  closePanelIfOpen();
 
   if (!lastRestaurants || lastRestaurants.length === 0) {
     openPopupAtLngLat(latlng, "Load data first (click ‘Load / Refresh for current view’).", { closeButton: true });
     return;
   }
 
-  openSpotSheet(latlng);
+  const point = setSpotMarker(latlng);
+  openPopupAtLngLat(
+    point,
+    renderSpotPopupHtml(point, lastRestaurants, lastParams.tauMeters, lastParams.hour),
+    { closeButton: true }
+  );
 }
 
 function latlngToObject(value) {
@@ -4970,17 +5082,17 @@ function renderSpotPopupHtml(latlng, restaurants, tauMeters, hour) {
   <div class="popup-header">
     <div class="popup-kicker">Stat ping</div>
     <div class="popup-title">Selected spot</div>
-    <div class="popup-subtitle">${escapeHtml(describeSignal(getProbabilityMid(r)))}</div>
+    <div class="popup-subtitle">${escapeHtml(describeSignal(getProbabilityMid(r)))} for the next 10 minutes</div>
   </div>
 
   ${warning}
-  <div class="popup-score">${formatProbabilityRange(getProbabilityLow(r), getProbabilityHigh(r))}<span class="popup-score-label"> 10-minute probability of a good order</span></div>
+  <div class="popup-score">${formatProbabilityRange(getProbabilityLow(r), getProbabilityHigh(r))}<span class="popup-score-label"> chance of landing a strong order soon</span></div>
   <div class="popup-explain">${escapeHtml(describeAdvisory(r.advisory))}</div>
 
   ${renderPopupMetricGrid([
-    renderPopupMetricCard("Rank", formatCompactRank(r), formatRelativeRank(r)),
-    renderPopupMetricCard("Pickup", formatRouteDistance(r.expectedDistMeters), describePickup(r.expectedDistMeters)),
-    renderPopupMetricCard("Stability", `${Math.round(r.effectiveMerchants ?? 0)} merchants`, describeStability(r)),
+    renderPopupMetricCard("Field rank", formatCompactRank(r), formatRelativeRank(r)),
+    renderPopupMetricCard("Avg pickup", formatRouteDistance(r.expectedDistMeters), describePickup(r.expectedDistMeters)),
+    renderPopupMetricCard("Nearby support", `${Math.round(r.effectiveMerchants ?? 0)} merchants`, describeStability(r)),
   ])}
 
   ${renderPopupActions([
@@ -4989,11 +5101,11 @@ function renderSpotPopupHtml(latlng, restaurants, tauMeters, hour) {
 
   <section class="popup-section">
     <div class="popup-section-head">
-      <div class="popup-section-title">Why this spot looks the way it does</div>
+      <div class="popup-section-title">How DGM reads this spot</div>
       <div class="popup-section-meta">${escapeHtml(bucketLabel)}</div>
     </div>
-    <div class="popup-detail">Uncertainty band (λ ±30%): ${formatProbabilityRange(getProbabilityLow(r), getProbabilityHigh(r))} · ${escapeHtml(describeProbabilityBand(r))}</div>
-    <div class="popup-detail">${escapeHtml(describePickup(r.expectedDistMeters))}</div>
+    <div class="popup-detail">Expected range this hour: ${formatProbabilityRange(getProbabilityLow(r), getProbabilityHigh(r))} · ${escapeHtml(describeProbabilityBand(r))}</div>
+    <div class="popup-detail">Pickup read: ${escapeHtml(describePickup(r.expectedDistMeters))}</div>
     ${renderExplainabilityDetails(r)}
     ${renderSignalBarsHtml(r.signals, bucketLabel)}
   </section>
