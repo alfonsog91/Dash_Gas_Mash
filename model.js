@@ -12,6 +12,7 @@ import {
   predictLearnedOrderModel,
   resolvePredictionModelName,
 } from "./learned_predictor.js";
+import { assignOrders as experimentalDispatch } from "./dispatch_assignment.js";
 
 function toRad(deg) {
   return (deg * Math.PI) / 180;
@@ -493,6 +494,52 @@ function formatExplainRainLiftPercent(rainLiftPercent) {
     : "Rain lift is off right now.";
 }
 
+function resolveExperimentalDispatchInputs(params) {
+  return {
+    drivers: Array.isArray(params?.drivers) ? params.drivers : [],
+    orders: Array.isArray(params?.orders) ? params.orders : [],
+  };
+}
+
+function buildExperimentalDispatchCostMatrix(drivers, orders, params) {
+  const singleOrderParams = {
+    ...params,
+    batchingEnabled: false,
+    maxBatchSize: 1,
+  };
+
+  return drivers.map((driver) => ({
+    driverId: driver?.id ?? null,
+    entries: orders.map((order) => {
+      const pairResult = experimentalDispatch([driver], [order], singleOrderParams);
+      const assignment = Array.isArray(pairResult.assignments) ? pairResult.assignments[0] ?? null : null;
+
+      return {
+        orderId: order?.id ?? null,
+        totalCost: assignment ? assignment.totalCost : null,
+        matched: Boolean(assignment),
+      };
+    }),
+  }));
+}
+
+function buildExperimentalDispatchResult(params) {
+  if (params?.experimentalDispatch !== true) {
+    return null;
+  }
+
+  const { drivers, orders } = resolveExperimentalDispatchInputs(params);
+  const dispatchDiagnostics = experimentalDispatch(drivers, orders, params);
+
+  return {
+    assignments: dispatchDiagnostics.assignments,
+    diagnostics: dispatchDiagnostics.diagnostics,
+    costMatrix: buildExperimentalDispatchCostMatrix(drivers, orders, params),
+    batched: dispatchDiagnostics.diagnostics.batchedCount > 0,
+    matchedCount: dispatchDiagnostics.diagnostics.matchedCount,
+  };
+}
+
 export function probabilityOfGoodOrder(
   { lat, lon },
   restaurants,
@@ -815,7 +862,7 @@ export function buildGridProbabilityHeat(bounds, restaurants, parkingCandidates,
 
   const bucket = timeBucket(hour);
 
-  return {
+  const result = {
     heatPoints: pts,
     stats: {
       lambdaRef,
@@ -846,6 +893,13 @@ export function buildGridProbabilityHeat(bounds, restaurants, parkingCandidates,
       timeBucketLabel: bucket.label,
     },
   };
+
+  const experimentalDispatchResult = buildExperimentalDispatchResult(params);
+  if (experimentalDispatchResult) {
+    result.experimentalDispatch = experimentalDispatchResult;
+  }
+
+  return result;
 }
 
 export function rankParking(parkingCandidates, restaurants, parkingAllCandidates, params, stats, limit = 12) {

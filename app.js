@@ -33,12 +33,16 @@ import {
   selectParkingSetSubmodular,
 } from "./optimizer.js?v=20260401-probability-contract";
 import {
+  HEADING_FILTER_DEAD_ZONE_DEGREES,
+  HEADING_FILTER_MIN_ROTATION_DEGREES,
+  HEADING_FILTER_SMOOTHING_FACTOR,
   HEADING_CONE_LENGTH_PIXELS,
   HEADING_GPS_FALLBACK_SMOOTHING_TIME_MS,
   HEADING_SENSOR_MAX_WEBKIT_COMPASS_ACCURACY_DEGREES,
   HEADING_SENSOR_SMOOTHING_MIN_BLEND,
   HEADING_SENSOR_SMOOTHING_TIME_MS,
   HEADING_SENSOR_STALE_AFTER_MS,
+  filterHeadingDegrees,
   getDeviceOrientationReading,
   getHeadingBlendFactor,
   getHeadingConeBandStops,
@@ -85,7 +89,7 @@ const HEADING_RENDER_LOOP_MAX_HZ = 30;
 const HEADING_RENDER_LOOP_FRAME_INTERVAL_MS = 1000 / HEADING_RENDER_LOOP_MAX_HZ;
 const HEADING_RENDER_LOOP_MAP_BEARING_SMOOTHING_TIME_MS = 240;
 const HEADING_RENDER_LOOP_GPS_SMOOTHING_TIME_MS = 180;
-const HEADING_RENDER_LOOP_MIN_DELTA_DEGREES = 1.5;
+const HEADING_RENDER_LOOP_MIN_DELTA_DEGREES = HEADING_FILTER_MIN_ROTATION_DEGREES;
 const HEADING_RENDER_LOOP_MIN_LOCATION_DELTA_METERS = 0.25;
 const HEADING_RENDER_LOOP_MIN_SPEED_DELTA_MPS = 0.1;
 const HEADING_CONE_RENDER_SCALE_BIAS = 1.15;
@@ -339,7 +343,7 @@ const CONTINUOUS_WATCH_TIMEOUT_MS = 30000;
 const LIVE_LOCATION_WATCH_MAXIMUM_AGE_MS = 0;
 const AUTO_FOLLOW_LOCATION_MIN_CENTER_OFFSET_METERS = 6;
 const NAVIGATION_CAMERA_UPDATE_MIN_INTERVAL_MS = 380;
-const NAVIGATION_CAMERA_MIN_BEARING_DELTA_DEGREES = 4;
+const NAVIGATION_CAMERA_MIN_BEARING_DELTA_DEGREES = HEADING_FILTER_MIN_ROTATION_DEGREES;
 const NAVIGATION_CAMERA_MIN_ZOOM_DELTA = 0.12;
 const NAVIGATION_CAMERA_MIN_PITCH_DELTA = 2;
 const NAVIGATION_CAMERA_DRIVER_MIN_ZOOM = 15.6;
@@ -3011,15 +3015,22 @@ function renderHeadingConeFrame(nowMs = getHeadingNowMs()) {
     : Math.max(0, nowMs - lastHeadingConeLoopTickAt);
   lastHeadingConeLoopTickAt = nowMs;
 
-  const nextHeading = interpolateHeadingDegrees(
-    lastHeadingConeLoopHeading ?? lastRenderedHeadingConeHeading ?? targetHeading,
-    targetHeading,
-    getHeadingBlendFactor(
-      elapsedMs,
-      getHeadingRenderLoopSmoothingTimeMs(headingState.source),
-      headingState.source === "sensor" ? HEADING_SENSOR_SMOOTHING_MIN_BLEND : 0
-    )
-  );
+  const previousHeading = lastHeadingConeLoopHeading ?? lastRenderedHeadingConeHeading ?? targetHeading;
+  const nextHeading = headingState.source === "sensor"
+    ? filterHeadingDegrees(previousHeading, targetHeading, {
+      smoothingFactor: HEADING_FILTER_SMOOTHING_FACTOR,
+      deadZoneDegrees: HEADING_FILTER_DEAD_ZONE_DEGREES,
+      minRotationDegrees: HEADING_FILTER_MIN_ROTATION_DEGREES,
+    })
+    : interpolateHeadingDegrees(
+      previousHeading,
+      targetHeading,
+      getHeadingBlendFactor(
+        elapsedMs,
+        getHeadingRenderLoopSmoothingTimeMs(headingState.source),
+        headingState.source === "sensor" ? HEADING_SENSOR_SMOOTHING_MIN_BLEND : 0
+      )
+    );
   const resolvedHeading = normalizeHeadingDegrees(nextHeading);
   if (resolvedHeading === null) {
     clearHeadingConeVisual();

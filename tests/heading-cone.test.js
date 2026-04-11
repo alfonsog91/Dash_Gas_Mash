@@ -1,4 +1,7 @@
 import {
+  HEADING_FILTER_DEAD_ZONE_DEGREES,
+  HEADING_FILTER_MIN_ROTATION_DEGREES,
+  HEADING_FILTER_SMOOTHING_FACTOR,
   HEADING_CONE_LENGTH_PIXELS,
   HEADING_CONE_BAND_OPACITIES,
   HEADING_GPS_FALLBACK_SMOOTHING_TIME_MS,
@@ -8,6 +11,7 @@ import {
   HEADING_SENSOR_SMOOTHING_MIN_BLEND,
   HEADING_SENSOR_SMOOTHING_TIME_MS,
   HEADING_SENSOR_STALE_AFTER_MS,
+  filterHeadingDegrees,
   getDeviceOrientationHeading,
   getHeadingBlendFactor,
   getHeadingConeBandStops,
@@ -97,6 +101,31 @@ export function runHeadingConeTests() {
   runTest("interpolateHeadingDegrees follows the shortest turn", () => {
     assertEqual(interpolateHeadingDegrees(350, 10, 0.5), 0, "half blend should cross the seam cleanly");
     assertEqual(interpolateHeadingDegrees(null, 95, 0.2), 95, "missing previous heading should use next heading");
+  });
+
+  runTest("filterHeadingDegrees ignores micro movement inside the dead zone", () => {
+    assertEqual(
+      filterHeadingDegrees(45, 46, {
+        smoothingFactor: HEADING_FILTER_SMOOTHING_FACTOR,
+        deadZoneDegrees: HEADING_FILTER_DEAD_ZONE_DEGREES,
+        minRotationDegrees: HEADING_FILTER_MIN_ROTATION_DEGREES,
+      }),
+      45,
+      "sub-threshold sensor drift should not rotate the filtered heading"
+    );
+  });
+
+  runTest("filterHeadingDegrees applies the sensor low-pass factor", () => {
+    assertApprox(
+      filterHeadingDegrees(0, 90, {
+        smoothingFactor: HEADING_FILTER_SMOOTHING_FACTOR,
+        deadZoneDegrees: HEADING_FILTER_DEAD_ZONE_DEGREES,
+        minRotationDegrees: HEADING_FILTER_MIN_ROTATION_DEGREES,
+      }),
+      90 * HEADING_FILTER_SMOOTHING_FACTOR,
+      0.0001,
+      "sensor filtering should use the configured one-pole blend factor"
+    );
   });
 
   runTest("getHeadingBlendFactor stays time-based and lightly responsive", () => {

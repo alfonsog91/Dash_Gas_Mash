@@ -5,6 +5,9 @@ const HEADING_CONE_SPEED_FOR_FULLY_MOVING = 3;
 const HEADING_SENSOR_STALE_AFTER_MS = 2200;
 const HEADING_SENSOR_SMOOTHING_TIME_MS = 220;
 const HEADING_SENSOR_SMOOTHING_MIN_BLEND = 0.18;
+const HEADING_FILTER_SMOOTHING_FACTOR = 0.15;
+const HEADING_FILTER_DEAD_ZONE_DEGREES = 1.75;
+const HEADING_FILTER_MIN_ROTATION_DEGREES = 1.5;
 const HEADING_SENSOR_MAX_WEBKIT_COMPASS_ACCURACY_DEGREES = 30;
 const HEADING_GPS_FALLBACK_SMOOTHING_TIME_MS = 900;
 const HEADING_CONE_BASE_OPACITY = 0.32;
@@ -56,6 +59,37 @@ function interpolateHeadingDegrees(previousHeading, nextHeading, blend = 1) {
   if (normalizedPrevious === null) return normalizedNext;
   const delta = ((normalizedNext - normalizedPrevious + 540) % 360) - 180;
   return normalizeHeadingDegrees(normalizedPrevious + delta * clamp01(blend));
+}
+
+function filterHeadingDegrees(
+  previousHeading,
+  nextHeading,
+  {
+    smoothingFactor = HEADING_FILTER_SMOOTHING_FACTOR,
+    deadZoneDegrees = HEADING_FILTER_DEAD_ZONE_DEGREES,
+    minRotationDegrees = HEADING_FILTER_MIN_ROTATION_DEGREES,
+  } = {}
+) {
+  const normalizedPrevious = normalizeHeadingDegrees(previousHeading);
+  const normalizedNext = normalizeHeadingDegrees(nextHeading);
+  if (normalizedNext === null) return normalizedPrevious;
+  if (normalizedPrevious === null) return normalizedNext;
+
+  const headingDelta = getHeadingDeltaDegrees(normalizedNext, normalizedPrevious);
+  const resolvedDeadZoneDegrees = resolveFiniteNumber(deadZoneDegrees, HEADING_FILTER_DEAD_ZONE_DEGREES, { min: 0 });
+  const resolvedMinRotationDegrees = resolveFiniteNumber(
+    minRotationDegrees,
+    HEADING_FILTER_MIN_ROTATION_DEGREES,
+    { min: 0 }
+  );
+  if (!Number.isFinite(headingDelta) || headingDelta < Math.max(resolvedDeadZoneDegrees, resolvedMinRotationDegrees)) {
+    return normalizedPrevious;
+  }
+
+  const resolvedSmoothingFactor = clamp01(
+    resolveFiniteNumber(smoothingFactor, HEADING_FILTER_SMOOTHING_FACTOR, { min: 0 })
+  );
+  return interpolateHeadingDegrees(normalizedPrevious, normalizedNext, resolvedSmoothingFactor);
 }
 
 function hasFreshHeadingSensorData(lastSensorHeadingAt, nowMs, maxAgeMs = HEADING_SENSOR_STALE_AFTER_MS) {
@@ -214,6 +248,9 @@ export {
   HEADING_SENSOR_STALE_AFTER_MS,
   HEADING_SENSOR_SMOOTHING_TIME_MS,
   HEADING_SENSOR_SMOOTHING_MIN_BLEND,
+  HEADING_FILTER_SMOOTHING_FACTOR,
+  HEADING_FILTER_DEAD_ZONE_DEGREES,
+  HEADING_FILTER_MIN_ROTATION_DEGREES,
   HEADING_SENSOR_MAX_WEBKIT_COMPASS_ACCURACY_DEGREES,
   HEADING_GPS_FALLBACK_SMOOTHING_TIME_MS,
   HEADING_CONE_BAND_OPACITIES,
@@ -221,6 +258,7 @@ export {
   getHeadingDeltaDegrees,
   getHeadingBlendFactor,
   interpolateHeadingDegrees,
+  filterHeadingDegrees,
   hasFreshHeadingSensorData,
   getHeadingConeHalfAngle,
   getMetersPerPixelAtLatitude,
