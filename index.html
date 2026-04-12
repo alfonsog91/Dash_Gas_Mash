@@ -118,25 +118,10 @@
           </div>
 
           <div class="row">
-            <label class="checkbox">
-              <input id="useMIP" type="checkbox" />
-              Enable exact MIP solver for top parking set
-            </label>
-            <div class="hint">Off by default. DGM now uses the faster coverage-diversity selector unless you explicitly ask for the exact spread-out solver. If the solver is unavailable, DGM stays on the approximate selector.</div>
-          </div>
-
-          <div class="row">
             <label for="kSpots">Suggested spots (K)</label>
-            <input id="kSpots" type="range" min="3" max="10" step="1" value="6" />
+            <input id="kSpots" type="range" min="3" max="10" step="1" value="3" />
             <span id="kSpotsVal" class="mono"></span>
             <div class="hint">How many parking suggestions to output.</div>
-          </div>
-
-          <div class="row">
-            <label for="minSep">Min separation (meters)</label>
-            <input id="minSep" type="range" min="200" max="1800" step="50" value="650" />
-            <span id="minSepVal" class="mono"></span>
-            <div class="hint">Forces suggestions to be spread out (avoids all picks in one plaza).</div>
           </div>
 
           <div class="row">
@@ -195,7 +180,7 @@
                 <li><b>Rain demand lift</b>: Adds a bounded weather uplift to the demand field. With live weather enabled, DGM derives this from public Open-Meteo precipitation data for the current map center; if the request fails, the manual slider remains the fallback.</li>
                 <li><b>Tip emphasis</b>: Slide right to favor higher-ticket restaurants. Slide left to favor short pickup distance.</li>
                 <li><b>Grid step</b>: Heatmap detail. Smaller = prettier but slower.</li>
-                <li><b>K spots / Min separation</b>: How many parking suggestions to show. Min separation applies to MIP mode; the approximate fallback spreads picks using diminishing returns instead of a hard spacing rule.</li>
+                <li><b>K spots</b>: How many parking suggestions to show. DGM uses the coverage-diversity selector to keep suggestions spread out without a separate hard-separation control.</li>
               </ul>
             </div>
 

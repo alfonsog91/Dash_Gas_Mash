@@ -28,8 +28,6 @@ import {
 import { renderModelDiagram } from "./diagram.js?v=20260401-probability-contract";
 import {
   evaluateParkingCoverage,
-  isMipAvailable,
-  optimizeParkingSet,
   selectParkingSetSubmodular,
 } from "./optimizer.js?v=20260401-probability-contract";
 import {
@@ -85,6 +83,7 @@ const BLUE_DOT_BREATHING_CYCLE_MS = 2800;
 const BLUE_DOT_RADIUS_EPSILON_PX = 0.01;
 const BLUE_DOT_HALO_RADIUS_SCALE = 2.35;
 const FULL_CYCLE_RADIANS = Math.PI * 2;
+const COMPASS_PERMISSION_REQUEST_TIMEOUT_MS = 5000;
 const HEADING_RENDER_LOOP_MAX_HZ = 30;
 const HEADING_RENDER_LOOP_FRAME_INTERVAL_MS = 1000 / HEADING_RENDER_LOOP_MAX_HZ;
 const HEADING_RENDER_LOOP_MAP_BEARING_SMOOTHING_TIME_MS = 240;
@@ -308,11 +307,8 @@ const elTipEmphasisVal = document.getElementById("tipEmphasisVal");
 const elUseML = document.getElementById("useML");
 const elMlBeta = document.getElementById("mlBeta");
 const elMlBetaVal = document.getElementById("mlBetaVal");
-const elUseMIP = document.getElementById("useMIP");
 const elKSpots = document.getElementById("kSpots");
 const elKSpotsVal = document.getElementById("kSpotsVal");
-const elMinSep = document.getElementById("minSep");
-const elMinSepVal = document.getElementById("minSepVal");
 const elLoad = document.getElementById("load");
 const elShowRestaurants = document.getElementById("showRestaurants");
 const elShowParking = document.getElementById("showParking");
@@ -2501,12 +2497,36 @@ function getCompassPermissionRequestTarget() {
     return null;
   }
 
-  const orientationEvent = window.DeviceOrientationEvent;
-  if (!orientationEvent || typeof orientationEvent.requestPermission !== "function") {
+  const permissionSources = [window.DeviceOrientationEvent, window.DeviceMotionEvent]
+    .filter((eventType, index, list) => eventType && list.indexOf(eventType) === index)
+    .filter((eventType) => typeof eventType.requestPermission === "function");
+
+  if (!permissionSources.length) {
     return null;
   }
 
-  return orientationEvent;
+  return {
+    async requestPermission() {
+      const settled = await Promise.allSettled(
+        permissionSources.map((eventType) => eventType.requestPermission())
+      );
+
+      if (settled.some((result) => result.status === "fulfilled" && result.value === COMPASS_PERMISSION_GRANTED_STATE)) {
+        return COMPASS_PERMISSION_GRANTED_STATE;
+      }
+
+      if (settled.some((result) => result.status === "fulfilled" && result.value === COMPASS_PERMISSION_DENIED_STATE)) {
+        return COMPASS_PERMISSION_DENIED_STATE;
+      }
+
+      const rejected = settled.find((result) => result.status === "rejected");
+      if (rejected) {
+        throw rejected.reason;
+      }
+
+      return COMPASS_PERMISSION_REQUIRED_STATE;
+    },
+  };
 }
 
 function canPersistCompassPermissionState(state) {
@@ -2727,7 +2747,7 @@ function syncCompassUi(nowMs = getHeadingNowMs()) {
     compassPermissionButton.hidden = !shouldShowPermissionButton;
     compassPermissionButton.disabled = isCompassPermissionRequestPending;
     compassPermissionButton.textContent = isCompassPermissionRequestPending
-      ? "Enabling..."
+      ? "Waiting for Permission"
       : compassPermissionState === COMPASS_PERMISSION_DENIED_STATE
         ? "Retry Compass"
         : "Enable Compass";
@@ -2877,7 +2897,12 @@ async function requestCompassPermissionFromUserGesture() {
   syncCompassUi();
 
   try {
-    const permissionResult = await requestTarget.requestPermission();
+    const permissionResult = await Promise.race([
+      requestTarget.requestPermission(),
+      new Promise((_, reject) => {
+        window.setTimeout(() => reject(new Error("Compass permission request timed out.")), COMPASS_PERMISSION_REQUEST_TIMEOUT_MS);
+      }),
+    ]);
     if (permissionResult === COMPASS_PERMISSION_GRANTED_STATE) {
       setCompassPermissionState(COMPASS_PERMISSION_GRANTED_STATE);
       startDeviceOrientationWatch();
@@ -2888,7 +2913,11 @@ async function requestCompassPermissionFromUserGesture() {
     setCompassPermissionState(COMPASS_PERMISSION_DENIED_STATE);
     return COMPASS_PERMISSION_DENIED_STATE;
   } catch (error) {
-    setCompassPermissionState(COMPASS_PERMISSION_DENIED_STATE);
+    setCompassPermissionState(
+      error instanceof Error && error.message === "Compass permission request timed out."
+        ? COMPASS_PERMISSION_REQUIRED_STATE
+        : COMPASS_PERMISSION_DENIED_STATE
+    );
     throw error;
   } finally {
     isCompassPermissionRequestPending = false;
@@ -4212,7 +4241,6 @@ function updateLabels() {
   elTipEmphasisVal.textContent = `${Number(elTipEmphasis.value).toFixed(2)}`;
   elMlBetaVal.textContent = `${Number(elMlBeta.value).toFixed(1)}`;
   elKSpotsVal.textContent = `${Number(elKSpots.value)}`;
-  elMinSepVal.textContent = `${Number(elMinSep.value)} m`;
 }
 
 function setWeatherStatus(message) {
@@ -4283,9 +4311,7 @@ if (elUseLiveWeather) {
 elTipEmphasis.addEventListener("input", updateLabels);
 elUseML.addEventListener("change", updateLabels);
 elMlBeta.addEventListener("input", updateLabels);
-elUseMIP.addEventListener("change", updateLabels);
 elKSpots.addEventListener("input", updateLabels);
-elMinSep.addEventListener("input", updateLabels);
 
 elShowRestaurants.addEventListener("change", () => {
   setLayerVisibility(LAYER_RESTAURANTS, elShowRestaurants.checked);
@@ -4533,7 +4559,7 @@ function getCurrentPosition(options = {}) {
     navigator.geolocation.getCurrentPosition(resolve, reject, {
       enableHighAccuracy: true,
       timeout: 12000,
-      maximumAge: 60000,
+      maximumAge: 0,
       ...options,
     });
   });
@@ -4547,15 +4573,16 @@ function clampMapZoom(zoom) {
 
 async function centerMapOnInitialLocationOnce() {
   if (hasRequestedInitialLocation) return;
-  hasRequestedInitialLocation = true;
 
   if (!navigator.geolocation) return;
+
+  hasRequestedInitialLocation = true;
 
   try {
     const position = await getCurrentPosition({
       enableHighAccuracy: true,
       timeout: Math.max(INITIAL_LOCATION_TIMEOUT_MS, CONTINUOUS_WATCH_TIMEOUT_MS),
-      maximumAge: 60000,
+      maximumAge: 0,
     });
 
     const latlng = {
@@ -4574,6 +4601,7 @@ async function centerMapOnInitialLocationOnce() {
       zoom: clampMapZoom(INITIAL_LOCATION_ZOOM),
     });
   } catch (error) {
+    hasRequestedInitialLocation = false;
     console.info("Initial geolocation unavailable.", error);
   }
 }
@@ -5798,20 +5826,7 @@ async function loadForView() {
     const tipEmphasis = Number(elTipEmphasis.value);
     const useML = Boolean(elUseML.checked);
     const mlBeta = Number(elMlBeta.value);
-    let useMIP = Boolean(elUseMIP.checked);
     const kSpots = Number(elKSpots.value);
-    const minSepMeters = Number(elMinSep.value);
-
-    if (useMIP && !isMipAvailable()) {
-      useMIP = false;
-      elUseMIP.checked = false;
-
-      console.warn("MIP solver not available; falling back to the coverage-diversity selector.");
-
-      alert(
-        "MIP solver couldn’t load (CDN blocked/offline). Falling back to the coverage-diversity selector.\n\nIf you want MIP, allow loading: https://unpkg.com/javascript-lp-solver@0.4.24/prod/solver.js"
-      );
-    }
 
     lastParams = {
       hour,
@@ -5826,9 +5841,7 @@ async function loadForView() {
       predictionModel: PREDICTION_MODEL,
       useML,
       mlBeta,
-      useMIP,
       kSpots,
-      minSepMeters,
     };
 
     const bbox = mapBoundsToAdapter(map.getBounds());
@@ -5957,13 +5970,11 @@ async function loadForView() {
       residentialDemandWeight,
     });
 
-    const ranked = useMIP
-      ? optimizeParkingSet(rankedAll, { k: kSpots, minSepMeters, maxCandidates: 40 })
-      : selectParkingSetSubmodular(rankedAll, {
-        k: kSpots,
-        demandNodes,
-        coverageTauMeters,
-      });
+    const ranked = selectParkingSetSubmodular(rankedAll, {
+      k: kSpots,
+      demandNodes,
+      coverageTauMeters,
+    });
 
     if (SHADOW_LEARNED_MODEL && PREDICTION_MODEL !== "glm") {
       const shadowRankedAll = rankParking(
@@ -5998,23 +6009,11 @@ async function loadForView() {
       });
     }
 
-    if (useMIP) {
-      const shadowRanked = selectParkingSetSubmodular(rankedAll, {
-        k: kSpots,
-        demandNodes,
-        coverageTauMeters,
-        maxCandidates: 60,
-      });
-
-      console.info("[DGM] selection shadow audit", {
-        activeMode: "mip",
-        activeCoverage: evaluateParkingCoverage(ranked, demandNodes, { coverageTauMeters }),
-        shadowMode: "submodular",
-        shadowCoverage: evaluateParkingCoverage(shadowRanked, demandNodes, { coverageTauMeters }),
-        activeUtility: ranked.reduce((sum, candidate) => sum + (candidate.pGood ?? 0), 0),
-        shadowUtility: shadowRanked.reduce((sum, candidate) => sum + (candidate.pGood ?? 0), 0),
-      });
-    }
+    console.info("[DGM] selection coverage", {
+      activeMode: "submodular",
+      activeCoverage: evaluateParkingCoverage(ranked, demandNodes, { coverageTauMeters }),
+      activeUtility: ranked.reduce((sum, candidate) => sum + (candidate.pGood ?? 0), 0),
+    });
 
     addParkingMarkers(ranked, restaurants, tauMeters, hour);
     renderParkingList(ranked);
