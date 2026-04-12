@@ -138,6 +138,7 @@ function isTouchInteractionDevice() {
 }
 
 const COMPASS_DEBUG_MODE_ENABLED = isCompassDebugModeEnabled();
+const RUNTIME_DIAGNOSTICS_ENABLED = COMPASS_DEBUG_MODE_ENABLED || isTouchInteractionDevice();
 
 if (window.location.protocol === "file:") {
   alert(
@@ -407,6 +408,8 @@ let compassDebugToggleButton = null;
 let compassDebugOverlay = null;
 let compassDebugOverlayBody = null;
 let isCompassDebugOverlayVisible = COMPASS_DEBUG_MODE_ENABLED;
+let lastCompassPermissionErrorMessage = null;
+let lastLocationErrorMessage = null;
 let isFollowingCurrentLocation = isTouchInteractionDevice();
 let pendingMapTapPopupTimer = null;
 let lastMapTouchStartAt = 0;
@@ -2380,6 +2383,7 @@ function setCurrentLocationState(latlng, accuracyMeters, { openPopup = true } = 
   const accuracyRadius = Math.max(Number(accuracyMeters) || 0, 12);
   lastCurrentLocation = currentLngLat;
   lastCurrentLocationAccuracyMeters = accuracyRadius;
+  lastLocationErrorMessage = null;
 
   if (accuracyRadius <= MAX_VISIBLE_ACCURACY_RADIUS_METERS) {
     const accuracyFeature = createCirclePolygonFeature(currentLngLat, accuracyRadius);
@@ -2719,6 +2723,64 @@ function formatCompassHeadingValue(heading) {
   return `${heading.toFixed(1)}°`;
 }
 
+function formatDiagnosticsCoordinate(value) {
+  if (!(typeof value === "number" && Number.isFinite(value))) {
+    return "none";
+  }
+
+  return value.toFixed(6);
+}
+
+function formatDiagnosticsMeters(value) {
+  if (!(typeof value === "number" && Number.isFinite(value))) {
+    return "none";
+  }
+
+  return `${Math.round(value)} m`;
+}
+
+function updateCompassDebugOverlay(nowMs = getHeadingNowMs(), currentHeadingState = null) {
+  if (!compassDebugOverlayBody) {
+    return;
+  }
+
+  const headingState = currentHeadingState || getHeadingState(nowMs);
+  const currentLocationLabel = lastCurrentLocation
+    ? `${formatDiagnosticsCoordinate(lastCurrentLocation.lat)}, ${formatDiagnosticsCoordinate(lastCurrentLocation.lng)}`
+    : "none";
+  const sensorAgeMs = typeof lastSensorHeadingAt === "number" && Number.isFinite(lastSensorHeadingAt)
+    ? Math.max(0, Math.round(nowMs - lastSensorHeadingAt))
+    : null;
+  const diagnosticsLines = [
+    `Build: ${APP_BUILD_ID}`,
+    `URL: ${typeof window !== "undefined" ? window.location.href : "none"}`,
+    `Secure context: ${typeof window !== "undefined" ? String(Boolean(window.isSecureContext)) : "false"}`,
+    `Touch device: ${String(isTouchInteractionDevice())}`,
+    `Geolocation API: ${typeof navigator !== "undefined" && navigator.geolocation ? "available" : "missing"}`,
+    `Following me: ${String(isFollowingCurrentLocation)}`,
+    `Current location: ${currentLocationLabel}`,
+    `Accuracy: ${formatDiagnosticsMeters(lastCurrentLocationAccuracyMeters)}`,
+    `Last location error: ${lastLocationErrorMessage || "none"}`,
+    `Compass permission: ${getResolvedCompassPermissionState()}`,
+    `Compass pending: ${String(isCompassPermissionRequestPending)}`,
+    `Last compass error: ${lastCompassPermissionErrorMessage || "none"}`,
+    `Heading source: ${getHeadingSourceLabel(headingState.source)}`,
+    `Effective heading: ${formatCompassHeadingValue(headingState.effectiveHeading)}`,
+    `Stored heading: ${formatCompassHeadingValue(headingState.storedHeading)}`,
+    `Sensor heading: ${formatCompassHeadingValue(lastSensorHeading)}`,
+    `Raw sensor heading: ${formatCompassHeadingValue(lastRawSensorHeading)}`,
+    `Sensor kind: ${lastSensorHeadingKind || "none"}`,
+    `Sensor accuracy: ${typeof lastSensorHeadingAccuracy === "number" && Number.isFinite(lastSensorHeadingAccuracy) ? `${lastSensorHeadingAccuracy.toFixed(1)}°` : "none"}`,
+    `Sensor age: ${sensorAgeMs === null ? "none" : `${sensorAgeMs} ms`}`,
+    `Last sensor event: ${formatCompassTimestamp(lastSensorEventWallClockMs)}`,
+    `Route active: ${String(Boolean(activeRoute))}`,
+    `Field loaded: ${String(Boolean(lastLoadedBounds && lastStats))}`,
+    `Storage: ${canUseLocalStorage() ? "available" : "unavailable"}`,
+  ];
+
+  compassDebugOverlayBody.textContent = diagnosticsLines.join("\n");
+}
+
 function getHeadingSourceLabel(source) {
   if (source === "sensor") {
     return "sensor";
@@ -2755,7 +2817,7 @@ function syncCompassUi(nowMs = getHeadingNowMs()) {
 
   if (compassDebugToggleButton && compassDebugOverlay) {
     compassDebugOverlay.hidden = !isCompassDebugOverlayVisible;
-    compassDebugToggleButton.textContent = isCompassDebugOverlayVisible ? "Hide Debug" : "Show Debug";
+    compassDebugToggleButton.textContent = isCompassDebugOverlayVisible ? "Hide Diagnostics" : "Show Diagnostics";
     compassDebugToggleButton.setAttribute("aria-pressed", String(isCompassDebugOverlayVisible));
   }
 
@@ -2773,7 +2835,7 @@ function ensureCompassUi() {
   if (
     typeof document === "undefined"
     || compassUiRoot
-    || (!COMPASS_DEBUG_MODE_ENABLED && !canRequestCompassPermission)
+    || (!RUNTIME_DIAGNOSTICS_ENABLED && !canRequestCompassPermission)
   ) {
     return;
   }
@@ -2815,7 +2877,7 @@ function ensureCompassUi() {
     compassUiRoot.append(compassPermissionButton);
   }
 
-  if (!COMPASS_DEBUG_MODE_ENABLED) {
+  if (!RUNTIME_DIAGNOSTICS_ENABLED) {
     document.body.append(compassUiRoot);
     syncCompassUi();
     return;
@@ -2852,7 +2914,7 @@ function ensureCompassUi() {
   });
 
   const compassDebugTitle = document.createElement("div");
-  compassDebugTitle.textContent = "Compass Debug";
+  compassDebugTitle.textContent = "Runtime Diagnostics";
   Object.assign(compassDebugTitle.style, {
     marginBottom: "6px",
     fontSize: "12px",
@@ -2894,6 +2956,7 @@ async function requestCompassPermissionFromUserGesture() {
   }
 
   isCompassPermissionRequestPending = true;
+  lastCompassPermissionErrorMessage = null;
   syncCompassUi();
 
   try {
@@ -2913,6 +2976,7 @@ async function requestCompassPermissionFromUserGesture() {
     setCompassPermissionState(COMPASS_PERMISSION_DENIED_STATE);
     return COMPASS_PERMISSION_DENIED_STATE;
   } catch (error) {
+    lastCompassPermissionErrorMessage = error instanceof Error ? error.message : String(error);
     setCompassPermissionState(
       error instanceof Error && error.message === "Compass permission request timed out."
         ? COMPASS_PERMISSION_REQUIRED_STATE
@@ -3427,7 +3491,9 @@ function startContinuousLocationWatch() {
       syncHeadingFromLocation(latlng, position.coords.heading, position.coords.speed, { previousLocation });
     },
     (error) => {
+      lastLocationErrorMessage = describeGeolocationError(error);
       console.warn("[DGM] Continuous location watch error:", error.code, error.message);
+      updateCompassDebugOverlay(getHeadingNowMs());
     },
     {
       enableHighAccuracy: true,
@@ -4601,8 +4667,10 @@ async function centerMapOnInitialLocationOnce() {
       zoom: clampMapZoom(INITIAL_LOCATION_ZOOM),
     });
   } catch (error) {
+    lastLocationErrorMessage = error instanceof Error ? error.message : describeGeolocationError(error);
     hasRequestedInitialLocation = false;
     console.info("Initial geolocation unavailable.", error);
+    updateCompassDebugOverlay(getHeadingNowMs());
   }
 }
 
@@ -4656,6 +4724,8 @@ async function locateUser() {
       map.easeTo({ center: lngLatToArray(latlng), duration: LOCATION_PAN_DURATION_SECONDS * 1000 });
     }
   } catch (error) {
+    lastLocationErrorMessage = describeGeolocationError(error);
+    updateCompassDebugOverlay(getHeadingNowMs());
     alert(describeGeolocationError(error));
   } finally {
     setLocateButtonState(false);
