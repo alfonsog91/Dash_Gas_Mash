@@ -3039,7 +3039,10 @@ function renderHeadingConeFrame(nowMs = getHeadingNowMs()) {
 
   lastHeadingConeLoopHeading = resolvedHeading;
   syncMapBearingToHeading(resolvedHeading);
-  if (shouldRenderHeadingConeFrame(currentLocation, resolvedHeading, headingState.storedSpeed)) {
+  if (
+    headingState.source === "sensor"
+    || shouldRenderHeadingConeFrame(currentLocation, resolvedHeading, headingState.storedSpeed)
+  ) {
     updateHeadingCone(currentLocation, resolvedHeading, headingState.storedSpeed);
   }
 
@@ -4364,6 +4367,11 @@ function closePanelIfOpen() {
   return true;
 }
 
+function togglePanel() {
+  if (!panel) return;
+  syncPanelState(!panel.classList.contains("open"));
+}
+
 function setLocateButtonState(isLoading) {
   if (!elLocateMe) return;
 
@@ -4534,8 +4542,19 @@ async function centerMapOnInitialLocationOnce() {
       maximumAge: 300000,
     });
 
+    const latlng = {
+      lat: position.coords.latitude,
+      lng: position.coords.longitude,
+    };
+    setCurrentLocationFollowEnabled(true);
+    setCurrentLocationState(latlng, position.coords.accuracy, { openPopup: false });
+    syncHeadingFromLocation(latlng, position.coords.heading, position.coords.speed, {
+      previousLocation: null,
+      nowMs: getHeadingNowMs(),
+    });
+
     map.jumpTo({
-      center: [position.coords.longitude, position.coords.latitude],
+      center: [latlng.lng, latlng.lat],
       zoom: clampMapZoom(INITIAL_LOCATION_ZOOM),
     });
   } catch (error) {
@@ -6020,6 +6039,10 @@ if (elLocateMe) {
   elLocateMe.addEventListener("click", locateUser);
 }
 
+addPreferredPressHandler(menuButton, () => {
+  togglePanel();
+});
+
 if (elStreetMode) {
   elStreetMode.addEventListener("click", () => applyBaseStyle("map"));
 }
@@ -6142,12 +6165,6 @@ map.on("load", () => {
   startDeviceOrientationWatch();
   startBlueDotBreathingAnimation();
   startHeadingConeRenderLoop();
-
-  if (menuButton && panel) {
-    addPreferredPressHandler(menuButton, () => {
-      syncPanelState(!panel.classList.contains("open"));
-    });
-  }
 
   if (panel) {
     panel.addEventListener("click", (event) => {
