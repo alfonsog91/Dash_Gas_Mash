@@ -1670,7 +1670,7 @@ function focusActiveNavigationCamera({ force = false, mode = "driver" } = {}) {
 
   setNavigationCameraMode(mode);
   renderNavigationCard(activeRoute);
-  syncActiveNavigationCamera({ force: true, allowBearing: true });
+  syncActiveNavigationCamera({ force: true, allowBearing: false });
   if (force) {
     setNavigationStatus(mode === "arrival" ? "Arrival camera active." : "Driver camera active.", "info");
   }
@@ -2711,6 +2711,14 @@ function getHeadingSourceLabel(source) {
   }
 
   if (source === "bearing" || source === "map-bearing") {
+    return "map";
+  }
+
+  return source || "none";
+}
+
+function syncCompassUi(nowMs = getHeadingNowMs()) {
+  if (compassPermissionButton) {
     const shouldShowPermissionButton = compassPermissionState === COMPASS_PERMISSION_REQUIRED_STATE
       || compassPermissionState === COMPASS_PERMISSION_DENIED_STATE
       || isCompassPermissionRequestPending;
@@ -3454,7 +3462,13 @@ async function refreshActiveRouteFromOrigin(origin, options = {}) {
   if (options.fitToRoute || navigationCameraMode === "overview") {
     fitRouteToView(activeRoute);
   } else if (isNavigationFollowCameraActive()) {
-    syncActiveNavigationCamera({ latlng: origin, heading: lastKnownHeading, speed: lastKnownHeadingSpeed, force: true });
+    syncActiveNavigationCamera({
+      latlng: origin,
+      heading: lastKnownHeading,
+      speed: lastKnownHeadingSpeed,
+      force: true,
+      allowBearing: false,
+    });
   }
 
   return activeRoute;
@@ -4419,7 +4433,7 @@ function syncMapBearingToHeading(heading, { force = false } = {}) {
     return;
   }
 
-  syncActiveNavigationCamera({ heading, force, allowBearing: true });
+  syncActiveNavigationCamera({ heading, force, allowBearing: false });
 }
 
 function clearPendingMapTapPopup() {
@@ -4537,9 +4551,9 @@ async function centerMapOnInitialLocationOnce() {
 
   try {
     const position = await getCurrentPosition({
-      enableHighAccuracy: false,
-      timeout: INITIAL_LOCATION_TIMEOUT_MS,
-      maximumAge: 300000,
+      enableHighAccuracy: true,
+      timeout: Math.max(INITIAL_LOCATION_TIMEOUT_MS, CONTINUOUS_WATCH_TIMEOUT_MS),
+      maximumAge: 60000,
     });
 
     const latlng = {
@@ -6036,7 +6050,10 @@ elLoad.addEventListener("click", () => {
 });
 
 if (elLocateMe) {
-  elLocateMe.addEventListener("click", locateUser);
+  elLocateMe.addEventListener("click", () => {
+    requestCompassPermissionOnFirstGesture();
+    locateUser();
+  });
 }
 
 addPreferredPressHandler(menuButton, () => {
