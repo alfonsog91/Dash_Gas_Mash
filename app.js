@@ -371,6 +371,7 @@ if (elHorizon) {
 
 let isLocating = false;
 let hasRequestedInitialLocation = false;
+let hasCenteredInitialCurrentLocation = false;
 let activeContinuousWatchId = null;
 let lastKnownHeading = null;
 let lastKnownHeadingSource = null;
@@ -2402,7 +2403,8 @@ function setCurrentLocationState(latlng, accuracyMeters, { openPopup = true } = 
   }]));
 
   refreshHeadingConeWithEffectiveHeading(currentLngLat, lastKnownHeadingSpeed);
-  syncMapToCurrentLocation(currentLngLat);
+  syncMapToCurrentLocation(currentLngLat, { force: !hasCenteredInitialCurrentLocation });
+  hasCenteredInitialCurrentLocation = true;
 
   if (openPopup) {
     openPopupAtLngLat(currentLngLat, `You are here<br/><span class="mono">Accuracy ±${Math.round(accuracyRadius)} m</span>`);
@@ -4636,18 +4638,7 @@ function openStatsPopupAtLatLng(latlng) {
   if (!latlng) return;
 
   closePanelIfOpen();
-
-  if (!lastRestaurants || lastRestaurants.length === 0) {
-    openPopupAtLngLat(latlng, "Load data first (click ‘Load / Refresh for current view’).", { closeButton: true });
-    return;
-  }
-
-  const point = setSpotMarker(latlng);
-  openPopupAtLngLat(
-    point,
-    renderSpotPopupHtml(point, lastRestaurants, lastParams.tauMeters, lastParams.hour),
-    { closeButton: true }
-  );
+  openSpotSheet(latlng);
 }
 
 function latlngToObject(value) {
@@ -6040,7 +6031,6 @@ async function loadForView() {
 }
 
 installRuntimeDebugSurface();
-installCompassPermissionAutoRequest();
 
 elLoad.addEventListener("click", () => {
   loadForView().catch((err) => {
@@ -6051,7 +6041,9 @@ elLoad.addEventListener("click", () => {
 
 if (elLocateMe) {
   elLocateMe.addEventListener("click", () => {
-    requestCompassPermissionOnFirstGesture();
+    requestCompassPermissionFromUserGesture().catch((error) => {
+      console.warn("[DGM] Compass permission request failed:", error);
+    });
     locateUser();
   });
 }
