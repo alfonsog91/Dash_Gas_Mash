@@ -1057,6 +1057,11 @@ function createHeadingRuntime({
       });
 
       const nowMs = getHeadingNowMs();
+      const effectiveDeadZoneDegrees = Math.max(5, Number(headingFilterDeadZoneDegrees) || 0);
+      const hasPoorAccuracy = typeof sensorReading.accuracy === "number"
+        && Number.isFinite(sensorReading.accuracy)
+        && sensorReading.accuracy > headingSensorMaxWebkitCompassAccuracyDegrees;
+      const hasLowReliability = sensorReading.reliable !== true;
       sensorEventWallClockMs = Date.now();
       rawSensorHeading = normalizeHeadingDegrees(sensorReading.rawHeading);
       sensorHeadingAccuracy = typeof sensorReading.accuracy === "number" && Number.isFinite(sensorReading.accuracy)
@@ -1064,7 +1069,13 @@ function createHeadingRuntime({
         : null;
       sensorHeadingKind = sensorReading.source;
 
-      if (sensorReading.heading !== null) {
+      if (sensorReading.heading !== null && !hasPoorAccuracy && !hasLowReliability) {
+        if (sensorHeading !== null && getHeadingDeltaDegrees(sensorReading.heading, sensorHeading) < effectiveDeadZoneDegrees) {
+          sensorHeadingAt = nowMs;
+          updateCompassDebugOverlay(nowMs);
+          return;
+        }
+
         sensorHeading = sensorReading.heading;
         sensorHeadingAt = nowMs;
       }
