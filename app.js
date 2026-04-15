@@ -228,6 +228,7 @@ let lastHeatFeatures = [];
 let lastSpotPoint = null;
 let lastRankedParkingAll = [];
 let currentBaseStyle = "map";
+let pendingStyleLayerRestore = false;
 let activeSearchAbort = null;
 let activeSearchMarker = null;
 let searchSequence = 0;
@@ -620,9 +621,20 @@ function restoreMapDataSources() {
   return dataScoringRuntime.restoreMapDataSources();
 }
 
+function restoreLayersAfterStyleChange() {
+  if (!pendingStyleLayerRestore || !map.isStyleLoaded()) return;
+
+  pendingStyleLayerRestore = false;
+  ensureMapSourcesAndLayers();
+  restoreMapDataSources();
+  syncModeButtons();
+  syncHeadingConeRenderLoop();
+}
+
 function applyBaseStyle(mode) {
   if (mode === currentBaseStyle) return;
   currentBaseStyle = mode;
+  pendingStyleLayerRestore = true;
   syncModeButtons();
   map.setStyle(mode === "satellite" ? SATELLITE_STYLE : MAP_STYLE_URL);
 }
@@ -3696,8 +3708,9 @@ map.on("load", () => {
 });
 
 map.on("style.load", () => {
-  ensureMapSourcesAndLayers();
-  restoreMapDataSources();
-  syncModeButtons();
-  syncHeadingConeRenderLoop();
+  restoreLayersAfterStyleChange();
+});
+
+map.on("styledata", () => {
+  restoreLayersAfterStyleChange();
 });
