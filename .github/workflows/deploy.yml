@@ -25,6 +25,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Inject Mapbox Token
+        run: |
+          TOKEN_SCRIPT="<script>window.DASH_MAPBOX_TOKEN='${{ secrets.MAPBOX_TOKEN }}';</script>"
+          sed -i "s|<head>|<head>${TOKEN_SCRIPT}|" index.html  
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
