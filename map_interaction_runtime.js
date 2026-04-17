@@ -1,5 +1,5 @@
 function createMapInteractionRuntime({
-  maplibregl,
+  mapboxgl,
   getMap,
   getElMain,
   getPanel,
@@ -83,7 +83,7 @@ function createMapInteractionRuntime({
     closePlaceSheet();
     closeActivePopup();
 
-    const popup = new maplibregl.Popup({
+    const popup = new mapboxgl.Popup({
       closeButton: false,
       closeOnClick: false,
       className: "dgm-popup",

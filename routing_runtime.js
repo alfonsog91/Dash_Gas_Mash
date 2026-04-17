@@ -1,5 +1,5 @@
 function createRoutingRuntime({
-  maplibregl,
+  mapboxgl,
   getMap,
   getRoutingState,
   setRoutingState,
@@ -121,7 +121,7 @@ function createRoutingRuntime({
 
   function buildRouteBounds(coordinates) {
     if (!coordinates?.length) return null;
-    const bounds = new maplibregl.LngLatBounds(coordinates[0], coordinates[0]);
+    const bounds = new mapboxgl.LngLatBounds(coordinates[0], coordinates[0]);
     for (const coordinate of coordinates) {
       bounds.extend(coordinate);
     }

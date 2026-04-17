@@ -65,7 +65,7 @@ console.info("[DGM] app build", APP_BUILD_ID);
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
 const SHADOW_LEARNED_MODEL = Boolean(window.DGM_SHADOW_PREDICTION_MODEL);
-const MAPTILER_GEOCODING_API_URL = "https://api.maptiler.com/geocoding";
+const MAPBOX_GEOCODING_API_URL = "https://api.mapbox.com/geocoding/v5/mapbox.places";
 const NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search";
 const OSRM_ROUTE_API_URL = "https://router.project-osrm.org/route/v1/driving";
 const NAV_REROUTE_MIN_DISTANCE_METERS = 30;
@@ -143,7 +143,7 @@ if (window.location.protocol === "file:") {
 const DEFAULT_CENTER = [-117.5931, 34.1064]; // [lng, lat] Rancho Cucamonga
 const DEFAULT_ZOOM = 12;
 
-const MAPTILER_API_KEY = String(window.DASH_MAPTILER_KEY || "").trim();
+const MAPBOX_GEOCODING_TOKEN = String(window.DASH_MAPBOX_TOKEN || "").trim();
 const MAPBOX_PLACEHOLDER_TOKEN = "MAPBOX_TOKEN_HERE";
 const MAPBOX_STYLE_URL = "mapbox://styles/mapbox/satellite-streets-v12";
 const MAPBOX_TRAFFIC_SOURCE_URL = "mapbox://mapbox.mapbox-traffic-v1";
@@ -1866,7 +1866,7 @@ function renderSearchResults(results) {
   setSearchResultsExpanded(true);
 }
 
-function normalizeMapTilerMatch(rawMatch) {
+function normalizeMapboxMatch(rawMatch) {
   const coordinates = Array.isArray(rawMatch?.center)
     ? rawMatch.center
     : rawMatch?.geometry?.coordinates;
@@ -1895,9 +1895,9 @@ function normalizeNominatimMatch(rawMatch) {
   };
 }
 
-async function fetchMapTilerMatches(query, { limit = 5, signal } = {}) {
-  const searchUrl = new URL(`${MAPTILER_GEOCODING_API_URL}/${encodeURIComponent(query)}.json`);
-  searchUrl.searchParams.set("key", MAPTILER_API_KEY);
+async function fetchMapboxMatches(query, { limit = 5, signal } = {}) {
+  const searchUrl = new URL(`${MAPBOX_GEOCODING_API_URL}/${encodeURIComponent(query)}.json`);
+  searchUrl.searchParams.set("access_token", MAPBOX_GEOCODING_TOKEN);
   searchUrl.searchParams.set("autocomplete", "true");
   searchUrl.searchParams.set("limit", String(limit));
   searchUrl.searchParams.set("language", "en");
@@ -1920,7 +1920,7 @@ async function fetchMapTilerMatches(query, { limit = 5, signal } = {}) {
   const payload = await response.json();
   return Array.isArray(payload?.features)
     ? payload.features
-      .map(normalizeMapTilerMatch)
+      .map(normalizeMapboxMatch)
       .filter((match) => Number.isFinite(match.lat) && Number.isFinite(match.lng))
     : [];
 }
@@ -1947,16 +1947,14 @@ async function fetchNominatimMatches(query, { limit = 5, signal } = {}) {
 }
 
 async function fetchSearchMatches(query, { limit = 5, signal } = {}) {
-  if (MAPTILER_API_KEY) {
-    try {
-      const primaryMatches = await fetchMapTilerMatches(query, { limit, signal });
-      if (primaryMatches.length) {
-        return primaryMatches;
-      }
-    } catch (error) {
-      if (error?.name === "AbortError") throw error;
-      console.warn("MapTiler geocoding failed; falling back to Nominatim.", error);
+  try {
+    const primaryMatches = await fetchMapboxMatches(query, { limit, signal });
+    if (primaryMatches.length) {
+      return primaryMatches;
     }
+  } catch (error) {
+    if (error?.name === "AbortError") throw error;
+    console.warn("Mapbox geocoding failed; falling back to Nominatim.", error);
   }
 
   return fetchNominatimMatches(query, { limit, signal });
@@ -2459,7 +2457,7 @@ dataScoringRuntime = createDataScoringRuntime({
 });
 
 routingRuntime = createRoutingRuntime({
-  maplibregl: mapboxgl,
+  mapboxgl,
   getMap: () => map,
   getRoutingState,
   setRoutingState,
@@ -2582,7 +2580,7 @@ function togglePanel() {
 }
 
 mapInteractionRuntime = createMapInteractionRuntime({
-  maplibregl: mapboxgl,
+  mapboxgl,
   getMap: () => map,
   getElMain: () => elMain,
   getPanel: () => panel,

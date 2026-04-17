@@ -1,6 +1,6 @@
 # Dash Gas Mash Probability Field Explorer
 
-Local, **public-data** probability field explorer that renders a vector basemap with MapLibre GL JS and overlays a **10-minute good-order probability field** based on transparent, bounded proxy models.
+Local, **public-data** probability field explorer that renders a vector basemap with Mapbox GL JS and overlays a **10-minute good-order probability field** based on transparent, bounded proxy models.
 
 This is **not affiliated with DoorDash** and does **not** use proprietary DoorDash data. It’s a strategic, tunable proxy model inspired by public DoorDash engineering writeups.
 
@@ -210,17 +210,16 @@ From the workspace folder:
 
 ## Basemap configuration
 
-The app now uses `MapLibre GL JS`.
+The app now uses `Mapbox GL JS`.
 
-- If `window.DASH_MAPTILER_KEY` is set in [index.html](index.html), the app uses a hosted `MapTiler` vector style.
-- If no key is configured, it falls back to the public `MapLibre` demo style so the app still loads for development.
+- It reads `window.DASH_MAPBOX_TOKEN` from [index.html](index.html) and uses the hosted Mapbox style configured in [app.js](app.js).
+- If no token is configured, startup fails before map initialization.
 
-To enable `MapTiler`, edit [index.html](index.html) and set:
+To enable `Mapbox`, edit [index.html](index.html) and set:
 
 ```html
 <script>
-  window.DASH_MAPTILER_KEY = "your-maptiler-key";
-  window.DASH_MAPTILER_STYLE_ID = "basic-v2";
+  window.DASH_MAPBOX_TOKEN = "your-mapbox-token";
 </script>
 ```
 
@@ -275,7 +274,7 @@ Use the range to compare two parking choices under the same settings: a higher b
 
 ## Legal / attribution
 
-- The app uses `MapLibre GL JS` with either `MapTiler` vector tiles or the public `MapLibre` demo style for development.
+- The app uses `Mapbox GL JS` with the hosted Mapbox style configured in [app.js](app.js).
 - Map data © OpenStreetMap contributors.
 - Census tract anchors in `data/census-rancho-ontario-tracts-2023.json` are derived from public U.S. Census Bureau ACS 2023 5-year tables and TIGERweb tract centroids for a small default-region slice.
 - Live weather data comes from the public Open-Meteo forecast API.
