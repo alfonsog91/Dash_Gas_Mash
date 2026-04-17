@@ -69,7 +69,13 @@ function createLocationRuntime({
 
     locateMeElement.disabled = isLocating;
     locateMeElement.setAttribute("aria-busy", String(isLocating));
-    locateMeElement.textContent = isLocating ? "..." : "ME";
+    locateMeElement.setAttribute(
+      "aria-label",
+      isLocating ? "Recentering on your current location" : "Recenter and follow my location"
+    );
+    locateMeElement.title = isLocating
+      ? "Recentering on your current location"
+      : "Recenter and follow my location";
   }
 
   function setCurrentLocationFollowEnabled(isEnabled) {

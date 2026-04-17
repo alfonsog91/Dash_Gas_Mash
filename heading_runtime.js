@@ -626,39 +626,60 @@ function createHeadingRuntime({
     });
   }
 
+  function isLocateButtonGestureTarget(target) {
+    if (!locateMeElement || !target) {
+      return false;
+    }
+
+    if (target === locateMeElement) {
+      return true;
+    }
+
+    return typeof Node !== "undefined"
+      && target instanceof Node
+      && typeof locateMeElement.contains === "function"
+      && locateMeElement.contains(target);
+  }
+
   function installCompassPermissionAutoRequest() {
     if (!getDocumentLike() || hasInstalledCompassPermissionAutoRequest) {
       return;
     }
 
     hasInstalledCompassPermissionAutoRequest = true;
-    const handleFirstGesture = () => {
+    const documentLike = getDocumentLike();
+    const cleanupFns = [];
+    const cleanup = () => {
+      while (cleanupFns.length) {
+        const teardown = cleanupFns.pop();
+        teardown?.();
+      }
+    };
+
+    const handleFirstGesture = (event) => {
+      if (isLocateButtonGestureTarget(event?.target)) {
+        return;
+      }
+
+      cleanup();
       requestCompassPermissionOnFirstGesture();
     };
 
-    getDocumentLike().addEventListener("touchstart", handleFirstGesture, {
-      capture: true,
-      once: true,
-      passive: true,
-    });
+    const addDocumentListener = (eventName, options) => {
+      documentLike.addEventListener(eventName, handleFirstGesture, options);
+      cleanupFns.push(() => documentLike.removeEventListener(eventName, handleFirstGesture, options));
+    };
 
-    if (searchToggleElement) {
-      searchToggleElement.addEventListener("pointerdown", handleFirstGesture, {
-        capture: true,
-        once: true,
-      });
-    }
-
-    if (locateMeElement) {
-      locateMeElement.addEventListener("click", handleFirstGesture, {
-        capture: true,
-        once: true,
-      });
-    }
+    addDocumentListener("pointerdown", { capture: true });
+    addDocumentListener("touchstart", { capture: true, passive: true });
+    addDocumentListener("wheel", { capture: true, passive: true });
 
     const map = getMap?.();
-    if (map && typeof map.once === "function") {
-      map.once("click", handleFirstGesture);
+    if (map && typeof map.on === "function" && typeof map.off === "function") {
+      for (const eventName of ["dragstart", "rotatestart", "zoomstart"]) {
+        map.on(eventName, handleFirstGesture);
+        cleanupFns.push(() => map.off(eventName, handleFirstGesture));
+      }
     }
   }
 

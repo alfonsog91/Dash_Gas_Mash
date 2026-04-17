@@ -144,32 +144,63 @@ const DEFAULT_CENTER = [-117.5931, 34.1064]; // [lng, lat] Rancho Cucamonga
 const DEFAULT_ZOOM = 12;
 
 const MAPTILER_API_KEY = String(window.DASH_MAPTILER_KEY || "").trim();
-const STREET_STYLE_ID = String(window.DASH_MAPTILER_STYLE_ID || "basic-v2").trim();
-const MAP_STYLE_URL = MAPTILER_API_KEY
-  ? `https://api.maptiler.com/maps/${encodeURIComponent(STREET_STYLE_ID)}/style.json?key=${encodeURIComponent(MAPTILER_API_KEY)}`
-  : "https://demotiles.maplibre.org/style.json";
-const SATELLITE_STYLE = {
-  version: 8,
-  sources: {
-    satellite: {
-      type: "raster",
-      tiles: [
-        "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-      ],
-      tileSize: 256,
-      attribution: "Imagery © Esri, Maxar, Earthstar Geographics, and the GIS User Community",
-    },
-  },
-  layers: [
-    {
-      id: "satellite-base",
-      type: "raster",
-      source: "satellite",
-      minzoom: 0,
-      maxzoom: 22,
-    },
-  ],
-};
+const MAPBOX_PLACEHOLDER_TOKEN = "MAPBOX_TOKEN_HERE";
+const MAPBOX_STYLE_URL = "mapbox://styles/mapbox/satellite-streets-v12";
+const MAPBOX_TRAFFIC_SOURCE_URL = "mapbox://mapbox.mapbox-traffic-v1";
+const MAPBOX_TRAFFIC_SOURCE_LAYER = "traffic";
+const CINEMATIC_DAY_NIGHT_TRANSITION_MS = 1250;
+const mapboxgl = window.mapboxgl;
+
+function renderFatalMapError(message, kicker = "Map unavailable") {
+  const host = document.getElementById("main") || document.body;
+  if (!host) {
+    return;
+  }
+
+  const body = document.body;
+  if (body) {
+    body.classList.add("has-map-fatal");
+  }
+
+  const existingOverlay = host.querySelector(".map-fatal-overlay");
+  if (existingOverlay) {
+    existingOverlay.remove();
+  }
+
+  const overlay = document.createElement("div");
+  overlay.className = "map-fatal-overlay";
+
+  const card = document.createElement("div");
+  card.className = "map-fatal-card";
+
+  const kickerElement = document.createElement("div");
+  kickerElement.className = "map-fatal-kicker";
+  kickerElement.textContent = kicker;
+
+  const titleElement = document.createElement("div");
+  titleElement.className = "map-fatal-title";
+  titleElement.textContent = "Dash Gas Mash cannot load the map.";
+
+  const copyElement = document.createElement("div");
+  copyElement.className = "map-fatal-copy";
+  copyElement.textContent = message;
+
+  card.append(kickerElement, titleElement, copyElement);
+  overlay.append(card);
+  host.append(overlay);
+}
+
+if (!mapboxgl) {
+  renderFatalMapError("Mapbox GL JS failed to load from the CDN.");
+  throw new Error("Mapbox GL JS failed to load from the CDN.");
+}
+
+mapboxgl.accessToken = window.DASH_MAPBOX_TOKEN || "MAPBOX_TOKEN_HERE";
+
+if (mapboxgl.accessToken === MAPBOX_PLACEHOLDER_TOKEN || !String(mapboxgl.accessToken).trim()) {
+  renderFatalMapError("Inject window.DASH_MAPBOX_TOKEN before app.js loads.", "Mapbox token required");
+  throw new Error("Mapbox token missing. Inject window.DASH_MAPBOX_TOKEN before app.js loads.");
+}
 
 const SOURCE_RESTAURANTS = "restaurants";
 const SOURCE_PARKING = "parking";
@@ -179,11 +210,23 @@ const SOURCE_CURRENT_LOCATION = "current-location";
 const SOURCE_CURRENT_LOCATION_ACCURACY = "current-location-accuracy";
 const SOURCE_HEADING = "heading";
 const SOURCE_ROUTE = "route";
+const SOURCE_CINEMATIC_GRADE = "cinematic-grade";
+const SOURCE_TRAFFIC = "traffic";
 
 const LAYER_HEAT = "heat-layer";
+const LAYER_RESTAURANTS_GLOW = "restaurants-glow-layer";
 const LAYER_RESTAURANTS = "restaurants-layer";
+const LAYER_PARKING_GLOW = "parking-glow-layer";
 const LAYER_PARKING = "parking-layer";
+const LAYER_SPOT_GLOW = "spot-glow-layer";
 const LAYER_SPOT = "spot-layer";
+const LAYER_SPOT_LABEL = "spot-label-layer";
+const LAYER_CINEMATIC_CONTRAST = "cinematic-contrast-layer";
+const LAYER_CINEMATIC_LIFT = "cinematic-lift-layer";
+const LAYER_CINEMATIC_TINT = "cinematic-tint-layer";
+const LAYER_TRAFFIC_CASING = "traffic-casing-layer";
+const LAYER_TRAFFIC = "traffic-layer";
+const LAYER_CURRENT_LOCATION_ACCURACY_GLOW = "current-location-accuracy-glow";
 const LAYER_CURRENT_LOCATION_ACCURACY_FILL = "current-location-accuracy-fill";
 const LAYER_CURRENT_LOCATION_ACCURACY_LINE = "current-location-accuracy-line";
 const LAYER_HEADING_GLOW = "heading-glow-layer";
@@ -194,16 +237,17 @@ const LAYER_CURRENT_LOCATION_DOT = "current-location-dot";
 const LAYER_ROUTE_CASING = "route-casing-layer";
 const LAYER_ROUTE = "route-layer";
 
-const map = new maplibregl.Map({
+const map = new mapboxgl.Map({
   container: "map",
-  style: MAP_STYLE_URL,
+  style: MAPBOX_STYLE_URL,
   center: DEFAULT_CENTER,
   zoom: DEFAULT_ZOOM,
   maxZoom: 19,
-  attributionControl: { compact: true },
+  attributionControl: false,
 });
 
-map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), "top-right");
+map.addControl(new mapboxgl.AttributionControl({ compact: true }), "bottom-left");
 
 if (isTouchInteractionDevice() && map.doubleClickZoom) {
   map.doubleClickZoom.disable();
@@ -227,8 +271,7 @@ let lastCurrentLocationAccuracyMeters = null;
 let lastHeatFeatures = [];
 let lastSpotPoint = null;
 let lastRankedParkingAll = [];
-let currentBaseStyle = "map";
-let pendingStyleLayerRestore = false;
+const currentBaseStyle = "hybrid";
 let activeSearchAbort = null;
 let activeSearchMarker = null;
 let searchSequence = 0;
@@ -372,8 +415,6 @@ const elSearchForm = document.getElementById("searchForm");
 const elSearchInput = document.getElementById("searchInput");
 const elSearchButton = document.getElementById("searchButton");
 const elSearchResults = document.getElementById("searchResults");
-const elStreetMode = document.getElementById("streetMode");
-const elSatelliteMode = document.getElementById("satelliteMode");
 
 const LOCATION_TARGET_ZOOM = 16;
 const LOCATION_ANIMATION_MIN_START_ZOOM = 14;
@@ -603,18 +644,212 @@ function getHeadingConeRenderMesh() {
   return headingConeRenderMesh;
 }
 
-function syncModeButtons() {
-  if (elStreetMode) {
-    const isActive = currentBaseStyle === "map";
-    elStreetMode.classList.toggle("is-active", isActive);
-    elStreetMode.setAttribute("aria-pressed", String(isActive));
+function getCinematicThemeHour() {
+  const resolvedHour = Number(elHour?.value);
+  return Number.isFinite(resolvedHour) ? resolvedHour : new Date().getHours();
+}
+
+function getCinematicTheme(hour = getCinematicThemeHour()) {
+  const isNight = hour >= 18 || hour < 6;
+  return isNight
+    ? {
+        contrastColor: "#041019",
+        contrastOpacity: 0.08,
+        liftColor: "#76bcff",
+        liftOpacity: 0.026,
+        tintColor: "#7ca8ff",
+        tintOpacity: 0.11,
+      }
+    : {
+        contrastColor: "#281307",
+        contrastOpacity: 0.04,
+        liftColor: "#fff0d2",
+        liftOpacity: 0.05,
+        tintColor: "#ffbe84",
+        tintOpacity: 0.075,
+      };
+}
+
+function getBasemapOverlayBeforeId() {
+  const styleLayers = map.getStyle()?.layers || [];
+  const firstAppLayerId = [
+    LAYER_HEAT,
+    LAYER_ROUTE_CASING,
+    LAYER_ROUTE,
+    LAYER_RESTAURANTS_GLOW,
+    LAYER_RESTAURANTS,
+    LAYER_PARKING_GLOW,
+    LAYER_PARKING,
+    LAYER_SPOT_GLOW,
+    LAYER_SPOT,
+    LAYER_SPOT_LABEL,
+    LAYER_CURRENT_LOCATION_ACCURACY_GLOW,
+    LAYER_CURRENT_LOCATION_ACCURACY_FILL,
+    LAYER_CURRENT_LOCATION_ACCURACY_LINE,
+    LAYER_HEADING_GLOW,
+    LAYER_HEADING,
+    LAYER_HEADING_EDGE,
+    LAYER_CURRENT_LOCATION_HALO,
+    LAYER_CURRENT_LOCATION_DOT,
+  ].find((layerId) => map.getLayer(layerId));
+
+  if (firstAppLayerId) {
+    return firstAppLayerId;
   }
 
-  if (elSatelliteMode) {
-    const isActive = currentBaseStyle === "satellite";
-    elSatelliteMode.classList.toggle("is-active", isActive);
-    elSatelliteMode.setAttribute("aria-pressed", String(isActive));
+  return styleLayers.find((layer) => layer.type === "symbol")?.id || null;
+}
+
+function applyCinematicTheme() {
+  const theme = getCinematicTheme();
+  const layerPaintUpdates = [
+    [LAYER_CINEMATIC_CONTRAST, "fill-color", theme.contrastColor],
+    [LAYER_CINEMATIC_CONTRAST, "fill-opacity", theme.contrastOpacity],
+    [LAYER_CINEMATIC_LIFT, "fill-color", theme.liftColor],
+    [LAYER_CINEMATIC_LIFT, "fill-opacity", theme.liftOpacity],
+    [LAYER_CINEMATIC_TINT, "fill-color", theme.tintColor],
+    [LAYER_CINEMATIC_TINT, "fill-opacity", theme.tintOpacity],
+  ];
+
+  for (const [layerId, propertyName, propertyValue] of layerPaintUpdates) {
+    if (map.getLayer(layerId)) {
+      map.setPaintProperty(layerId, propertyName, propertyValue);
+    }
   }
+}
+
+function syncCategoryLayerVisibility() {
+  const showRestaurants = elShowRestaurants?.checked !== false;
+  const showParking = elShowParking?.checked !== false;
+
+  setLayerVisibility(LAYER_RESTAURANTS_GLOW, showRestaurants);
+  setLayerVisibility(LAYER_RESTAURANTS, showRestaurants);
+  setLayerVisibility(LAYER_PARKING_GLOW, showParking);
+  setLayerVisibility(LAYER_PARKING, showParking);
+}
+
+function ensureHybridBaseLayers() {
+  const beforeId = getBasemapOverlayBeforeId();
+  const theme = getCinematicTheme();
+
+  if (!map.getSource(SOURCE_CINEMATIC_GRADE)) {
+    map.addSource(SOURCE_CINEMATIC_GRADE, {
+      type: "geojson",
+      data: {
+        type: "FeatureCollection",
+        features: [{
+          type: "Feature",
+          geometry: {
+            type: "Polygon",
+            coordinates: [[
+              [-180, -85],
+              [180, -85],
+              [180, 85],
+              [-180, 85],
+              [-180, -85],
+            ]],
+          },
+          properties: {},
+        }],
+      },
+    });
+  }
+
+  if (!map.getLayer(LAYER_CINEMATIC_CONTRAST)) {
+    map.addLayer({
+      id: LAYER_CINEMATIC_CONTRAST,
+      type: "fill",
+      source: SOURCE_CINEMATIC_GRADE,
+      paint: {
+        "fill-color": theme.contrastColor,
+        "fill-opacity": theme.contrastOpacity,
+        "fill-color-transition": { duration: CINEMATIC_DAY_NIGHT_TRANSITION_MS, delay: 0 },
+        "fill-opacity-transition": { duration: CINEMATIC_DAY_NIGHT_TRANSITION_MS, delay: 0 },
+      },
+    }, beforeId);
+  }
+
+  if (!map.getLayer(LAYER_CINEMATIC_LIFT)) {
+    map.addLayer({
+      id: LAYER_CINEMATIC_LIFT,
+      type: "fill",
+      source: SOURCE_CINEMATIC_GRADE,
+      paint: {
+        "fill-color": theme.liftColor,
+        "fill-opacity": theme.liftOpacity,
+        "fill-color-transition": { duration: CINEMATIC_DAY_NIGHT_TRANSITION_MS, delay: 0 },
+        "fill-opacity-transition": { duration: CINEMATIC_DAY_NIGHT_TRANSITION_MS, delay: 0 },
+      },
+    }, beforeId);
+  }
+
+  if (!map.getLayer(LAYER_CINEMATIC_TINT)) {
+    map.addLayer({
+      id: LAYER_CINEMATIC_TINT,
+      type: "fill",
+      source: SOURCE_CINEMATIC_GRADE,
+      paint: {
+        "fill-color": theme.tintColor,
+        "fill-opacity": theme.tintOpacity,
+        "fill-color-transition": { duration: CINEMATIC_DAY_NIGHT_TRANSITION_MS, delay: 0 },
+        "fill-opacity-transition": { duration: CINEMATIC_DAY_NIGHT_TRANSITION_MS, delay: 0 },
+      },
+    }, beforeId);
+  }
+
+  if (!map.getSource(SOURCE_TRAFFIC)) {
+    map.addSource(SOURCE_TRAFFIC, {
+      type: "vector",
+      url: MAPBOX_TRAFFIC_SOURCE_URL,
+    });
+  }
+
+  if (!map.getLayer(LAYER_TRAFFIC_CASING)) {
+    map.addLayer({
+      id: LAYER_TRAFFIC_CASING,
+      type: "line",
+      source: SOURCE_TRAFFIC,
+      "source-layer": MAPBOX_TRAFFIC_SOURCE_LAYER,
+      minzoom: 7,
+      layout: {
+        "line-cap": "round",
+        "line-join": "round",
+      },
+      paint: {
+        "line-color": "rgba(5, 12, 19, 0.72)",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 7, 1.5, 11, 3.2, 16, 8.2],
+        "line-opacity": 0.72,
+      },
+    }, beforeId);
+  }
+
+  if (!map.getLayer(LAYER_TRAFFIC)) {
+    map.addLayer({
+      id: LAYER_TRAFFIC,
+      type: "line",
+      source: SOURCE_TRAFFIC,
+      "source-layer": MAPBOX_TRAFFIC_SOURCE_LAYER,
+      minzoom: 7,
+      layout: {
+        "line-cap": "round",
+        "line-join": "round",
+      },
+      paint: {
+        "line-color": [
+          "match", ["coalesce", ["get", "congestion"], "low"],
+          "low", "#61f2d4",
+          "moderate", "#ffc95c",
+          "heavy", "#ff8a5b",
+          "severe", "#ff4d88",
+          "#8fd8ff",
+        ],
+        "line-width": ["interpolate", ["linear"], ["zoom"], 7, 1.1, 11, 2.4, 16, 6.2],
+        "line-opacity": 0.9,
+      },
+    }, beforeId);
+  }
+
+  applyCinematicTheme();
 }
 
 function restoreMapDataSources() {
@@ -622,21 +857,12 @@ function restoreMapDataSources() {
 }
 
 function restoreLayersAfterStyleChange() {
-  if (!pendingStyleLayerRestore || !map.isStyleLoaded()) return;
+  if (!map.isStyleLoaded()) return;
 
-  pendingStyleLayerRestore = false;
   ensureMapSourcesAndLayers();
   restoreMapDataSources();
-  syncModeButtons();
+  syncCategoryLayerVisibility();
   syncHeadingConeRenderLoop();
-}
-
-function applyBaseStyle(mode) {
-  if (mode === currentBaseStyle) return;
-  currentBaseStyle = mode;
-  pendingStyleLayerRestore = true;
-  syncModeButtons();
-  map.setStyle(mode === "satellite" ? SATELLITE_STYLE : MAP_STYLE_URL);
 }
 
 function renderNavigationAction(lat, lon, label = "Start route", destinationTitle = "Destination") {
@@ -1793,7 +2019,7 @@ function focusSearchMatch(match) {
     essential: true,
   });
 
-  const marker = new maplibregl.Marker({ color: "#ffbf45" })
+  const marker = new mapboxgl.Marker({ color: "#ffbf45" })
     .setLngLat([lng, lat])
     .addTo(map);
   activeSearchMarker = marker;
@@ -1870,7 +2096,13 @@ function createCirclePolygonFeature(latlng, radiusMeters, steps = 48) {
 }
 
 function ensureMapSourcesAndLayers() {
-  if (map.getSource(SOURCE_RESTAURANTS)) return;
+  ensureHybridBaseLayers();
+
+  if (map.getSource(SOURCE_RESTAURANTS)) {
+    syncCategoryLayerVisibility();
+    applyCinematicTheme();
+    return;
+  }
 
   map.addSource(SOURCE_RESTAURANTS, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_PARKING, { type: "geojson", data: featureCollection() });
@@ -1889,16 +2121,16 @@ function ensureMapSourcesAndLayers() {
     paint: {
       "heatmap-weight": ["coalesce", ["get", "intensity"], 0],
       "heatmap-intensity": 1,
-      "heatmap-radius": 22,
-      "heatmap-opacity": 0.85,
+      "heatmap-radius": 24,
+      "heatmap-opacity": 0.82,
       "heatmap-color": [
         "interpolate", ["linear"], ["heatmap-density"],
-        0, "rgba(45,108,223,0)",
-        0.1, "#2d6cdf",
-        0.35, "#00d4ff",
-        0.55, "#fff1a8",
-        0.75, "#ff9b3d",
-        1, "#ff3b3b",
+        0, "rgba(0, 229, 255, 0)",
+        0.15, "rgba(30, 238, 255, 0.35)",
+        0.36, "#00ecff",
+        0.6, "#4da8ff",
+        0.8, "#7b47ff",
+        1, "#bb49ff",
       ],
     },
   });
@@ -1934,15 +2166,39 @@ function ensureMapSourcesAndLayers() {
   });
 
   map.addLayer({
+    id: LAYER_RESTAURANTS_GLOW,
+    type: "circle",
+    source: SOURCE_RESTAURANTS,
+    paint: {
+      "circle-radius": 10,
+      "circle-color": "#ff944a",
+      "circle-opacity": 0.28,
+      "circle-blur": 0.84,
+    },
+  });
+
+  map.addLayer({
     id: LAYER_RESTAURANTS,
     type: "circle",
     source: SOURCE_RESTAURANTS,
     paint: {
-      "circle-radius": 4,
-      "circle-color": "#ffbf45",
-      "circle-stroke-color": "#ffe59a",
-      "circle-stroke-width": 1,
-      "circle-opacity": 0.85,
+      "circle-radius": 4.6,
+      "circle-color": "#ffb25d",
+      "circle-stroke-color": "#fff0d1",
+      "circle-stroke-width": 1.2,
+      "circle-opacity": 0.96,
+    },
+  });
+
+  map.addLayer({
+    id: LAYER_PARKING_GLOW,
+    type: "circle",
+    source: SOURCE_PARKING,
+    paint: {
+      "circle-radius": 12,
+      "circle-color": "#5cf2ff",
+      "circle-opacity": 0.24,
+      "circle-blur": 0.82,
     },
   });
 
@@ -1952,10 +2208,22 @@ function ensureMapSourcesAndLayers() {
     source: SOURCE_PARKING,
     paint: {
       "circle-radius": 7,
-      "circle-color": "#2d6cdf",
-      "circle-stroke-color": "#9ad3ff",
-      "circle-stroke-width": 2,
-      "circle-opacity": 0.7,
+      "circle-color": "#64eeff",
+      "circle-stroke-color": "#f1feff",
+      "circle-stroke-width": 2.1,
+      "circle-opacity": 0.78,
+    },
+  });
+
+  map.addLayer({
+    id: LAYER_SPOT_GLOW,
+    type: "circle",
+    source: SOURCE_SPOT,
+    paint: {
+      "circle-radius": 18,
+      "circle-color": "#8e72ff",
+      "circle-opacity": 0.2,
+      "circle-blur": 0.86,
     },
   });
 
@@ -1964,11 +2232,44 @@ function ensureMapSourcesAndLayers() {
     type: "circle",
     source: SOURCE_SPOT,
     paint: {
-      "circle-radius": 9,
-      "circle-color": "#b18bff",
-      "circle-stroke-color": "#f4f1ff",
-      "circle-stroke-width": 2,
-      "circle-opacity": 0.75,
+      "circle-radius": 8.8,
+      "circle-color": "#f8fbff",
+      "circle-stroke-color": "#110d1f",
+      "circle-stroke-width": 2.4,
+      "circle-opacity": 0.98,
+    },
+  });
+
+  map.addLayer({
+    id: LAYER_SPOT_LABEL,
+    type: "symbol",
+    source: SOURCE_SPOT,
+    layout: {
+      "text-field": ["coalesce", ["get", "label"], "Best Spot"],
+      "text-font": ["Open Sans Bold", "Arial Unicode MS Bold"],
+      "text-size": 11,
+      "text-letter-spacing": 0.06,
+      "text-offset": [0, 1.55],
+      "text-anchor": "top",
+      "text-allow-overlap": true,
+    },
+    paint: {
+      "text-color": "#f3fbff",
+      "text-halo-color": "rgba(9, 16, 28, 0.92)",
+      "text-halo-width": 1.6,
+      "text-halo-blur": 0.4,
+    },
+  });
+
+  map.addLayer({
+    id: LAYER_CURRENT_LOCATION_ACCURACY_GLOW,
+    type: "line",
+    source: SOURCE_CURRENT_LOCATION_ACCURACY,
+    paint: {
+      "line-color": "#69f3ff",
+      "line-width": 5,
+      "line-opacity": 0.22,
+      "line-blur": 1.1,
     },
   });
 
@@ -1977,8 +2278,8 @@ function ensureMapSourcesAndLayers() {
     type: "fill",
     source: SOURCE_CURRENT_LOCATION_ACCURACY,
     paint: {
-      "fill-color": "#2d6cdf",
-      "fill-opacity": 0.1,
+      "fill-color": "#3af0ff",
+      "fill-opacity": 0.12,
     },
   });
 
@@ -1987,8 +2288,9 @@ function ensureMapSourcesAndLayers() {
     type: "line",
     source: SOURCE_CURRENT_LOCATION_ACCURACY,
     paint: {
-      "line-color": "#a7e3ff",
-      "line-width": 1,
+      "line-color": "#b8fcff",
+      "line-width": 1.4,
+      "line-opacity": 0.72,
     },
   });
 
@@ -2033,9 +2335,9 @@ function ensureMapSourcesAndLayers() {
     source: SOURCE_CURRENT_LOCATION,
     paint: {
       "circle-radius": BLUE_DOT_BASE_RADIUS_PX * BLUE_DOT_HALO_RADIUS_SCALE,
-      "circle-color": "#6dcdff",
+      "circle-color": "#56f0ff",
       "circle-opacity": 0.34,
-      "circle-blur": 0.68,
+      "circle-blur": 0.8,
     },
   });
 
@@ -2045,14 +2347,16 @@ function ensureMapSourcesAndLayers() {
     source: SOURCE_CURRENT_LOCATION,
     paint: {
       "circle-radius": BLUE_DOT_BASE_RADIUS_PX,
-      "circle-color": "#1da8ff",
-      "circle-stroke-color": "#f7fdff",
-      "circle-stroke-width": 3.6,
+      "circle-color": "#61f6ff",
+      "circle-stroke-color": "#08131d",
+      "circle-stroke-width": 3.2,
       "circle-opacity": 0.98,
     },
   });
 
   bindMapInteractionLayerEvents();
+  syncCategoryLayerVisibility();
+  applyCinematicTheme();
 }
 
 function setHourDefaults() {
@@ -2074,6 +2378,7 @@ function updateLabels() {
   elTipEmphasisVal.textContent = `${Number(elTipEmphasis.value).toFixed(2)}`;
   elMlBetaVal.textContent = `${Number(elMlBeta.value).toFixed(1)}`;
   elKSpotsVal.textContent = `${Number(elKSpots.value)}`;
+  applyCinematicTheme();
 }
 
 dataScoringRuntime = createDataScoringRuntime({
@@ -2154,7 +2459,7 @@ dataScoringRuntime = createDataScoringRuntime({
 });
 
 routingRuntime = createRoutingRuntime({
-  maplibregl,
+  maplibregl: mapboxgl,
   getMap: () => map,
   getRoutingState,
   setRoutingState,
@@ -2251,10 +2556,12 @@ elMlBeta.addEventListener("input", updateLabels);
 elKSpots.addEventListener("input", updateLabels);
 
 elShowRestaurants.addEventListener("change", () => {
+  setLayerVisibility(LAYER_RESTAURANTS_GLOW, elShowRestaurants.checked);
   setLayerVisibility(LAYER_RESTAURANTS, elShowRestaurants.checked);
 });
 
 elShowParking.addEventListener("change", () => {
+  setLayerVisibility(LAYER_PARKING_GLOW, elShowParking.checked);
   setLayerVisibility(LAYER_PARKING, elShowParking.checked);
 });
 
@@ -2275,7 +2582,7 @@ function togglePanel() {
 }
 
 mapInteractionRuntime = createMapInteractionRuntime({
-  maplibregl,
+  maplibregl: mapboxgl,
   getMap: () => map,
   getElMain: () => elMain,
   getPanel: () => panel,
@@ -2338,7 +2645,7 @@ function bindMapInteractionLayerEvents() {
 }
 
 locationRuntime = createLocationRuntime({
-  initialIsFollowingCurrentLocation: isTouchInteractionDevice(),
+  initialIsFollowingCurrentLocation: true,
   locateMeElement: elLocateMe,
   getMap: () => map,
   getCurrentLocation: () => lastCurrentLocation,
@@ -2467,8 +2774,8 @@ function ensureCompassUi() {
   return headingRuntime.ensureCompassUi();
 }
 
-function requestCompassPermissionFromUserGesture() {
-  return headingRuntime.requestCompassPermissionFromUserGesture();
+function installCompassPermissionAutoRequest() {
+  return headingRuntime.installCompassPermissionAutoRequest();
 }
 
 function refreshHeadingConeFromState(nowMs) {
@@ -3536,7 +3843,9 @@ function setSpotMarker(latlng) {
       type: "Point",
       coordinates: [point.lng, point.lat],
     },
-    properties: {},
+    properties: {
+      label: "Best Spot",
+    },
   }]));
 
   return point;
@@ -3566,9 +3875,6 @@ elLoad.addEventListener("click", () => {
 
 if (elLocateMe) {
   elLocateMe.addEventListener("click", () => {
-    requestCompassPermissionFromUserGesture().catch((error) => {
-      console.warn("[DGM] Compass permission request failed:", error);
-    });
     locateUser();
   });
 }
@@ -3576,14 +3882,6 @@ if (elLocateMe) {
 addPreferredPressHandler(menuButton, () => {
   togglePanel();
 });
-
-if (elStreetMode) {
-  elStreetMode.addEventListener("click", () => applyBaseStyle("map"));
-}
-
-if (elSatelliteMode) {
-  elSatelliteMode.addEventListener("click", () => applyBaseStyle("satellite"));
-}
 
 addPreferredPressHandler(elSearchToggle, () => {
     if (isSearchOverlayOpen) {
@@ -3672,7 +3970,6 @@ map.on("zoom", refreshHeadingConeFromState);
 map.on("rotate", refreshHeadingConeFromState);
 map.on("dragstart", handleManualMapCameraStart);
 map.on("rotatestart", handleManualMapCameraStart);
-map.on("pitchstart", handleManualMapCameraStart);
 map.on("zoomstart", handleManualMapCameraStart);
 
 map.on("click", handleMapBackgroundClick);
@@ -3680,8 +3977,8 @@ map.on("click", handleMapBackgroundClick);
 map.on("load", () => {
   ensureMapSourcesAndLayers();
   restoreMapDataSources();
-  syncModeButtons();
   ensureCompassUi();
+  installCompassPermissionAutoRequest();
   startContinuousLocationWatch();
   startDeviceOrientationWatch();
   startBlueDotBreathingAnimation();

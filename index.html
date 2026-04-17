@@ -7,7 +7,7 @@
 
     <link
       rel="stylesheet"
-      href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
+      href="https://api.mapbox.com/mapbox-gl-js/v2.16.1/mapbox-gl.css"
       crossorigin=""
     />
 
@@ -203,7 +203,7 @@
 
         <footer>
           <p class="small">
-            Basemap © OpenStreetMap contributors. Vector map via MapTiler when configured, otherwise MapLibre demo tiles.
+            Basemap imagery, hybrid streets, and traffic via Mapbox. Data © OpenStreetMap contributors.
           </p>
         </footer>
       </aside>
@@ -212,10 +212,6 @@
         <div id="map"></div>
         <div class="map-toolbar" aria-label="Map tools">
           <button id="searchToggle" class="search-toggle" type="button" aria-haspopup="dialog" aria-controls="searchOverlay" aria-expanded="false">Search</button>
-          <div class="map-mode-toggle" role="group" aria-label="Basemap style">
-            <button id="streetMode" class="map-mode-button is-active" type="button" aria-pressed="true">Map</button>
-            <button id="satelliteMode" class="map-mode-button" type="button" aria-pressed="false">Satellite</button>
-          </div>
         </div>
         <div id="searchOverlay" class="search-overlay" hidden aria-hidden="true">
           <div class="search-overlay-panel" role="dialog" aria-modal="true" aria-labelledby="searchOverlayTitle">
@@ -230,12 +226,28 @@
             <div id="searchResults" class="search-results" role="listbox" aria-label="Search results" aria-hidden="true"></div>
           </div>
         </div>
-        <button id="locateMe" class="locate-me" type="button" aria-label="Find my current location" title="Find my current location">ME</button>
+        <button id="locateMe" class="locate-me" type="button" aria-label="Recenter and follow my location" title="Recenter and follow my location">
+          <span class="locate-me__glyph" aria-hidden="true">
+            <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M24 7L39 35.5H9L24 7Z" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/>
+              <path d="M18.5 16.5C20.4 18.6 22.1 19.6 24 19.6C25.9 19.6 27.6 18.6 29.5 16.5" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>
+              <path d="M18.5 24.1C20.4 26.2 22.1 27.2 24 27.2C25.9 27.2 27.6 26.2 29.5 24.1" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>
+              <path d="M18.5 31.7C20.4 29.6 22.1 28.6 24 28.6C25.9 28.6 27.6 29.6 29.5 31.7" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>
+              <circle cx="18.5" cy="16.5" r="1.3" fill="currentColor"/>
+              <circle cx="29.5" cy="16.5" r="1.3" fill="currentColor"/>
+              <circle cx="18.5" cy="24.1" r="1.3" fill="currentColor"/>
+              <circle cx="29.5" cy="24.1" r="1.3" fill="currentColor"/>
+              <circle cx="18.5" cy="31.7" r="1.3" fill="currentColor"/>
+              <circle cx="29.5" cy="31.7" r="1.3" fill="currentColor"/>
+            </svg>
+          </span>
+          <span class="locate-me__status" aria-hidden="true"></span>
+        </button>
       </main>
     </div>
 
     <script
-      src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"
+      src="https://api.mapbox.com/mapbox-gl-js/v2.16.1/mapbox-gl.js"
       crossorigin=""
     ></script>
 

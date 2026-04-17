@@ -592,8 +592,27 @@ function createMapInteractionRuntime({
     }, mapTouchTapPopupDelayMs);
   }
 
+  function isManualFollowOverrideGesture(event) {
+    const originalEvent = event?.originalEvent;
+    if (!originalEvent) {
+      return false;
+    }
+
+    if (event.type === "dragstart" || event.type === "rotatestart") {
+      return true;
+    }
+
+    if (event.type !== "zoomstart") {
+      return false;
+    }
+
+    const isWheelZoom = originalEvent.type === "wheel" || originalEvent.type === "mousewheel";
+    const isPinchZoom = Number(originalEvent?.touches?.length) > 1 || Number(originalEvent?.changedTouches?.length) > 1;
+    return isWheelZoom || isPinchZoom;
+  }
+
   function handleManualMapCameraStart(event) {
-    if (!event?.originalEvent) {
+    if (!isManualFollowOverrideGesture(event)) {
       return;
     }
 
