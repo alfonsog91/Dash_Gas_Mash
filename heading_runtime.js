@@ -779,9 +779,19 @@ function createHeadingRuntime({
     lastHeadingConeLoopTickAt = nowMs;
 
     const previousHeading = lastHeadingConeLoopHeading ?? lastRenderedHeadingConeHeading ?? targetHeading;
+    const sensorHeadingDelta = headingState.source === "sensor"
+      ? getHeadingDeltaDegrees(targetHeading, previousHeading)
+      : null;
+    const sensorFrameSmoothingFactor = headingState.source === "sensor"
+      ? Math.min(
+        0.82,
+        headingFilterSmoothingFactor
+          + (Number.isFinite(sensorHeadingDelta) ? Math.min(0.12, sensorHeadingDelta / 360) : 0)
+      )
+      : headingFilterSmoothingFactor;
     const nextHeading = headingState.source === "sensor"
       ? filterHeadingDegrees(previousHeading, targetHeading, {
-        smoothingFactor: headingFilterSmoothingFactor,
+        smoothingFactor: sensorFrameSmoothingFactor,
         deadZoneDegrees: 0,
         minRotationDegrees: 0,
       })

@@ -35,6 +35,9 @@ import {
   HEADING_FILTER_MIN_ROTATION_DEGREES,
   HEADING_FILTER_SMOOTHING_FACTOR,
   HEADING_CONE_LENGTH_PIXELS,
+  HEADING_CONE_GLOW_ANGLE_SCALE,
+  HEADING_CONE_GLOW_LENGTH_MULTIPLIER,
+  HEADING_CONE_GLOW_OPACITY_SCALE,
   HEADING_GPS_FALLBACK_SMOOTHING_TIME_MS,
   HEADING_SENSOR_MAX_WEBKIT_COMPASS_ACCURACY_DEGREES,
   HEADING_SENSOR_SMOOTHING_MIN_BLEND,
@@ -86,8 +89,11 @@ const HEADING_RENDER_LOOP_MIN_DELTA_DEGREES = 0.12;
 const HEADING_RENDER_LOOP_MIN_LOCATION_DELTA_METERS = 0.25;
 const HEADING_RENDER_LOOP_MIN_SPEED_DELTA_MPS = 0.05;
 const HEADING_CONE_RENDER_SCALE_BIAS = 1.15;
-const MAP_MODE_DRAWER_SWIPE_MIN_PX = 28;
-const MAP_MODE_DRAWER_SWIPE_VERTICAL_TOLERANCE_PX = 36;
+const MAP_MODE_DRAWER_OPEN_SWIPE_MIN_PX = 22;
+const MAP_MODE_DRAWER_CLOSE_SWIPE_MIN_PX = 18;
+const MAP_MODE_DRAWER_SWIPE_VERTICAL_TOLERANCE_PX = 42;
+const MAP_MODE_DRAWER_SWIPE_HORIZONTAL_LEAD_PX = 8;
+const MAP_MODE_DRAWER_BACK_GESTURE_GUARD_PX = 12;
 const ALLOW_RELATIVE_COMPASS_ALPHA_FALLBACK = isTouchInteractionDevice();
 const COMPASS_PERMISSION_REQUIRED_STATE = "required";
 const COMPASS_PERMISSION_GRANTED_STATE = "granted";
@@ -647,40 +653,60 @@ function createHeadingConeRenderMesh() {
   const features = [];
   const pointRefs = [];
 
-  for (const [bandIndex, { startRatio, endRatio, startOpacity, endOpacity }] of bandStops.entries()) {
-    const opacity = Math.max(0, Math.min(1, (startOpacity + endOpacity) / 2));
+  const appendMeshVariant = ({
+    variant,
+    opacityScale = 1,
+    distanceMultiplier = 1,
+    angleScale = 1,
+  }) => {
+    for (const [bandIndex, { startRatio, endRatio, startOpacity, endOpacity }] of bandStops.entries()) {
+      const opacity = Math.max(0, Math.min(1, ((startOpacity + endOpacity) / 2) * opacityScale));
 
-    for (let segmentIndex = 0; segmentIndex < numArcSegments; segmentIndex += 1) {
-      const startAngleRatio = segmentIndex / numArcSegments;
-      const endAngleRatio = (segmentIndex + 1) / numArcSegments;
-      const ring = [];
+      for (let segmentIndex = 0; segmentIndex < numArcSegments; segmentIndex += 1) {
+        const startAngleRatio = segmentIndex / numArcSegments;
+        const endAngleRatio = (segmentIndex + 1) / numArcSegments;
+        const ring = [];
 
-      const pushPointRef = (pointSpec) => {
-        const point = [0, 0];
-        ring.push(point);
-        pointRefs.push({ point, ...pointSpec });
-      };
+        const pushPointRef = (pointSpec) => {
+          const point = [0, 0];
+          ring.push(point);
+          pointRefs.push({
+            point,
+            distanceMultiplier,
+            angleScale,
+            ...pointSpec,
+          });
+        };
 
-      if (startRatio > 0) {
-        pushPointRef({ distanceRatio: startRatio, angleRatio: startAngleRatio });
-        pushPointRef({ distanceRatio: endRatio, angleRatio: startAngleRatio });
-        pushPointRef({ distanceRatio: endRatio, angleRatio: endAngleRatio });
-        pushPointRef({ distanceRatio: startRatio, angleRatio: endAngleRatio });
-        pushPointRef({ distanceRatio: startRatio, angleRatio: startAngleRatio });
-      } else {
-        pushPointRef({ isOrigin: true });
-        pushPointRef({ distanceRatio: endRatio, angleRatio: startAngleRatio });
-        pushPointRef({ distanceRatio: endRatio, angleRatio: endAngleRatio });
-        pushPointRef({ isOrigin: true });
+        if (startRatio > 0) {
+          pushPointRef({ distanceRatio: startRatio, angleRatio: startAngleRatio });
+          pushPointRef({ distanceRatio: endRatio, angleRatio: startAngleRatio });
+          pushPointRef({ distanceRatio: endRatio, angleRatio: endAngleRatio });
+          pushPointRef({ distanceRatio: startRatio, angleRatio: endAngleRatio });
+          pushPointRef({ distanceRatio: startRatio, angleRatio: startAngleRatio });
+        } else {
+          pushPointRef({ isOrigin: true });
+          pushPointRef({ distanceRatio: endRatio, angleRatio: startAngleRatio });
+          pushPointRef({ distanceRatio: endRatio, angleRatio: endAngleRatio });
+          pushPointRef({ isOrigin: true });
+        }
+
+        features.push({
+          type: "Feature",
+          geometry: { type: "Polygon", coordinates: [ring] },
+          properties: { bandIndex, segmentIndex, opacity, variant },
+        });
       }
-
-      features.push({
-        type: "Feature",
-        geometry: { type: "Polygon", coordinates: [ring] },
-        properties: { bandIndex, segmentIndex, opacity },
-      });
     }
-  }
+  };
+
+  appendMeshVariant({
+    variant: "glow",
+    opacityScale: HEADING_CONE_GLOW_OPACITY_SCALE,
+    distanceMultiplier: HEADING_CONE_GLOW_LENGTH_MULTIPLIER,
+    angleScale: HEADING_CONE_GLOW_ANGLE_SCALE,
+  });
+  appendMeshVariant({ variant: "core" });
 
   return {
     featureCollection: featureCollection(features),
@@ -697,24 +723,28 @@ function getHeadingConeRenderMesh() {
 
 const STANDARD_BASE_PALETTES = Object.freeze({
   [STANDARD_MAP_THEME_LIGHT]: Object.freeze({
-    background: "#e4eaee",
-    land: "#d4cec1",
-    landuse: "#c6d7c3",
-    water: "#8fbfdf",
-    road: "#fff8f0",
-    roadOutline: "#c4b39d",
-    roadMinor: "#ddd2c2",
-    roadMinorOutline: "#b3a693",
-    boundary: "rgba(75, 97, 119, 0.46)",
-    building: "#c8c0b4",
-    buildingOutline: "rgba(96, 106, 118, 0.26)",
-    label: "#13202a",
-    secondaryLabel: "#4a5d6d",
-    roadLabel: "#1f3242",
-    waterLabel: "#2f6f98",
-    labelHalo: "rgba(250, 250, 252, 0.985)",
-    icon: "#3a5062",
-    poiCircle: "#43586a",
+    background: "#edf3ea",
+    land: "#d8e6d1",
+    landuse: "#94c973",
+    water: "#5ea7f3",
+    road: "#f6d66b",
+    roadOutline: "#d2d7dc",
+    roadMinor: "#ffffff",
+    roadMinorOutline: "#e0e4e8",
+    boundary: "rgba(101, 117, 132, 0.42)",
+    building: "#d8d4cb",
+    buildingOutline: "rgba(126, 133, 142, 0.22)",
+    label: "#24323d",
+    secondaryLabel: "#47606f",
+    roadLabel: "#31414c",
+    waterLabel: "#0b67c6",
+    labelHalo: "rgba(255, 255, 255, 0.992)",
+    icon: "#56707f",
+    poiCircle: "#6f879a",
+    poiHospital: "#d9534f",
+    poiSchool: "#d3a321",
+    poiPark: "#359b4b",
+    poiShopping: "#4285f4",
   }),
   [STANDARD_MAP_THEME_DARK]: Object.freeze({
     background: "#050a12",
@@ -936,12 +966,46 @@ function isParkLikeBasemapLayer(layer) {
   return /park|wood|forest|grass|scrub|pitch|golf|cemetery/.test(getBasemapLayerSignature(layer));
 }
 
+function isHillLikeBasemapLayer(layer) {
+  return /hill|mountain|ridge|terrain|contour/.test(getBasemapLayerSignature(layer));
+}
+
 function isMajorRoadBasemapLayer(layer) {
   return /motorway|trunk|primary|secondary|major|street-major|bridge|tunnel/.test(getBasemapLayerSignature(layer));
 }
 
 function isRoadCasingBasemapLayer(layer) {
   return /case|casing|outline/.test(getBasemapLayerSignature(layer));
+}
+
+function getLightThemePoiAccentColorExpression(palette, fallbackColor) {
+  return [
+    "match",
+    [
+      "downcase",
+      [
+        "to-string",
+        [
+          "coalesce",
+          ["get", "class"],
+          ["get", "maki"],
+          ["get", "type"],
+          ["get", "subclass"],
+          ["get", "category"],
+          "",
+        ],
+      ],
+    ],
+    ["hospital", "clinic", "doctor", "medical", "pharmacy"],
+    palette.poiHospital,
+    ["school", "college", "university", "library"],
+    palette.poiSchool,
+    ["park", "park_like", "garden", "pitch", "golf", "golf_course", "cemetery"],
+    palette.poiPark,
+    ["shop", "grocery", "supermarket", "market", "mall", "retail", "commercial"],
+    palette.poiShopping,
+    fallbackColor,
+  ];
 }
 
 function setSafePaintProperty(layerId, propertyName, propertyValue) {
@@ -958,6 +1022,9 @@ function setSafePaintProperty(layerId, propertyName, propertyValue) {
 
 function applyStandardBaseTheme(standardTheme = getResolvedStandardMapTheme()) {
   const palette = STANDARD_BASE_PALETTES[standardTheme] || STANDARD_BASE_PALETTES[STANDARD_MAP_THEME_LIGHT];
+  const lightThemePoiTextColor = getLightThemePoiAccentColorExpression(palette, palette.secondaryLabel);
+  const lightThemePoiIconColor = getLightThemePoiAccentColorExpression(palette, palette.icon);
+  const lightThemePoiCircleColor = getLightThemePoiAccentColorExpression(palette, palette.poiCircle);
 
   for (const layer of getBasemapStyleLayers()) {
     const role = getBasemapLayerRole(layer);
@@ -968,11 +1035,15 @@ function applyStandardBaseTheme(standardTheme = getResolvedStandardMapTheme()) {
     }
 
     if (layer.type === "fill") {
+      const usesGreenTerrainTint = standardTheme === STANDARD_MAP_THEME_LIGHT
+        && (isParkLikeBasemapLayer(layer) || isHillLikeBasemapLayer(layer));
       const fillColor = role === "water"
         ? palette.water
         : role === "building"
           ? palette.building
-          : role === "landuse" && isParkLikeBasemapLayer(layer)
+          : role === "landuse" && (isParkLikeBasemapLayer(layer) || usesGreenTerrainTint)
+            ? palette.landuse
+            : usesGreenTerrainTint
             ? palette.landuse
             : palette.land;
       setSafePaintProperty(layer.id, "fill-color", fillColor);
@@ -1012,21 +1083,26 @@ function applyStandardBaseTheme(standardTheme = getResolvedStandardMapTheme()) {
     }
 
     if (layer.type === "symbol") {
-      const textColor = role === "road-label"
-        ? palette.roadLabel
-        : role === "water-label"
-          ? palette.waterLabel
-          : role === "poi-label"
-            ? palette.secondaryLabel
-            : palette.label;
+      const useLightThemePoiPalette = standardTheme === STANDARD_MAP_THEME_LIGHT && role === "poi-label";
+      const textColor = useLightThemePoiPalette
+        ? lightThemePoiTextColor
+        : role === "road-label"
+          ? palette.roadLabel
+          : role === "water-label"
+            ? palette.waterLabel
+            : role === "poi-label"
+              ? palette.secondaryLabel
+              : palette.label;
       setSafePaintProperty(layer.id, "text-color", textColor);
       setSafePaintProperty(layer.id, "text-halo-color", palette.labelHalo);
-      setSafePaintProperty(layer.id, "icon-color", role === "poi-label" ? palette.icon : palette.label);
+      setSafePaintProperty(layer.id, "icon-color", useLightThemePoiPalette ? lightThemePoiIconColor : (role === "poi-label" ? palette.icon : palette.label));
       continue;
     }
 
     if (layer.type === "circle") {
-      setSafePaintProperty(layer.id, "circle-color", palette.poiCircle);
+      const useLightThemePoiPalette = standardTheme === STANDARD_MAP_THEME_LIGHT
+        && /poi|park|golf|hospital|medical|school|shop|retail|market|mall/.test(getBasemapLayerSignature(layer));
+      setSafePaintProperty(layer.id, "circle-color", useLightThemePoiPalette ? lightThemePoiCircleColor : palette.poiCircle);
       setSafePaintProperty(layer.id, "circle-stroke-color", palette.labelHalo);
     }
   }
@@ -2047,8 +2123,9 @@ function updateHeadingCone(latlng, heading, speed) {
       continue;
     }
 
-    const distanceMeters = coneLengthMeters * pointRef.distanceRatio;
-    const angleDeg = resolvedHeading - halfAngle + (2 * halfAngle * pointRef.angleRatio);
+    const distanceMeters = coneLengthMeters * pointRef.distanceRatio * (pointRef.distanceMultiplier ?? 1);
+    const angleRatio = 0.5 + (pointRef.angleRatio - 0.5) * (pointRef.angleScale ?? 1);
+    const angleDeg = resolvedHeading - halfAngle + (2 * halfAngle * angleRatio);
     const [nextLng, nextLat] = projectConePoint(distanceMeters, angleDeg);
     pointRef.point[0] = nextLng;
     pointRef.point[1] = nextLat;
@@ -2380,6 +2457,11 @@ function bindMapModeDrawerSwipe(element, direction) {
     }
 
     const touch = event.touches[0];
+    if (direction === "open" && touch.clientX <= MAP_MODE_DRAWER_BACK_GESTURE_GUARD_PX) {
+      clearMapModeDrawerSwipe();
+      return;
+    }
+
     activeMapModeDrawerSwipe = {
       direction,
       startX: touch.clientX,
@@ -2403,9 +2485,14 @@ function bindMapModeDrawerSwipe(element, direction) {
       return;
     }
 
-    const shouldOpen = direction === "open" && deltaX >= MAP_MODE_DRAWER_SWIPE_MIN_PX;
-    const shouldClose = direction === "close" && deltaX <= -MAP_MODE_DRAWER_SWIPE_MIN_PX;
-    if (!shouldOpen && !shouldClose) {
+    const horizontalTravel = direction === "open" ? deltaX : -deltaX;
+    const requiredHorizontalTravel = direction === "open"
+      ? MAP_MODE_DRAWER_OPEN_SWIPE_MIN_PX
+      : MAP_MODE_DRAWER_CLOSE_SWIPE_MIN_PX;
+    if (
+      horizontalTravel < requiredHorizontalTravel
+      || horizontalTravel < Math.abs(deltaY) + MAP_MODE_DRAWER_SWIPE_HORIZONTAL_LEAD_PX
+    ) {
       return;
     }
 
@@ -2446,6 +2533,7 @@ function ensureMapModeToolbar() {
       setMapModeDrawerOpen(!getIsMapModeDrawerOpen());
     });
     bindMapModeDrawerSwipe(elMapModeDrawerEdge, "open");
+    bindMapModeDrawerSwipe(elMapModeDrawerTab, "open");
     bindMapModeDrawerSwipe(elMapModeDrawerPanel, "close");
     setMapModeDrawerOpen(false);
   }
@@ -2950,9 +3038,10 @@ function ensureMapSourcesAndLayers() {
     id: LAYER_HEADING_GLOW,
     type: "fill",
     source: SOURCE_HEADING,
+    filter: ["==", ["get", "variant"], "glow"],
     paint: {
-      "fill-color": "#d8efff",
-      "fill-opacity": ["*", ["coalesce", ["get", "opacity"], 0], 0.92],
+      "fill-color": "#dff3ff",
+      "fill-opacity": ["*", ["coalesce", ["get", "opacity"], 0], 1.08],
     },
   });
 
@@ -2960,8 +3049,9 @@ function ensureMapSourcesAndLayers() {
     id: LAYER_HEADING,
     type: "fill",
     source: SOURCE_HEADING,
+    filter: ["==", ["get", "variant"], "core"],
     paint: {
-      "fill-color": "#2da7ff",
+      "fill-color": "#269dff",
       "fill-opacity": ["coalesce", ["get", "opacity"], 0],
     },
   });
@@ -2970,14 +3060,15 @@ function ensureMapSourcesAndLayers() {
     id: LAYER_HEADING_EDGE,
     type: "line",
     source: SOURCE_HEADING,
+    filter: ["==", ["get", "variant"], "core"],
     layout: {
       "line-cap": "round",
       "line-join": "round",
     },
     paint: {
       "line-color": "#ffffff",
-      "line-width": 1.9,
-      "line-opacity": ["*", ["coalesce", ["get", "opacity"], 0], 0.96],
+      "line-width": 2.35,
+      "line-opacity": ["coalesce", ["get", "opacity"], 0],
     },
   });
 
