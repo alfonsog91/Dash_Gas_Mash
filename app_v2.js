@@ -145,10 +145,20 @@ const DEFAULT_ZOOM = 12;
 
 const MAPBOX_GEOCODING_TOKEN = String(window.DASH_MAPBOX_TOKEN || "").trim();
 const MAPBOX_PLACEHOLDER_TOKEN = "MAPBOX_TOKEN_HERE";
-const MAPBOX_STYLE_URL = "mapbox://styles/mapbox/satellite-streets-v12";
+const MAPBOX_STYLE_URL = "mapbox://styles/mapbox/light-v11";
+const MAPBOX_SATELLITE_SOURCE_URL = "mapbox://mapbox.satellite";
 const MAPBOX_TRAFFIC_SOURCE_URL = "mapbox://mapbox.mapbox-traffic-v1";
 const MAPBOX_TRAFFIC_SOURCE_LAYER = "traffic";
 const CINEMATIC_DAY_NIGHT_TRANSITION_MS = 1250;
+const MAP_MODE_STORAGE_KEY = "dgm:map-mode";
+const STANDARD_MAP_THEME_STORAGE_KEY = "dgm:standard-map-theme";
+const BASE_STYLE_STANDARD = "standard";
+const BASE_STYLE_SATELLITE = "satellite";
+const BASE_STYLE_HYBRID = "hybrid";
+const STANDARD_MAP_THEME_LIGHT = "light";
+const STANDARD_MAP_THEME_DARK = "dark";
+const STANDARD_MAP_THEME_AUTO = "auto";
+const MAP_MODE_AUTO_REFRESH_MS = 60 * 1000;
 const mapboxgl = window.mapboxgl;
 
 function renderFatalMapError(message, kicker = "Map unavailable") {
@@ -208,6 +218,7 @@ const SOURCE_HEAT = "heat";
 const SOURCE_SPOT = "spot";
 const SOURCE_CURRENT_LOCATION = "current-location";
 const SOURCE_CURRENT_LOCATION_ACCURACY = "current-location-accuracy";
+const SOURCE_BASE_SATELLITE = "base-satellite";
 const SOURCE_HEADING = "heading";
 const SOURCE_ROUTE = "route";
 const SOURCE_CINEMATIC_GRADE = "cinematic-grade";
@@ -221,6 +232,7 @@ const LAYER_PARKING = "parking-layer";
 const LAYER_SPOT_GLOW = "spot-glow-layer";
 const LAYER_SPOT = "spot-layer";
 const LAYER_SPOT_LABEL = "spot-label-layer";
+const LAYER_BASE_SATELLITE = "base-satellite-layer";
 const LAYER_CINEMATIC_CONTRAST = "cinematic-contrast-layer";
 const LAYER_CINEMATIC_LIFT = "cinematic-lift-layer";
 const LAYER_CINEMATIC_TINT = "cinematic-tint-layer";
@@ -236,6 +248,33 @@ const LAYER_CURRENT_LOCATION_HALO = "current-location-halo";
 const LAYER_CURRENT_LOCATION_DOT = "current-location-dot";
 const LAYER_ROUTE_CASING = "route-casing-layer";
 const LAYER_ROUTE = "route-layer";
+
+const MAP_MODE_OWNED_LAYER_IDS = new Set([
+  LAYER_HEAT,
+  LAYER_RESTAURANTS_GLOW,
+  LAYER_RESTAURANTS,
+  LAYER_PARKING_GLOW,
+  LAYER_PARKING,
+  LAYER_SPOT_GLOW,
+  LAYER_SPOT,
+  LAYER_SPOT_LABEL,
+  LAYER_BASE_SATELLITE,
+  LAYER_CINEMATIC_CONTRAST,
+  LAYER_CINEMATIC_LIFT,
+  LAYER_CINEMATIC_TINT,
+  LAYER_TRAFFIC_CASING,
+  LAYER_TRAFFIC,
+  LAYER_CURRENT_LOCATION_ACCURACY_GLOW,
+  LAYER_CURRENT_LOCATION_ACCURACY_FILL,
+  LAYER_CURRENT_LOCATION_ACCURACY_LINE,
+  LAYER_HEADING_GLOW,
+  LAYER_HEADING,
+  LAYER_HEADING_EDGE,
+  LAYER_CURRENT_LOCATION_HALO,
+  LAYER_CURRENT_LOCATION_DOT,
+  LAYER_ROUTE_CASING,
+  LAYER_ROUTE,
+]);
 
 const map = new mapboxgl.Map({
   container: "map",
@@ -271,7 +310,10 @@ let lastCurrentLocationAccuracyMeters = null;
 let lastHeatFeatures = [];
 let lastSpotPoint = null;
 let lastRankedParkingAll = [];
-const currentBaseStyle = "hybrid";
+let currentBaseStyle = readStoredMapMode();
+let currentStandardMapTheme = readStoredStandardMapTheme();
+let mapModeAutoRefreshTimer = null;
+let mapModeLayerRoleCache = new Map();
 let activeSearchAbort = null;
 let activeSearchMarker = null;
 let searchSequence = 0;
@@ -415,6 +457,7 @@ const elSearchForm = document.getElementById("searchForm");
 const elSearchInput = document.getElementById("searchInput");
 const elSearchButton = document.getElementById("searchButton");
 const elSearchResults = document.getElementById("searchResults");
+const mapToolbar = document.querySelector(".map-toolbar");
 
 const LOCATION_TARGET_ZOOM = 16;
 const LOCATION_ANIMATION_MIN_START_ZOOM = 14;
@@ -462,6 +505,7 @@ let mapInteractionRuntime = null;
 let locationRuntime = null;
 let headingRuntime = null;
 let routingRuntime = null;
+let elMapModeControl = null;
 
 function getRoutingState() {
   return {
@@ -644,29 +688,157 @@ function getHeadingConeRenderMesh() {
   return headingConeRenderMesh;
 }
 
-function getCinematicThemeHour() {
-  const resolvedHour = Number(elHour?.value);
-  return Number.isFinite(resolvedHour) ? resolvedHour : new Date().getHours();
+const STANDARD_BASE_PALETTES = Object.freeze({
+  [STANDARD_MAP_THEME_LIGHT]: Object.freeze({
+    background: "#eef3f6",
+    land: "#ebe5d8",
+    landuse: "#d7e5d4",
+    water: "#acd8ff",
+    road: "#ffffff",
+    roadMinor: "#f6efe6",
+    boundary: "rgba(92, 117, 146, 0.28)",
+    building: "#d7d0c4",
+    buildingOutline: "rgba(118, 128, 139, 0.2)",
+    label: "#16212b",
+    secondaryLabel: "#526576",
+    roadLabel: "#273848",
+    waterLabel: "#3d7faa",
+    labelHalo: "rgba(252, 252, 255, 0.96)",
+    icon: "#42586a",
+    poiCircle: "#51697c",
+  }),
+  [STANDARD_MAP_THEME_DARK]: Object.freeze({
+    background: "#050a12",
+    land: "#0d1722",
+    landuse: "#12221d",
+    water: "#0b2a43",
+    road: "#2f3c4b",
+    roadMinor: "#22303f",
+    boundary: "rgba(106, 141, 184, 0.2)",
+    building: "#172434",
+    buildingOutline: "rgba(27, 44, 61, 0.76)",
+    label: "#edf6ff",
+    secondaryLabel: "#a1b9d1",
+    roadLabel: "#d7ebff",
+    waterLabel: "#6fc2ff",
+    labelHalo: "rgba(3, 7, 12, 0.94)",
+    icon: "#c6ddf7",
+    poiCircle: "#8db4da",
+  }),
+});
+
+function normalizeMapMode(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (
+    normalized === BASE_STYLE_STANDARD
+    || normalized === BASE_STYLE_SATELLITE
+    || normalized === BASE_STYLE_HYBRID
+  ) {
+    return normalized;
+  }
+
+  return BASE_STYLE_STANDARD;
 }
 
-function getCinematicTheme(hour = getCinematicThemeHour()) {
-  const isNight = hour >= 18 || hour < 6;
-  return isNight
+function normalizeStandardMapTheme(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (
+    normalized === STANDARD_MAP_THEME_LIGHT
+    || normalized === STANDARD_MAP_THEME_DARK
+    || normalized === STANDARD_MAP_THEME_AUTO
+  ) {
+    return normalized;
+  }
+
+  return STANDARD_MAP_THEME_AUTO;
+}
+
+function readStoredMapMode() {
+  if (!canUseLocalStorage()) {
+    return BASE_STYLE_STANDARD;
+  }
+
+  try {
+    return normalizeMapMode(window.localStorage.getItem(MAP_MODE_STORAGE_KEY));
+  } catch {
+    return BASE_STYLE_STANDARD;
+  }
+}
+
+function writeStoredMapMode(value) {
+  if (!canUseLocalStorage()) {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(MAP_MODE_STORAGE_KEY, normalizeMapMode(value));
+  } catch {
+    // Ignore storage failures and preserve runtime behavior.
+  }
+}
+
+function readStoredStandardMapTheme() {
+  if (!canUseLocalStorage()) {
+    return STANDARD_MAP_THEME_AUTO;
+  }
+
+  try {
+    return normalizeStandardMapTheme(window.localStorage.getItem(STANDARD_MAP_THEME_STORAGE_KEY));
+  } catch {
+    return STANDARD_MAP_THEME_AUTO;
+  }
+}
+
+function writeStoredStandardMapTheme(value) {
+  if (!canUseLocalStorage()) {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(STANDARD_MAP_THEME_STORAGE_KEY, normalizeStandardMapTheme(value));
+  } catch {
+    // Ignore storage failures and preserve runtime behavior.
+  }
+}
+
+function getResolvedStandardMapTheme(themeMode = currentStandardMapTheme, referenceDate = new Date()) {
+  const normalizedThemeMode = normalizeStandardMapTheme(themeMode);
+  if (normalizedThemeMode !== STANDARD_MAP_THEME_AUTO) {
+    return normalizedThemeMode;
+  }
+
+  const hour = typeof referenceDate?.getHours === "function"
+    ? referenceDate.getHours()
+    : new Date().getHours();
+  return hour >= 6 && hour < 18 ? STANDARD_MAP_THEME_LIGHT : STANDARD_MAP_THEME_DARK;
+}
+
+function formatMapModeLabel(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) {
+    return "";
+  }
+
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+function getCinematicTheme(standardTheme = getResolvedStandardMapTheme()) {
+  return standardTheme === STANDARD_MAP_THEME_DARK
     ? {
-        contrastColor: "#041019",
+        contrastColor: "#02060d",
         contrastOpacity: 0.08,
-        liftColor: "#76bcff",
-        liftOpacity: 0.026,
-        tintColor: "#7ca8ff",
-        tintOpacity: 0.11,
+        liftColor: "#142840",
+        liftOpacity: 0.05,
+        tintColor: "#2e7fff",
+        tintOpacity: 0.05,
       }
     : {
-        contrastColor: "#281307",
-        contrastOpacity: 0.04,
-        liftColor: "#fff0d2",
-        liftOpacity: 0.05,
-        tintColor: "#ffbe84",
-        tintOpacity: 0.075,
+        contrastColor: "#e6c28e",
+        contrastOpacity: 0.03,
+        liftColor: "#fff8ee",
+        liftOpacity: 0.045,
+        tintColor: "#f1d2a4",
+        tintOpacity: 0.045,
       };
 }
 
@@ -700,7 +872,158 @@ function getBasemapOverlayBeforeId() {
   return styleLayers.find((layer) => layer.type === "symbol")?.id || null;
 }
 
+function getBasemapStyleLayers() {
+  return (map.getStyle()?.layers || []).filter((layer) => layer?.id && !MAP_MODE_OWNED_LAYER_IDS.has(layer.id));
+}
+
+function getBasemapLayerSignature(layer) {
+  return `${String(layer?.id || "").toLowerCase()} ${String(layer?.["source-layer"] || "").toLowerCase()}`;
+}
+
+function getBasemapLayerRole(layer) {
+  if (!layer?.id) {
+    return "other";
+  }
+
+  const cachedRole = mapModeLayerRoleCache.get(layer.id);
+  if (cachedRole) {
+    return cachedRole;
+  }
+
+  const signature = getBasemapLayerSignature(layer);
+  let role = "land";
+
+  if (layer.type === "background") {
+    role = "background";
+  } else if (layer.type === "symbol") {
+    if (/road|street|motorway|highway|bridge|tunnel|path|shield/.test(signature)) {
+      role = "road-label";
+    } else if (/water|marine|ocean|river|lake|canal|stream/.test(signature)) {
+      role = "water-label";
+    } else if (/poi|airport|transit|rail|natural-label|landmark/.test(signature)) {
+      role = "poi-label";
+    } else {
+      role = "label";
+    }
+  } else if (/water|marine|ocean|river|lake|canal|stream/.test(signature)) {
+    role = "water";
+  } else if (/building/.test(signature)) {
+    role = "building";
+  } else if (/boundary|admin|state|country|disputed/.test(signature)) {
+    role = "boundary";
+  } else if (/road|street|motorway|highway|bridge|tunnel|path|rail|runway|ferry/.test(signature)) {
+    role = "road";
+  } else if (/park|landcover|landuse|grass|wood|forest|scrub|pitch|cemetery|school|hospital|industrial|residential/.test(signature)) {
+    role = "landuse";
+  }
+
+  mapModeLayerRoleCache.set(layer.id, role);
+  return role;
+}
+
+function isParkLikeBasemapLayer(layer) {
+  return /park|wood|forest|grass|scrub|pitch|golf|cemetery/.test(getBasemapLayerSignature(layer));
+}
+
+function isMajorRoadBasemapLayer(layer) {
+  return /motorway|trunk|primary|major|street-major|bridge|tunnel/.test(getBasemapLayerSignature(layer));
+}
+
+function setSafePaintProperty(layerId, propertyName, propertyValue) {
+  if (!map.getLayer(layerId)) {
+    return;
+  }
+
+  try {
+    map.setPaintProperty(layerId, propertyName, propertyValue);
+  } catch {
+    // Ignore unsupported style properties on individual basemap layers.
+  }
+}
+
+function applyStandardBaseTheme(standardTheme = getResolvedStandardMapTheme()) {
+  const palette = STANDARD_BASE_PALETTES[standardTheme] || STANDARD_BASE_PALETTES[STANDARD_MAP_THEME_LIGHT];
+
+  for (const layer of getBasemapStyleLayers()) {
+    const role = getBasemapLayerRole(layer);
+
+    if (layer.type === "background") {
+      setSafePaintProperty(layer.id, "background-color", palette.background);
+      continue;
+    }
+
+    if (layer.type === "fill") {
+      const fillColor = role === "water"
+        ? palette.water
+        : role === "building"
+          ? palette.building
+          : role === "landuse" && isParkLikeBasemapLayer(layer)
+            ? palette.landuse
+            : palette.land;
+      setSafePaintProperty(layer.id, "fill-color", fillColor);
+      setSafePaintProperty(layer.id, "fill-outline-color", role === "building" ? palette.buildingOutline : fillColor);
+      continue;
+    }
+
+    if (layer.type === "line") {
+      const lineColor = role === "water"
+        ? palette.water
+        : role === "boundary"
+          ? palette.boundary
+          : role === "road"
+            ? (isMajorRoadBasemapLayer(layer) ? palette.road : palette.roadMinor)
+            : role === "building"
+              ? palette.buildingOutline
+              : palette.boundary;
+      setSafePaintProperty(layer.id, "line-color", lineColor);
+      if (role === "road") {
+        setSafePaintProperty(layer.id, "line-opacity", 1);
+      } else if (role === "boundary") {
+        setSafePaintProperty(layer.id, "line-opacity", standardTheme === STANDARD_MAP_THEME_DARK ? 0.58 : 0.42);
+      }
+      continue;
+    }
+
+    if (layer.type === "fill-extrusion") {
+      setSafePaintProperty(layer.id, "fill-extrusion-color", palette.building);
+      setSafePaintProperty(layer.id, "fill-extrusion-opacity", standardTheme === STANDARD_MAP_THEME_DARK ? 0.8 : 0.62);
+      continue;
+    }
+
+    if (layer.type === "symbol") {
+      const textColor = role === "road-label"
+        ? palette.roadLabel
+        : role === "water-label"
+          ? palette.waterLabel
+          : role === "poi-label"
+            ? palette.secondaryLabel
+            : palette.label;
+      setSafePaintProperty(layer.id, "text-color", textColor);
+      setSafePaintProperty(layer.id, "text-halo-color", palette.labelHalo);
+      setSafePaintProperty(layer.id, "icon-color", role === "poi-label" ? palette.icon : palette.label);
+      continue;
+    }
+
+    if (layer.type === "circle") {
+      setSafePaintProperty(layer.id, "circle-color", palette.poiCircle);
+      setSafePaintProperty(layer.id, "circle-stroke-color", palette.labelHalo);
+    }
+  }
+}
+
+function syncBaseVectorLayerVisibility(mode = currentBaseStyle) {
+  const normalizedMode = normalizeMapMode(mode);
+
+  for (const layer of getBasemapStyleLayers()) {
+    const visible = normalizedMode === BASE_STYLE_STANDARD
+      ? true
+      : layer.type === "symbol" && normalizedMode === BASE_STYLE_HYBRID;
+    setLayerVisibility(layer.id, visible);
+  }
+}
+
 function applyCinematicTheme() {
+  const showCinematicTheme = currentBaseStyle === BASE_STYLE_STANDARD;
   const theme = getCinematicTheme();
   const layerPaintUpdates = [
     [LAYER_CINEMATIC_CONTRAST, "fill-color", theme.contrastColor],
@@ -713,9 +1036,130 @@ function applyCinematicTheme() {
 
   for (const [layerId, propertyName, propertyValue] of layerPaintUpdates) {
     if (map.getLayer(layerId)) {
-      map.setPaintProperty(layerId, propertyName, propertyValue);
+      setLayerVisibility(layerId, showCinematicTheme);
+      setSafePaintProperty(layerId, propertyName, propertyValue);
     }
   }
+}
+
+function syncSatelliteLayerVisibility(mode = currentBaseStyle) {
+  setLayerVisibility(LAYER_BASE_SATELLITE, normalizeMapMode(mode) !== BASE_STYLE_STANDARD);
+}
+
+function syncTrafficLayerVisibility(mode = currentBaseStyle) {
+  const showTraffic = normalizeMapMode(mode) === BASE_STYLE_HYBRID;
+  setLayerVisibility(LAYER_TRAFFIC_CASING, showTraffic);
+  setLayerVisibility(LAYER_TRAFFIC, showTraffic);
+}
+
+function syncMapModeAutoRefreshTimer() {
+  const windowLike = typeof window !== "undefined" ? window : null;
+  const shouldRefresh = Boolean(windowLike)
+    && currentBaseStyle === BASE_STYLE_STANDARD
+    && currentStandardMapTheme === STANDARD_MAP_THEME_AUTO;
+
+  if (!shouldRefresh) {
+    if (mapModeAutoRefreshTimer !== null && windowLike) {
+      windowLike.clearInterval(mapModeAutoRefreshTimer);
+    }
+    mapModeAutoRefreshTimer = null;
+    return;
+  }
+
+  if (mapModeAutoRefreshTimer !== null || !windowLike) {
+    return;
+  }
+
+  mapModeAutoRefreshTimer = windowLike.setInterval(() => {
+    if (
+      currentBaseStyle === BASE_STYLE_STANDARD
+      && currentStandardMapTheme === STANDARD_MAP_THEME_AUTO
+    ) {
+      syncMapModeAppearance();
+    }
+  }, MAP_MODE_AUTO_REFRESH_MS);
+}
+
+function syncMapModeControls() {
+  if (!elMapModeControl) {
+    return;
+  }
+
+  const resolvedStandardTheme = getResolvedStandardMapTheme();
+  const showStandardThemeControls = currentBaseStyle === BASE_STYLE_STANDARD;
+  const standardThemeLabel = elMapModeControl.querySelector('[data-map-mode-group-label="standard"]');
+  const standardThemeGroup = elMapModeControl.querySelector('[data-map-mode-group="standard"]');
+
+  elMapModeControl.querySelectorAll("[data-map-mode]").forEach((button) => {
+    const active = normalizeMapMode(button.dataset.mapMode) === currentBaseStyle;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+
+  elMapModeControl.querySelectorAll("[data-standard-map-theme]").forEach((button) => {
+    const active = normalizeStandardMapTheme(button.dataset.standardMapTheme) === currentStandardMapTheme;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
+    if (normalizeStandardMapTheme(button.dataset.standardMapTheme) === STANDARD_MAP_THEME_AUTO) {
+      button.setAttribute("title", `Auto (${formatMapModeLabel(resolvedStandardTheme)})`);
+    }
+  });
+
+  if (standardThemeLabel) {
+    standardThemeLabel.hidden = !showStandardThemeControls;
+    standardThemeLabel.textContent = currentStandardMapTheme === STANDARD_MAP_THEME_AUTO
+      ? `Theme · Auto (${formatMapModeLabel(resolvedStandardTheme)})`
+      : "Theme";
+  }
+
+  if (standardThemeGroup) {
+    standardThemeGroup.hidden = !showStandardThemeControls;
+  }
+}
+
+function setMapMode(nextMode, { persist = true } = {}) {
+  currentBaseStyle = normalizeMapMode(nextMode);
+  if (persist) {
+    writeStoredMapMode(currentBaseStyle);
+  }
+  syncMapModeAppearance();
+}
+
+function setStandardMapTheme(nextTheme, { persist = true } = {}) {
+  currentStandardMapTheme = normalizeStandardMapTheme(nextTheme);
+  if (persist) {
+    writeStoredStandardMapTheme(currentStandardMapTheme);
+  }
+  syncMapModeAppearance();
+}
+
+function syncMapModeAppearance({ updateUi = true } = {}) {
+  const resolvedStandardTheme = getResolvedStandardMapTheme();
+  const body = document.body;
+  if (body) {
+    body.dataset.mapMode = currentBaseStyle;
+    body.dataset.standardMapTheme = currentStandardMapTheme;
+    body.dataset.standardResolvedTheme = resolvedStandardTheme;
+  }
+
+  syncMapModeAutoRefreshTimer();
+  if (updateUi) {
+    syncMapModeControls();
+  }
+
+  if (!map || typeof map.isStyleLoaded !== "function" || !map.isStyleLoaded()) {
+    return;
+  }
+
+  syncBaseVectorLayerVisibility(currentBaseStyle);
+  if (currentBaseStyle === BASE_STYLE_STANDARD) {
+    applyStandardBaseTheme(resolvedStandardTheme);
+  } else if (currentBaseStyle === BASE_STYLE_HYBRID) {
+    applyStandardBaseTheme(STANDARD_MAP_THEME_DARK);
+  }
+  syncSatelliteLayerVisibility(currentBaseStyle);
+  syncTrafficLayerVisibility(currentBaseStyle);
+  applyCinematicTheme();
 }
 
 function syncCategoryLayerVisibility() {
@@ -731,6 +1175,28 @@ function syncCategoryLayerVisibility() {
 function ensureHybridBaseLayers() {
   const beforeId = getBasemapOverlayBeforeId();
   const theme = getCinematicTheme();
+
+  if (!map.getSource(SOURCE_BASE_SATELLITE)) {
+    map.addSource(SOURCE_BASE_SATELLITE, {
+      type: "raster",
+      url: MAPBOX_SATELLITE_SOURCE_URL,
+      tileSize: 256,
+    });
+  }
+
+  if (!map.getLayer(LAYER_BASE_SATELLITE)) {
+    map.addLayer({
+      id: LAYER_BASE_SATELLITE,
+      type: "raster",
+      source: SOURCE_BASE_SATELLITE,
+      layout: {
+        visibility: "none",
+      },
+      paint: {
+        "raster-opacity": 1,
+      },
+    }, beforeId);
+  }
 
   if (!map.getSource(SOURCE_CINEMATIC_GRADE)) {
     map.addSource(SOURCE_CINEMATIC_GRADE, {
@@ -760,6 +1226,9 @@ function ensureHybridBaseLayers() {
       id: LAYER_CINEMATIC_CONTRAST,
       type: "fill",
       source: SOURCE_CINEMATIC_GRADE,
+      layout: {
+        visibility: "none",
+      },
       paint: {
         "fill-color": theme.contrastColor,
         "fill-opacity": theme.contrastOpacity,
@@ -774,6 +1243,9 @@ function ensureHybridBaseLayers() {
       id: LAYER_CINEMATIC_LIFT,
       type: "fill",
       source: SOURCE_CINEMATIC_GRADE,
+      layout: {
+        visibility: "none",
+      },
       paint: {
         "fill-color": theme.liftColor,
         "fill-opacity": theme.liftOpacity,
@@ -788,6 +1260,9 @@ function ensureHybridBaseLayers() {
       id: LAYER_CINEMATIC_TINT,
       type: "fill",
       source: SOURCE_CINEMATIC_GRADE,
+      layout: {
+        visibility: "none",
+      },
       paint: {
         "fill-color": theme.tintColor,
         "fill-opacity": theme.tintOpacity,
@@ -812,6 +1287,7 @@ function ensureHybridBaseLayers() {
       "source-layer": MAPBOX_TRAFFIC_SOURCE_LAYER,
       minzoom: 7,
       layout: {
+        visibility: "none",
         "line-cap": "round",
         "line-join": "round",
       },
@@ -831,6 +1307,7 @@ function ensureHybridBaseLayers() {
       "source-layer": MAPBOX_TRAFFIC_SOURCE_LAYER,
       minzoom: 7,
       layout: {
+        visibility: "none",
         "line-cap": "round",
         "line-join": "round",
       },
@@ -848,8 +1325,6 @@ function ensureHybridBaseLayers() {
       },
     }, beforeId);
   }
-
-  applyCinematicTheme();
 }
 
 function restoreMapDataSources() {
@@ -859,6 +1334,7 @@ function restoreMapDataSources() {
 function restoreLayersAfterStyleChange() {
   if (!map.isStyleLoaded()) return;
 
+  mapModeLayerRoleCache = new Map();
   ensureMapSourcesAndLayers();
   restoreMapDataSources();
   syncCategoryLayerVisibility();
@@ -1846,6 +2322,52 @@ function addPreferredPressHandler(element, handler) {
   });
 }
 
+function ensureMapModeToolbar() {
+  if (elMapModeControl || !mapToolbar) {
+    return;
+  }
+
+  const control = document.createElement("section");
+  control.className = "map-mode-control";
+  control.setAttribute("aria-label", "Map appearance");
+  control.innerHTML = `
+    <div class="map-mode-label">Map</div>
+    <div class="map-mode-segmented" data-map-mode-group="base" role="group" aria-label="Map mode">
+      <button class="map-mode-button" type="button" data-map-mode="${BASE_STYLE_STANDARD}" aria-pressed="false">Standard</button>
+      <button class="map-mode-button" type="button" data-map-mode="${BASE_STYLE_SATELLITE}" aria-pressed="false">Satellite</button>
+      <button class="map-mode-button" type="button" data-map-mode="${BASE_STYLE_HYBRID}" aria-pressed="false">Hybrid</button>
+    </div>
+    <div class="map-mode-label" data-map-mode-group-label="standard">Theme</div>
+    <div class="map-mode-segmented map-mode-segmented--secondary" data-map-mode-group="standard" role="group" aria-label="Standard theme">
+      <button class="map-mode-button" type="button" data-standard-map-theme="${STANDARD_MAP_THEME_LIGHT}" aria-pressed="false">Light</button>
+      <button class="map-mode-button" type="button" data-standard-map-theme="${STANDARD_MAP_THEME_DARK}" aria-pressed="false">Dark</button>
+      <button class="map-mode-button" type="button" data-standard-map-theme="${STANDARD_MAP_THEME_AUTO}" aria-pressed="false">Auto</button>
+    </div>
+  `;
+  mapToolbar.append(control);
+  elMapModeControl = control;
+  syncMapModeControls();
+}
+
+function bindMapModeControlEvents() {
+  ensureMapModeToolbar();
+  if (!elMapModeControl || elMapModeControl.dataset.bound === "true") {
+    return;
+  }
+
+  elMapModeControl.dataset.bound = "true";
+  elMapModeControl.querySelectorAll("[data-map-mode]").forEach((button) => {
+    addPreferredPressHandler(button, () => {
+      setMapMode(button.dataset.mapMode);
+    });
+  });
+  elMapModeControl.querySelectorAll("[data-standard-map-theme]").forEach((button) => {
+    addPreferredPressHandler(button, () => {
+      setStandardMapTheme(button.dataset.standardMapTheme);
+    });
+  });
+}
+
 function renderSearchResults(results) {
   if (!elSearchResults) return;
   renderedSearchResults = Array.isArray(results) ? results : [];
@@ -2098,7 +2620,7 @@ function ensureMapSourcesAndLayers() {
 
   if (map.getSource(SOURCE_RESTAURANTS)) {
     syncCategoryLayerVisibility();
-    applyCinematicTheme();
+    syncMapModeAppearance();
     return;
   }
 
@@ -2354,7 +2876,7 @@ function ensureMapSourcesAndLayers() {
 
   bindMapInteractionLayerEvents();
   syncCategoryLayerVisibility();
-  applyCinematicTheme();
+  syncMapModeAppearance();
 }
 
 function setHourDefaults() {
@@ -2376,7 +2898,6 @@ function updateLabels() {
   elTipEmphasisVal.textContent = `${Number(elTipEmphasis.value).toFixed(2)}`;
   elMlBetaVal.textContent = `${Number(elMlBeta.value).toFixed(1)}`;
   elKSpotsVal.textContent = `${Number(elKSpots.value)}`;
-  applyCinematicTheme();
 }
 
 dataScoringRuntime = createDataScoringRuntime({
@@ -3863,6 +4384,8 @@ async function loadForView() {
 }
 
 installRuntimeDebugSurface();
+bindMapModeControlEvents();
+syncMapModeAppearance();
 
 elLoad.addEventListener("click", () => {
   loadForView().catch((err) => {

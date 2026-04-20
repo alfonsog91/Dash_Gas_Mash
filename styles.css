@@ -167,6 +167,65 @@ body.has-map-fatal .locate-me {
   justify-items: start;
 }
 
+.map-mode-control {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 18px;
+  background: rgba(16, 26, 43, 0.92);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+.map-mode-label {
+  padding: 0 4px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #c8dbef;
+}
+
+.map-mode-segmented {
+  display: inline-grid;
+  grid-auto-flow: column;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.06);
+}
+
+.map-mode-segmented[hidden],
+.map-mode-label[hidden] {
+  display: none !important;
+}
+
+.map-mode-button {
+  min-height: 34px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(233, 238, 247, 0.86);
+  box-shadow: none;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.map-mode-button:hover {
+  background: rgba(255,255,255,0.08);
+  filter: none;
+}
+
+.map-mode-button.is-active {
+  background: linear-gradient(180deg, rgba(97, 246, 255, 0.24), rgba(45, 108, 223, 0.92));
+  color: #fff;
+  box-shadow: 0 8px 20px rgba(17, 37, 79, 0.38);
+}
+
 .search-toggle {
   min-height: 44px;
   padding: 10px 14px;

@@ -1078,7 +1078,7 @@ function createHeadingRuntime({
       });
 
       const nowMs = getHeadingNowMs();
-      const effectiveDeadZoneDegrees = Math.max(5, Number(headingFilterDeadZoneDegrees) || 0);
+      const effectiveDeadZoneDegrees = Math.max(0.75, Number(headingFilterDeadZoneDegrees) || 0);
       const hasPoorAccuracy = typeof sensorReading.accuracy === "number"
         && Number.isFinite(sensorReading.accuracy)
         && sensorReading.accuracy > headingSensorMaxWebkitCompassAccuracyDegrees;
