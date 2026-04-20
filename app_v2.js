@@ -94,6 +94,10 @@ const MAP_MODE_DRAWER_CLOSE_SWIPE_MIN_PX = 18;
 const MAP_MODE_DRAWER_SWIPE_VERTICAL_TOLERANCE_PX = 42;
 const MAP_MODE_DRAWER_SWIPE_HORIZONTAL_LEAD_PX = 8;
 const MAP_MODE_DRAWER_BACK_GESTURE_GUARD_PX = 12;
+const IOS_APP_SWITCH_GESTURE_EDGE_PX = 32;
+const IOS_APP_SWITCH_GESTURE_MIN_VERTICAL_PX = 18;
+const IOS_APP_SWITCH_GESTURE_HORIZONTAL_LEAD_PX = 10;
+const IOS_APP_SWITCH_GESTURE_MAX_ELAPSED_MS = 240;
 const ALLOW_RELATIVE_COMPASS_ALPHA_FALLBACK = isTouchInteractionDevice();
 const COMPASS_PERMISSION_REQUIRED_STATE = "required";
 const COMPASS_PERMISSION_GRANTED_STATE = "granted";
@@ -168,7 +172,7 @@ const STANDARD_MAP_THEME_LIGHT = "light";
 const STANDARD_MAP_THEME_DARK = "dark";
 const STANDARD_MAP_THEME_AUTO = "auto";
 const MAP_MODE_AUTO_REFRESH_MS = 60 * 1000;
-const STANDARD_TRAFFIC_HOLD_DELAY_MS = 400;
+const STANDARD_TRAFFIC_HOLD_DELAY_MS = 300;
 const mapboxgl = window.mapboxgl;
 
 function renderFatalMapError(message, kicker = "Map unavailable") {
@@ -248,6 +252,11 @@ const LAYER_CINEMATIC_LIFT = "cinematic-lift-layer";
 const LAYER_CINEMATIC_TINT = "cinematic-tint-layer";
 const LAYER_TRAFFIC_CASING = "traffic-casing-layer";
 const LAYER_TRAFFIC = "traffic-layer";
+const LAYER_HYBRID_BLUE_CASING = "layer-hybrid-blue-casing";
+const LAYER_OVERLAY_HOSPITALS = "overlay-hospitals";
+const LAYER_OVERLAY_GOLF_COURSES = "overlay-golf-courses";
+const LAYER_OVERLAY_PARKS = "overlay-parks";
+const LAYER_OVERLAY_SCHOOLS = "overlay-schools";
 const LAYER_CURRENT_LOCATION_ACCURACY_GLOW = "current-location-accuracy-glow";
 const LAYER_CURRENT_LOCATION_ACCURACY_FILL = "current-location-accuracy-fill";
 const LAYER_CURRENT_LOCATION_ACCURACY_LINE = "current-location-accuracy-line";
@@ -274,6 +283,11 @@ const MAP_MODE_OWNED_LAYER_IDS = new Set([
   LAYER_CINEMATIC_TINT,
   LAYER_TRAFFIC_CASING,
   LAYER_TRAFFIC,
+  LAYER_HYBRID_BLUE_CASING,
+  LAYER_OVERLAY_HOSPITALS,
+  LAYER_OVERLAY_GOLF_COURSES,
+  LAYER_OVERLAY_PARKS,
+  LAYER_OVERLAY_SCHOOLS,
   LAYER_CURRENT_LOCATION_ACCURACY_GLOW,
   LAYER_CURRENT_LOCATION_ACCURACY_FILL,
   LAYER_CURRENT_LOCATION_ACCURACY_LINE,
@@ -306,13 +320,105 @@ const mapCanvasContainer = typeof map.getCanvasContainer === "function"
   ? map.getCanvasContainer()
   : null;
 if (mapCanvasContainer) {
-  mapCanvasContainer.addEventListener("touchstart", handleMapTouchStart, { passive: true });
-  mapCanvasContainer.addEventListener("touchmove", () => {
+  let appSwitchGestureState = null;
+
+  const getMapTouchGestureNowMs = () => {
+    if (typeof performance !== "undefined" && typeof performance.now === "function") {
+      return performance.now();
+    }
+
+    return Date.now();
+  };
+
+  const clearAppSwitchGestureState = () => {
+    if (
+      appSwitchGestureState?.disabledDragPan
+      && map.dragPan
+      && typeof map.dragPan.enable === "function"
+    ) {
+      map.dragPan.enable();
+    }
+    appSwitchGestureState = null;
+  };
+
+  const rememberAppSwitchGestureStart = (event) => {
+    if (!event || event.touches.length !== 1) {
+      clearAppSwitchGestureState();
+      return;
+    }
+
+    const touch = event.touches[0];
+    const viewportHeight = window.innerHeight || document.documentElement?.clientHeight || 0;
+    const bottomEdgeThreshold = Math.max(
+      IOS_APP_SWITCH_GESTURE_EDGE_PX,
+      Math.round(viewportHeight * 0.035)
+    );
+
+    appSwitchGestureState = {
+      startX: touch.clientX,
+      startY: touch.clientY,
+      startedAt: getMapTouchGestureNowMs(),
+      eligible: viewportHeight > 0 && touch.clientY >= viewportHeight - bottomEdgeThreshold,
+      disabledDragPan: false,
+    };
+  };
+
+  const maybeGuardAppSwitchGesture = (event) => {
+    if (!appSwitchGestureState) {
+      return;
+    }
+
+    if (!event || event.touches.length !== 1) {
+      clearAppSwitchGestureState();
+      return;
+    }
+
+    if (!appSwitchGestureState.eligible) {
+      return;
+    }
+
+    const touch = event.touches[0];
+    const deltaX = touch.clientX - appSwitchGestureState.startX;
+    const deltaY = touch.clientY - appSwitchGestureState.startY;
+    const elapsedMs = getMapTouchGestureNowMs() - appSwitchGestureState.startedAt;
+    if (deltaY > 0 || elapsedMs > IOS_APP_SWITCH_GESTURE_MAX_ELAPSED_MS) {
+      appSwitchGestureState.eligible = false;
+      return;
+    }
+
+    const verticalTravel = -deltaY;
+    if (
+      verticalTravel < IOS_APP_SWITCH_GESTURE_MIN_VERTICAL_PX
+      || verticalTravel < Math.abs(deltaX) + IOS_APP_SWITCH_GESTURE_HORIZONTAL_LEAD_PX
+    ) {
+      return;
+    }
+
+    if (
+      !appSwitchGestureState.disabledDragPan
+      && map.dragPan
+      && typeof map.dragPan.isEnabled === "function"
+      && map.dragPan.isEnabled()
+      && typeof map.dragPan.disable === "function"
+    ) {
+      map.dragPan.disable();
+      appSwitchGestureState.disabledDragPan = true;
+    }
+  };
+
+  mapCanvasContainer.addEventListener("touchstart", (event) => {
+    handleMapTouchStart();
+    rememberAppSwitchGestureStart(event);
+  }, { passive: true });
+  mapCanvasContainer.addEventListener("touchmove", (event) => {
     suppressMapTapPopupTemporarily();
+    maybeGuardAppSwitchGesture(event);
   }, { passive: true });
   mapCanvasContainer.addEventListener("touchcancel", () => {
     suppressMapTapPopupTemporarily();
+    clearAppSwitchGestureState();
   }, { passive: true });
+  mapCanvasContainer.addEventListener("touchend", clearAppSwitchGestureState, { passive: true });
 }
 
 let lastCurrentLocation = null;
@@ -1173,21 +1279,33 @@ function syncSatelliteLayerVisibility(mode = currentBaseStyle) {
 function getShouldShowTraffic(mode = currentBaseStyle) {
   const normalizedMode = normalizeMapMode(mode);
   return normalizedMode === BASE_STYLE_HYBRID
+    || normalizedMode === BASE_STYLE_SATELLITE
     || (normalizedMode === BASE_STYLE_STANDARD && currentStandardTrafficEnabled);
 }
 
-function setStandardTrafficEnabled(enabled, { persist = true } = {}) {
+function setStandardTrafficEnabled(enabled) {
   currentStandardTrafficEnabled = Boolean(enabled);
-  if (persist) {
-    writeStoredStandardTrafficEnabled(currentStandardTrafficEnabled);
-  }
+  writeStoredStandardTrafficEnabled(currentStandardTrafficEnabled);
   syncTrafficLayerVisibility(currentBaseStyle);
 }
 
 function syncTrafficLayerVisibility(mode = currentBaseStyle) {
-  const showTraffic = getShouldShowTraffic(mode);
+  const normalizedMode = normalizeMapMode(mode);
+  const showTraffic = getShouldShowTraffic(normalizedMode);
+  const showSemanticOverlays = normalizedMode === BASE_STYLE_STANDARD
+    || normalizedMode === BASE_STYLE_HYBRID;
+
   setLayerVisibility(LAYER_TRAFFIC_CASING, showTraffic);
   setLayerVisibility(LAYER_TRAFFIC, showTraffic);
+  setLayerVisibility(LAYER_HYBRID_BLUE_CASING, normalizedMode === BASE_STYLE_HYBRID);
+  [
+    LAYER_OVERLAY_HOSPITALS,
+    LAYER_OVERLAY_GOLF_COURSES,
+    LAYER_OVERLAY_PARKS,
+    LAYER_OVERLAY_SCHOOLS,
+  ].forEach((layerId) => {
+    setLayerVisibility(layerId, showSemanticOverlays);
+  });
 }
 
 function syncMapModeAutoRefreshTimer() {
@@ -1314,6 +1432,162 @@ function ensureHybridBaseLayers() {
   const beforeId = getBasemapOverlayBeforeId();
   const theme = getCinematicTheme();
   const trafficCongestion = ["coalesce", ["get", "congestion"], "low"];
+  const basemapStyleLayers = getBasemapStyleLayers();
+  const basemapPolygonLayer = basemapStyleLayers.find((layer) => (
+    layer.type === "fill"
+      && layer.source
+      && layer["source-layer"]
+      && getBasemapLayerRole(layer) === "landuse"
+  )) || basemapStyleLayers.find((layer) => (
+    layer.type === "fill"
+      && layer.source
+      && layer["source-layer"]
+  ));
+  const basemapRoadLayer = basemapStyleLayers.find((layer) => (
+    layer.type === "line"
+      && layer.source
+      && layer["source-layer"]
+      && getBasemapLayerRole(layer) === "road"
+  )) || basemapStyleLayers.find((layer) => (
+    layer.type === "line"
+      && layer.source
+      && layer["source-layer"]
+  ));
+  const overlaySource = basemapPolygonLayer?.source ?? null;
+  const overlaySourceLayer = basemapPolygonLayer?.["source-layer"] ?? null;
+  const roadSource = basemapRoadLayer?.source ?? null;
+  const roadSourceLayer = basemapRoadLayer?.["source-layer"] ?? null;
+  const overlaySourceFillLayers = overlaySource && overlaySourceLayer
+    ? basemapStyleLayers.filter((layer) => (
+        layer.type === "fill"
+          && layer.source === overlaySource
+          && layer["source-layer"] === overlaySourceLayer
+      ))
+    : [];
+  const buildPropertyMatchExpression = (propertyNames, values) => [
+    "any",
+    ...propertyNames.map((propertyName) => [
+      "match",
+      ["downcase", ["to-string", ["coalesce", ["get", propertyName], ""]]],
+      values,
+      true,
+      false,
+    ]),
+  ];
+  const hasOverlaySupport = (patterns, filterExpression) => {
+    if (!overlaySource || !overlaySourceLayer) {
+      return false;
+    }
+
+    const hasStyleHint = overlaySourceFillLayers.some((layer) => {
+      const haystack = `${getBasemapLayerSignature(layer)} ${JSON.stringify(layer.filter || [])}`.toLowerCase();
+      return patterns.some((pattern) => pattern.test(haystack));
+    });
+    if (hasStyleHint) {
+      return true;
+    }
+
+    if (typeof map.querySourceFeatures !== "function") {
+      return false;
+    }
+
+    try {
+      return map.querySourceFeatures(overlaySource, {
+        sourceLayer: overlaySourceLayer,
+        filter: filterExpression,
+      }).length > 0;
+    } catch {
+      return false;
+    }
+  };
+  const semanticOverlayVisibility = currentBaseStyle === BASE_STYLE_SATELLITE ? "none" : "visible";
+  const hospitalOverlayFilter = buildPropertyMatchExpression(
+    ["amenity", "class", "type", "subclass", "category", "maki"],
+    ["hospital", "medical", "clinic", "medical_center"]
+  );
+  const golfOverlayFilter = buildPropertyMatchExpression(
+    ["leisure", "landuse", "class", "type", "subclass", "category"],
+    ["golf_course", "golf", "golf_club", "country_club"]
+  );
+  const parkOverlayFilter = buildPropertyMatchExpression(
+    ["leisure", "landuse", "class", "type", "subclass", "category"],
+    ["park", "park_like", "national_park", "garden", "recreation_ground"]
+  );
+  const schoolOverlayFilter = buildPropertyMatchExpression(
+    ["amenity", "class", "type", "subclass", "category"],
+    ["school", "college", "university", "campus"]
+  );
+  const overlayDefinitions = [
+    {
+      id: LAYER_OVERLAY_HOSPITALS,
+      filter: hospitalOverlayFilter,
+      supportPatterns: [/hospital/, /medical/, /clinic/],
+      minzoom: 12,
+      maxzoom: 18.5,
+      paint: {
+        "fill-color": "#f2a6b3",
+        "fill-opacity": 0.16,
+        "fill-outline-color": "rgba(186, 78, 101, 0.5)",
+      },
+    },
+    {
+      id: LAYER_OVERLAY_GOLF_COURSES,
+      filter: golfOverlayFilter,
+      supportPatterns: [/golf/, /country_club/],
+      minzoom: 10,
+      maxzoom: 17.5,
+      paint: {
+        "fill-color": "#8cc97d",
+        "fill-opacity": 0.18,
+        "fill-outline-color": "rgba(92, 149, 84, 0.44)",
+      },
+    },
+    {
+      id: LAYER_OVERLAY_PARKS,
+      filter: parkOverlayFilter,
+      supportPatterns: [/park/, /garden/, /recreation/],
+      minzoom: 10,
+      maxzoom: 17.5,
+      paint: {
+        "fill-color": "#7ebe74",
+        "fill-opacity": 0.12,
+        "fill-outline-color": "rgba(84, 138, 72, 0.3)",
+      },
+    },
+    {
+      id: LAYER_OVERLAY_SCHOOLS,
+      filter: schoolOverlayFilter,
+      supportPatterns: [/school/, /college/, /university/, /campus/],
+      minzoom: 12,
+      maxzoom: 18.5,
+      paint: {
+        "fill-color": "#eedf8c",
+        "fill-opacity": 0.16,
+        "fill-outline-color": "rgba(188, 163, 65, 0.4)",
+      },
+    },
+  ];
+  const hybridRoadFilter = buildPropertyMatchExpression(
+    ["class", "type", "subclass"],
+    [
+      "motorway",
+      "motorway_link",
+      "trunk",
+      "trunk_link",
+      "primary",
+      "primary_link",
+      "secondary",
+      "secondary_link",
+      "tertiary",
+      "tertiary_link",
+      "street",
+      "street_limited",
+      "major_road",
+      "minor_road",
+      "residential",
+      "service",
+    ]
+  );
 
   if (!map.getSource(SOURCE_BASE_SATELLITE)) {
     map.addSource(SOURCE_BASE_SATELLITE, {
@@ -1407,6 +1681,51 @@ function ensureHybridBaseLayers() {
         "fill-opacity": theme.tintOpacity,
         "fill-color-transition": { duration: CINEMATIC_DAY_NIGHT_TRANSITION_MS, delay: 0 },
         "fill-opacity-transition": { duration: CINEMATIC_DAY_NIGHT_TRANSITION_MS, delay: 0 },
+      },
+    }, beforeId);
+  }
+
+  for (const overlayDefinition of overlayDefinitions) {
+    if (
+      map.getLayer(overlayDefinition.id)
+      || !hasOverlaySupport(overlayDefinition.supportPatterns, overlayDefinition.filter)
+    ) {
+      continue;
+    }
+
+    map.addLayer({
+      id: overlayDefinition.id,
+      type: "fill",
+      source: overlaySource,
+      "source-layer": overlaySourceLayer,
+      minzoom: overlayDefinition.minzoom,
+      maxzoom: overlayDefinition.maxzoom,
+      filter: overlayDefinition.filter,
+      layout: {
+        visibility: semanticOverlayVisibility,
+      },
+      paint: overlayDefinition.paint,
+    }, beforeId);
+  }
+
+  if (roadSource && roadSourceLayer && !map.getLayer(LAYER_HYBRID_BLUE_CASING)) {
+    map.addLayer({
+      id: LAYER_HYBRID_BLUE_CASING,
+      type: "line",
+      source: roadSource,
+      "source-layer": roadSourceLayer,
+      minzoom: 7,
+      filter: hybridRoadFilter,
+      layout: {
+        visibility: currentBaseStyle === BASE_STYLE_HYBRID ? "visible" : "none",
+        "line-cap": "round",
+        "line-join": "round",
+      },
+      paint: {
+        "line-color": "#4b91ff",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 7, 0.45, 10, 1.25, 13, 2.35, 16, 4.9],
+        "line-opacity": ["interpolate", ["linear"], ["zoom"], 7, 0.22, 11, 0.34, 14, 0.48, 16, 0.62],
+        "line-blur": ["interpolate", ["linear"], ["zoom"], 7, 0.08, 16, 0.18],
       },
     }, beforeId);
   }
@@ -2643,17 +2962,22 @@ function positionStandardTrafficPopup(anchorButton, popup) {
 
   const anchorRect = anchorButton.getBoundingClientRect();
   const popupRect = popup.getBoundingClientRect();
-  const viewportWidth = window.innerWidth || document.documentElement?.clientWidth || 0;
-  const viewportHeight = window.innerHeight || document.documentElement?.clientHeight || 0;
+  const visualViewport = window.visualViewport || null;
+  const viewportWidth = visualViewport?.width || window.innerWidth || document.documentElement?.clientWidth || 0;
+  const viewportHeight = visualViewport?.height || window.innerHeight || document.documentElement?.clientHeight || 0;
+  const viewportLeft = visualViewport?.offsetLeft || 0;
+  const viewportTop = visualViewport?.offsetTop || 0;
   const gutter = 10;
   const inset = 12;
+  const preferredLeft = anchorRect.right + gutter;
+  const preferredTop = anchorRect.top - 8;
   const left = Math.min(
-    Math.max(inset, anchorRect.right + gutter),
-    Math.max(inset, viewportWidth - popupRect.width - inset)
+    Math.max(viewportLeft + inset, preferredLeft),
+    Math.max(viewportLeft + inset, viewportLeft + viewportWidth - popupRect.width - inset)
   );
   const top = Math.min(
-    Math.max(inset, anchorRect.top - 8),
-    Math.max(inset, viewportHeight - popupRect.height - inset)
+    Math.max(viewportTop + inset, preferredTop),
+    Math.max(viewportTop + inset, viewportTop + viewportHeight - popupRect.height - inset)
   );
 
   popup.style.left = `${Math.round(left)}px`;
@@ -2691,6 +3015,7 @@ function openStandardTrafficPopup(anchorButton, { focusSelected = true } = {}) {
   const popup = document.createElement("div");
   popup.className = "traffic-toggle-popup";
   popup.setAttribute("role", "dialog");
+  popup.setAttribute("aria-modal", "false");
   popup.setAttribute("aria-label", "Traffic Layer");
   popup.tabIndex = -1;
 
@@ -2734,7 +3059,7 @@ function openStandardTrafficPopup(anchorButton, { focusSelected = true } = {}) {
     if (popup.contains(target) || anchorButton.contains(target)) {
       return;
     }
-    closeStandardTrafficPopup();
+    closeStandardTrafficPopup({ restoreFocus: true });
   };
 
   const handleKeyDown = (event) => {
@@ -2760,15 +3085,22 @@ function openStandardTrafficPopup(anchorButton, { focusSelected = true } = {}) {
   const handleResize = () => {
     positionStandardTrafficPopup(anchorButton, popup);
   };
+  const visualViewport = window.visualViewport || null;
 
   document.addEventListener("pointerdown", handlePointerDown, true);
   document.addEventListener("keydown", handleKeyDown, true);
   window.addEventListener("resize", handleResize);
+  window.addEventListener("orientationchange", handleResize);
+  visualViewport?.addEventListener("resize", handleResize);
+  visualViewport?.addEventListener("scroll", handleResize);
 
   standardTrafficPopupCleanup = () => {
     document.removeEventListener("pointerdown", handlePointerDown, true);
     document.removeEventListener("keydown", handleKeyDown, true);
     window.removeEventListener("resize", handleResize);
+    window.removeEventListener("orientationchange", handleResize);
+    visualViewport?.removeEventListener("resize", handleResize);
+    visualViewport?.removeEventListener("scroll", handleResize);
   };
 
   window.requestAnimationFrame(() => {
@@ -2838,6 +3170,10 @@ function bindStandardModeButtonInteractions(button) {
   button.addEventListener("pointerdown", (event) => {
     if (typeof event.button === "number" && event.button !== 0) {
       return;
+    }
+
+    if (event.pointerType !== "mouse" && event.cancelable) {
+      event.preventDefault();
     }
 
     standardTrafficHoldTriggered = false;
