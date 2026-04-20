@@ -1515,37 +1515,26 @@ summary {
     min-width: 0;
   }
   /* Keep primary navigation high and move zoom to the thumb zone to avoid stacked map controls on phones. */
-  html, body {
-    height: 100%;
-    margin: 0;
-    padding: 0;
+  #app {
+    display: block;
+  }
+
+  html, body, #app, #main {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100dvh;
     overflow: hidden;
   }
 
-  #app {
-    display: block;
-    width: 100vw;
-    height: 100dvh;
-  }
-
-  #main {
+  #map,
+  .mapboxgl-map,
+  .mapboxgl-canvas-container,
+  .mapboxgl-canvas {
     position: fixed;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    left: 0;
-    width: 100%;
-    height: 100dvh;
-  }
-
-  #map {
-    position: fixed;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    left: 0;
-    width: 100vw;
-    height: 100dvh;
+    inset: 0;
+    width: 100vw !important;
+    height: 100dvh !important;
   }
 
   .menu-toggle {

@@ -725,7 +725,7 @@ const STANDARD_BASE_PALETTES = Object.freeze({
   [STANDARD_MAP_THEME_LIGHT]: Object.freeze({
     background: "#eef2ef",
     land: "#d9dfe4",
-    landuse: "#6f9f62",
+    landuse: "#79a96b",
     water: "#4d8fe7",
     road: "#ebc95f",
     roadOutline: "#b8bec5",
@@ -735,15 +735,15 @@ const STANDARD_BASE_PALETTES = Object.freeze({
     building: "#d0d6dd",
     buildingOutline: "rgba(96, 106, 116, 0.46)",
     label: "#23303b",
-    secondaryLabel: "#445564",
+    secondaryLabel: "#3e505d",
     roadLabel: "#2f3c47",
     waterLabel: "#145ab8",
     labelHalo: "rgba(255, 255, 255, 1)",
     icon: "#5a6a77",
-    poiCircle: "#758695",
-    poiHospital: "#c84b43",
+    poiCircle: "#667988",
+    poiHospital: "#d64b3b",
     poiSchool: "#bc8d19",
-    poiPark: "#2f8740",
+    poiPark: "#2f8f57",
     poiShopping: "#2f73df",
   }),
   [STANDARD_MAP_THEME_DARK]: Object.freeze({
@@ -963,7 +963,7 @@ function getBasemapLayerRole(layer) {
 }
 
 function isParkLikeBasemapLayer(layer) {
-  return /park|wood|forest|grass|scrub|pitch|golf|cemetery/.test(getBasemapLayerSignature(layer));
+  return /park|wood|forest|grass|scrub|pitch|golf|golf_club|country_club|leisure|recreation|cemetery/.test(getBasemapLayerSignature(layer));
 }
 
 function isHillLikeBasemapLayer(layer) {
@@ -996,11 +996,11 @@ function getLightThemePoiAccentColorExpression(palette, fallbackColor) {
         ],
       ],
     ],
-    ["hospital", "clinic", "doctor", "medical", "pharmacy"],
+    ["hospital", "clinic", "doctor", "medical", "pharmacy", "healthcare", "urgent_care", "emergency", "medical_center"],
     palette.poiHospital,
     ["school", "college", "university", "library"],
     palette.poiSchool,
-    ["park", "park_like", "garden", "pitch", "golf", "golf_course", "cemetery"],
+    ["park", "park_like", "garden", "pitch", "golf", "golf_course", "golf_club", "country_club", "leisure", "recreation", "recreation_ground", "cemetery"],
     palette.poiPark,
     ["shop", "grocery", "supermarket", "market", "mall", "retail", "commercial"],
     palette.poiShopping,
