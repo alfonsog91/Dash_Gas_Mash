@@ -78,14 +78,16 @@ const BLUE_DOT_RADIUS_EPSILON_PX = 0.01;
 const BLUE_DOT_HALO_RADIUS_SCALE = 2.35;
 const FULL_CYCLE_RADIANS = Math.PI * 2;
 const COMPASS_PERMISSION_REQUEST_TIMEOUT_MS = 5000;
-const HEADING_RENDER_LOOP_MAX_HZ = 30;
+const HEADING_RENDER_LOOP_MAX_HZ = 45;
 const HEADING_RENDER_LOOP_FRAME_INTERVAL_MS = 1000 / HEADING_RENDER_LOOP_MAX_HZ;
 const HEADING_RENDER_LOOP_MAP_BEARING_SMOOTHING_TIME_MS = 240;
-const HEADING_RENDER_LOOP_GPS_SMOOTHING_TIME_MS = 180;
-const HEADING_RENDER_LOOP_MIN_DELTA_DEGREES = HEADING_FILTER_MIN_ROTATION_DEGREES;
+const HEADING_RENDER_LOOP_GPS_SMOOTHING_TIME_MS = 140;
+const HEADING_RENDER_LOOP_MIN_DELTA_DEGREES = 0.12;
 const HEADING_RENDER_LOOP_MIN_LOCATION_DELTA_METERS = 0.25;
-const HEADING_RENDER_LOOP_MIN_SPEED_DELTA_MPS = 0.1;
+const HEADING_RENDER_LOOP_MIN_SPEED_DELTA_MPS = 0.05;
 const HEADING_CONE_RENDER_SCALE_BIAS = 1.15;
+const MAP_MODE_DRAWER_SWIPE_MIN_PX = 28;
+const MAP_MODE_DRAWER_SWIPE_VERTICAL_TOLERANCE_PX = 36;
 const ALLOW_RELATIVE_COMPASS_ALPHA_FALLBACK = isTouchInteractionDevice();
 const COMPASS_PERMISSION_REQUIRED_STATE = "required";
 const COMPASS_PERMISSION_GRANTED_STATE = "granted";
@@ -506,6 +508,11 @@ let locationRuntime = null;
 let headingRuntime = null;
 let routingRuntime = null;
 let elMapModeControl = null;
+let elMapModeDrawer = null;
+let elMapModeDrawerEdge = null;
+let elMapModeDrawerPanel = null;
+let elMapModeDrawerTab = null;
+let activeMapModeDrawerSwipe = null;
 
 function getRoutingState() {
   return {
@@ -690,22 +697,24 @@ function getHeadingConeRenderMesh() {
 
 const STANDARD_BASE_PALETTES = Object.freeze({
   [STANDARD_MAP_THEME_LIGHT]: Object.freeze({
-    background: "#eef3f6",
-    land: "#ebe5d8",
-    landuse: "#d7e5d4",
-    water: "#acd8ff",
-    road: "#ffffff",
-    roadMinor: "#f6efe6",
-    boundary: "rgba(92, 117, 146, 0.28)",
-    building: "#d7d0c4",
-    buildingOutline: "rgba(118, 128, 139, 0.2)",
-    label: "#16212b",
-    secondaryLabel: "#526576",
-    roadLabel: "#273848",
-    waterLabel: "#3d7faa",
-    labelHalo: "rgba(252, 252, 255, 0.96)",
-    icon: "#42586a",
-    poiCircle: "#51697c",
+    background: "#e4eaee",
+    land: "#d4cec1",
+    landuse: "#c6d7c3",
+    water: "#8fbfdf",
+    road: "#fff8f0",
+    roadOutline: "#c4b39d",
+    roadMinor: "#ddd2c2",
+    roadMinorOutline: "#b3a693",
+    boundary: "rgba(75, 97, 119, 0.46)",
+    building: "#c8c0b4",
+    buildingOutline: "rgba(96, 106, 118, 0.26)",
+    label: "#13202a",
+    secondaryLabel: "#4a5d6d",
+    roadLabel: "#1f3242",
+    waterLabel: "#2f6f98",
+    labelHalo: "rgba(250, 250, 252, 0.985)",
+    icon: "#3a5062",
+    poiCircle: "#43586a",
   }),
   [STANDARD_MAP_THEME_DARK]: Object.freeze({
     background: "#050a12",
@@ -713,7 +722,9 @@ const STANDARD_BASE_PALETTES = Object.freeze({
     landuse: "#12221d",
     water: "#0b2a43",
     road: "#2f3c4b",
+    roadOutline: "#2f3c4b",
     roadMinor: "#22303f",
+    roadMinorOutline: "#22303f",
     boundary: "rgba(106, 141, 184, 0.2)",
     building: "#172434",
     buildingOutline: "rgba(27, 44, 61, 0.76)",
@@ -926,7 +937,11 @@ function isParkLikeBasemapLayer(layer) {
 }
 
 function isMajorRoadBasemapLayer(layer) {
-  return /motorway|trunk|primary|major|street-major|bridge|tunnel/.test(getBasemapLayerSignature(layer));
+  return /motorway|trunk|primary|secondary|major|street-major|bridge|tunnel/.test(getBasemapLayerSignature(layer));
+}
+
+function isRoadCasingBasemapLayer(layer) {
+  return /case|casing|outline/.test(getBasemapLayerSignature(layer));
 }
 
 function setSafePaintProperty(layerId, propertyName, propertyValue) {
@@ -966,12 +981,18 @@ function applyStandardBaseTheme(standardTheme = getResolvedStandardMapTheme()) {
     }
 
     if (layer.type === "line") {
+      const isMajorRoad = role === "road" && isMajorRoadBasemapLayer(layer);
+      const isRoadCasing = role === "road" && isRoadCasingBasemapLayer(layer);
       const lineColor = role === "water"
         ? palette.water
         : role === "boundary"
           ? palette.boundary
           : role === "road"
-            ? (isMajorRoadBasemapLayer(layer) ? palette.road : palette.roadMinor)
+            ? (
+                standardTheme === STANDARD_MAP_THEME_LIGHT && isRoadCasing
+                  ? (isMajorRoad ? palette.roadOutline : palette.roadMinorOutline)
+                  : (isMajorRoad ? palette.road : palette.roadMinor)
+              )
             : role === "building"
               ? palette.buildingOutline
               : palette.boundary;
@@ -979,7 +1000,7 @@ function applyStandardBaseTheme(standardTheme = getResolvedStandardMapTheme()) {
       if (role === "road") {
         setSafePaintProperty(layer.id, "line-opacity", 1);
       } else if (role === "boundary") {
-        setSafePaintProperty(layer.id, "line-opacity", standardTheme === STANDARD_MAP_THEME_DARK ? 0.58 : 0.42);
+        setSafePaintProperty(layer.id, "line-opacity", standardTheme === STANDARD_MAP_THEME_DARK ? 0.58 : 0.62);
       }
       continue;
     }
@@ -2322,8 +2343,119 @@ function addPreferredPressHandler(element, handler) {
   });
 }
 
+function getIsMapModeDrawerOpen() {
+  return Boolean(elMapModeDrawer?.classList.contains("is-open"));
+}
+
+function setMapModeDrawerOpen(isOpen) {
+  if (!elMapModeDrawer) {
+    return;
+  }
+
+  const nextIsOpen = Boolean(isOpen);
+  elMapModeDrawer.classList.toggle("is-open", nextIsOpen);
+  if (elMapModeDrawerTab) {
+    elMapModeDrawerTab.setAttribute("aria-expanded", String(nextIsOpen));
+  }
+  if (elMapModeDrawerEdge) {
+    elMapModeDrawerEdge.hidden = nextIsOpen;
+    elMapModeDrawerEdge.setAttribute("aria-hidden", String(nextIsOpen));
+  }
+}
+
+function clearMapModeDrawerSwipe() {
+  activeMapModeDrawerSwipe = null;
+}
+
+function bindMapModeDrawerSwipe(element, direction) {
+  if (!element || element.dataset.drawerSwipeBound === "true") {
+    return;
+  }
+
+  element.dataset.drawerSwipeBound = "true";
+  element.addEventListener("touchstart", (event) => {
+    if (event.touches.length !== 1) {
+      clearMapModeDrawerSwipe();
+      return;
+    }
+
+    const touch = event.touches[0];
+    activeMapModeDrawerSwipe = {
+      direction,
+      startX: touch.clientX,
+      startY: touch.clientY,
+    };
+  }, { passive: true });
+
+  element.addEventListener("touchmove", (event) => {
+    if (!activeMapModeDrawerSwipe || activeMapModeDrawerSwipe.direction !== direction || event.touches.length !== 1) {
+      return;
+    }
+
+    const touch = event.touches[0];
+    const deltaX = touch.clientX - activeMapModeDrawerSwipe.startX;
+    const deltaY = touch.clientY - activeMapModeDrawerSwipe.startY;
+    if (
+      Math.abs(deltaY) > MAP_MODE_DRAWER_SWIPE_VERTICAL_TOLERANCE_PX
+      && Math.abs(deltaY) > Math.abs(deltaX)
+    ) {
+      clearMapModeDrawerSwipe();
+      return;
+    }
+
+    const shouldOpen = direction === "open" && deltaX >= MAP_MODE_DRAWER_SWIPE_MIN_PX;
+    const shouldClose = direction === "close" && deltaX <= -MAP_MODE_DRAWER_SWIPE_MIN_PX;
+    if (!shouldOpen && !shouldClose) {
+      return;
+    }
+
+    event.preventDefault();
+    setMapModeDrawerOpen(direction === "open");
+    clearMapModeDrawerSwipe();
+  }, { passive: false });
+
+  element.addEventListener("touchend", clearMapModeDrawerSwipe, { passive: true });
+  element.addEventListener("touchcancel", clearMapModeDrawerSwipe, { passive: true });
+}
+
 function ensureMapModeToolbar() {
-  if (elMapModeControl || !mapToolbar) {
+  if (!elMain) {
+    return;
+  }
+
+  if (!elMapModeDrawer) {
+    const drawer = document.createElement("div");
+    drawer.className = "map-mode-drawer";
+    drawer.innerHTML = `
+      <button class="map-mode-drawer__edge" type="button" aria-label="Open map appearance drawer" aria-controls="mapModeDrawerPanel" aria-hidden="false"></button>
+      <div id="mapModeDrawerPanel" class="map-mode-drawer__panel">
+        <div class="map-mode-drawer__body"></div>
+      </div>
+      <button class="map-mode-drawer__tab" type="button" aria-label="Toggle map appearance drawer" aria-controls="mapModeDrawerPanel" aria-expanded="false"><span>Map</span></button>
+    `;
+    elMain.append(drawer);
+    elMapModeDrawer = drawer;
+    elMapModeDrawerEdge = drawer.querySelector(".map-mode-drawer__edge");
+    elMapModeDrawerPanel = drawer.querySelector(".map-mode-drawer__panel");
+    elMapModeDrawerTab = drawer.querySelector(".map-mode-drawer__tab");
+
+    elMapModeDrawerEdge?.addEventListener("click", () => {
+      setMapModeDrawerOpen(true);
+    });
+    elMapModeDrawerTab?.addEventListener("click", () => {
+      setMapModeDrawerOpen(!getIsMapModeDrawerOpen());
+    });
+    bindMapModeDrawerSwipe(elMapModeDrawerEdge, "open");
+    bindMapModeDrawerSwipe(elMapModeDrawerPanel, "close");
+    setMapModeDrawerOpen(false);
+  }
+
+  if (elMapModeControl) {
+    return;
+  }
+
+  const drawerBody = elMapModeDrawer?.querySelector(".map-mode-drawer__body");
+  if (!drawerBody) {
     return;
   }
 
@@ -2344,7 +2476,7 @@ function ensureMapModeToolbar() {
       <button class="map-mode-button" type="button" data-standard-map-theme="${STANDARD_MAP_THEME_AUTO}" aria-pressed="false">Auto</button>
     </div>
   `;
-  mapToolbar.append(control);
+  drawerBody.append(control);
   elMapModeControl = control;
   syncMapModeControls();
 }
@@ -2819,8 +2951,8 @@ function ensureMapSourcesAndLayers() {
     type: "fill",
     source: SOURCE_HEADING,
     paint: {
-      "fill-color": "#9ad9ff",
-      "fill-opacity": ["*", ["coalesce", ["get", "opacity"], 0], 0.68],
+      "fill-color": "#d8efff",
+      "fill-opacity": ["*", ["coalesce", ["get", "opacity"], 0], 0.92],
     },
   });
 
@@ -2829,7 +2961,7 @@ function ensureMapSourcesAndLayers() {
     type: "fill",
     source: SOURCE_HEADING,
     paint: {
-      "fill-color": "#57bcff",
+      "fill-color": "#2da7ff",
       "fill-opacity": ["coalesce", ["get", "opacity"], 0],
     },
   });
@@ -2843,9 +2975,9 @@ function ensureMapSourcesAndLayers() {
       "line-join": "round",
     },
     paint: {
-      "line-color": "#eefbff",
-      "line-width": 1.4,
-      "line-opacity": ["*", ["coalesce", ["get", "opacity"], 0], 0.72],
+      "line-color": "#ffffff",
+      "line-width": 1.9,
+      "line-opacity": ["*", ["coalesce", ["get", "opacity"], 0], 0.96],
     },
   });
 

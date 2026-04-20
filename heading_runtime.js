@@ -782,8 +782,8 @@ function createHeadingRuntime({
     const nextHeading = headingState.source === "sensor"
       ? filterHeadingDegrees(previousHeading, targetHeading, {
         smoothingFactor: headingFilterSmoothingFactor,
-        deadZoneDegrees: headingFilterDeadZoneDegrees,
-        minRotationDegrees: headingFilterMinRotationDegrees,
+        deadZoneDegrees: 0,
+        minRotationDegrees: 0,
       })
       : interpolateHeadingDegrees(
         previousHeading,
@@ -1078,7 +1078,6 @@ function createHeadingRuntime({
       });
 
       const nowMs = getHeadingNowMs();
-      const effectiveDeadZoneDegrees = Math.max(0.75, Number(headingFilterDeadZoneDegrees) || 0);
       const hasPoorAccuracy = typeof sensorReading.accuracy === "number"
         && Number.isFinite(sensorReading.accuracy)
         && sensorReading.accuracy > headingSensorMaxWebkitCompassAccuracyDegrees;
@@ -1091,12 +1090,6 @@ function createHeadingRuntime({
       sensorHeadingKind = sensorReading.source;
 
       if (sensorReading.heading !== null && !hasPoorAccuracy && !hasLowReliability) {
-        if (sensorHeading !== null && getHeadingDeltaDegrees(sensorReading.heading, sensorHeading) < effectiveDeadZoneDegrees) {
-          sensorHeadingAt = nowMs;
-          updateCompassDebugOverlay(nowMs);
-          return;
-        }
-
         sensorHeading = sensorReading.heading;
         sensorHeadingAt = nowMs;
       }
