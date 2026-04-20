@@ -153,13 +153,14 @@ const DEFAULT_ZOOM = 12;
 
 const MAPBOX_GEOCODING_TOKEN = String(window.DASH_MAPBOX_TOKEN || "").trim();
 const MAPBOX_PLACEHOLDER_TOKEN = "MAPBOX_TOKEN_HERE";
-const MAPBOX_STYLE_URL = "mapbox://styles/mapbox/light-v11";
+const MAPBOX_STYLE_URL = "mapbox://styles/mapbox/streets-v12";
 const MAPBOX_SATELLITE_SOURCE_URL = "mapbox://mapbox.satellite";
 const MAPBOX_TRAFFIC_SOURCE_URL = "mapbox://mapbox.mapbox-traffic-v1";
 const MAPBOX_TRAFFIC_SOURCE_LAYER = "traffic";
 const CINEMATIC_DAY_NIGHT_TRANSITION_MS = 1250;
 const MAP_MODE_STORAGE_KEY = "dgm:map-mode";
 const STANDARD_MAP_THEME_STORAGE_KEY = "dgm:standard-map-theme";
+const STANDARD_TRAFFIC_STORAGE_KEY = "map.standardTrafficEnabled";
 const BASE_STYLE_STANDARD = "standard";
 const BASE_STYLE_SATELLITE = "satellite";
 const BASE_STYLE_HYBRID = "hybrid";
@@ -167,6 +168,7 @@ const STANDARD_MAP_THEME_LIGHT = "light";
 const STANDARD_MAP_THEME_DARK = "dark";
 const STANDARD_MAP_THEME_AUTO = "auto";
 const MAP_MODE_AUTO_REFRESH_MS = 60 * 1000;
+const STANDARD_TRAFFIC_HOLD_DELAY_MS = 400;
 const mapboxgl = window.mapboxgl;
 
 function renderFatalMapError(message, kicker = "Map unavailable") {
@@ -320,6 +322,7 @@ let lastSpotPoint = null;
 let lastRankedParkingAll = [];
 let currentBaseStyle = readStoredMapMode();
 let currentStandardMapTheme = readStoredStandardMapTheme();
+let currentStandardTrafficEnabled = readStoredStandardTrafficEnabled();
 let mapModeAutoRefreshTimer = null;
 let mapModeLayerRoleCache = new Map();
 let activeSearchAbort = null;
@@ -842,6 +845,30 @@ function writeStoredStandardMapTheme(value) {
   }
 }
 
+function readStoredStandardTrafficEnabled() {
+  if (!canUseLocalStorage()) {
+    return false;
+  }
+
+  try {
+    return window.localStorage.getItem(STANDARD_TRAFFIC_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function writeStoredStandardTrafficEnabled(enabled) {
+  if (!canUseLocalStorage()) {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(STANDARD_TRAFFIC_STORAGE_KEY, enabled ? "true" : "false");
+  } catch {
+    // Ignore storage failures and preserve runtime behavior.
+  }
+}
+
 function getResolvedStandardMapTheme(themeMode = currentStandardMapTheme, referenceDate = new Date()) {
   const normalizedThemeMode = normalizeStandardMapTheme(themeMode);
   if (normalizedThemeMode !== STANDARD_MAP_THEME_AUTO) {
@@ -1143,8 +1170,22 @@ function syncSatelliteLayerVisibility(mode = currentBaseStyle) {
   setLayerVisibility(LAYER_BASE_SATELLITE, normalizeMapMode(mode) !== BASE_STYLE_STANDARD);
 }
 
+function getShouldShowTraffic(mode = currentBaseStyle) {
+  const normalizedMode = normalizeMapMode(mode);
+  return normalizedMode === BASE_STYLE_HYBRID
+    || (normalizedMode === BASE_STYLE_STANDARD && currentStandardTrafficEnabled);
+}
+
+function setStandardTrafficEnabled(enabled, { persist = true } = {}) {
+  currentStandardTrafficEnabled = Boolean(enabled);
+  if (persist) {
+    writeStoredStandardTrafficEnabled(currentStandardTrafficEnabled);
+  }
+  syncTrafficLayerVisibility(currentBaseStyle);
+}
+
 function syncTrafficLayerVisibility(mode = currentBaseStyle) {
-  const showTraffic = normalizeMapMode(mode) === BASE_STYLE_HYBRID;
+  const showTraffic = getShouldShowTraffic(mode);
   setLayerVisibility(LAYER_TRAFFIC_CASING, showTraffic);
   setLayerVisibility(LAYER_TRAFFIC, showTraffic);
 }
@@ -1272,6 +1313,7 @@ function syncCategoryLayerVisibility() {
 function ensureHybridBaseLayers() {
   const beforeId = getBasemapOverlayBeforeId();
   const theme = getCinematicTheme();
+  const trafficCongestion = ["coalesce", ["get", "congestion"], "low"];
 
   if (!map.getSource(SOURCE_BASE_SATELLITE)) {
     map.addSource(SOURCE_BASE_SATELLITE, {
@@ -1389,9 +1431,35 @@ function ensureHybridBaseLayers() {
         "line-join": "round",
       },
       paint: {
-        "line-color": "rgba(5, 12, 19, 0.72)",
-        "line-width": ["interpolate", ["linear"], ["zoom"], 7, 1.5, 11, 3.2, 16, 8.2],
-        "line-opacity": 0.72,
+        "line-color": [
+          "match", trafficCongestion,
+          "low", "rgba(24, 107, 61, 0.44)",
+          "moderate", "rgba(255, 210, 74, 0.54)",
+          "heavy", "rgba(124, 9, 19, 0.62)",
+          "severe", "rgba(18, 8, 8, 0.76)",
+          "rgba(28, 78, 54, 0.44)",
+        ],
+        "line-width": [
+          "+",
+          ["interpolate", ["linear"], ["zoom"], 7, 1.8, 11, 3.9, 16, 8.8],
+          [
+            "match", trafficCongestion,
+            "low", 0,
+            "moderate", 0.35,
+            "heavy", 0.8,
+            "severe", 1.3,
+            0.2,
+          ],
+        ],
+        "line-opacity": [
+          "match", trafficCongestion,
+          "low", 0.3,
+          "moderate", 0.38,
+          "heavy", 0.46,
+          "severe", 0.54,
+          0.32,
+        ],
+        "line-blur": ["interpolate", ["linear"], ["zoom"], 7, 0.12, 16, 0.34],
       },
     }, beforeId);
   }
@@ -1410,15 +1478,34 @@ function ensureHybridBaseLayers() {
       },
       paint: {
         "line-color": [
-          "match", ["coalesce", ["get", "congestion"], "low"],
-          "low", "#61f2d4",
-          "moderate", "#ffc95c",
-          "heavy", "#ff8a5b",
-          "severe", "#ff4d88",
-          "#8fd8ff",
+          "match", trafficCongestion,
+          "low", "rgba(52, 214, 125, 0.84)",
+          "moderate", "rgba(255, 149, 44, 0.88)",
+          "heavy", "rgba(235, 62, 62, 0.92)",
+          "severe", "rgba(128, 0, 0, 0.94)",
+          "rgba(67, 191, 122, 0.82)",
         ],
-        "line-width": ["interpolate", ["linear"], ["zoom"], 7, 1.1, 11, 2.4, 16, 6.2],
-        "line-opacity": 0.9,
+        "line-width": [
+          "+",
+          ["interpolate", ["linear"], ["zoom"], 7, 1.2, 11, 2.6, 16, 6.5],
+          [
+            "match", trafficCongestion,
+            "low", 0,
+            "moderate", 0.25,
+            "heavy", 0.55,
+            "severe", 0.95,
+            0.1,
+          ],
+        ],
+        "line-opacity": [
+          "match", trafficCongestion,
+          "low", 0.66,
+          "moderate", 0.76,
+          "heavy", 0.82,
+          "severe", 0.88,
+          0.68,
+        ],
+        "line-blur": ["interpolate", ["linear"], ["zoom"], 7, 0.08, 16, 0.22],
       },
     }, beforeId);
   }
@@ -2505,6 +2592,344 @@ function bindMapModeDrawerSwipe(element, direction) {
   element.addEventListener("touchcancel", clearMapModeDrawerSwipe, { passive: true });
 }
 
+let standardTrafficPopup = null;
+let standardTrafficPopupAnchor = null;
+let standardTrafficPopupCleanup = null;
+let standardTrafficHoldTimer = null;
+let standardTrafficHoldTriggered = false;
+let standardTrafficActivePointerId = null;
+let standardTrafficSuppressClickUntil = 0;
+
+function getStandardTrafficUiNowMs() {
+  if (typeof performance !== "undefined" && typeof performance.now === "function") {
+    return performance.now();
+  }
+
+  return Date.now();
+}
+
+function suppressStandardTrafficButtonClick() {
+  standardTrafficSuppressClickUntil = getStandardTrafficUiNowMs() + STANDARD_TRAFFIC_HOLD_DELAY_MS;
+}
+
+function shouldSuppressStandardTrafficButtonClick() {
+  return getStandardTrafficUiNowMs() < standardTrafficSuppressClickUntil;
+}
+
+function clearStandardTrafficHoldTimer() {
+  if (standardTrafficHoldTimer !== null) {
+    window.clearTimeout(standardTrafficHoldTimer);
+    standardTrafficHoldTimer = null;
+  }
+}
+
+function focusStandardTrafficPopupSelection() {
+  const popup = standardTrafficPopup;
+  if (!popup) {
+    return;
+  }
+
+  const selectedItem = popup.querySelector('.traffic-toggle-popup__item[aria-checked="true"]');
+  const nextFocusTarget = selectedItem || popup.querySelector(".traffic-toggle-popup__item");
+  if (nextFocusTarget && typeof nextFocusTarget.focus === "function") {
+    nextFocusTarget.focus();
+  }
+}
+
+function positionStandardTrafficPopup(anchorButton, popup) {
+  if (!anchorButton || !popup) {
+    return;
+  }
+
+  const anchorRect = anchorButton.getBoundingClientRect();
+  const popupRect = popup.getBoundingClientRect();
+  const viewportWidth = window.innerWidth || document.documentElement?.clientWidth || 0;
+  const viewportHeight = window.innerHeight || document.documentElement?.clientHeight || 0;
+  const gutter = 10;
+  const inset = 12;
+  const left = Math.min(
+    Math.max(inset, anchorRect.right + gutter),
+    Math.max(inset, viewportWidth - popupRect.width - inset)
+  );
+  const top = Math.min(
+    Math.max(inset, anchorRect.top - 8),
+    Math.max(inset, viewportHeight - popupRect.height - inset)
+  );
+
+  popup.style.left = `${Math.round(left)}px`;
+  popup.style.top = `${Math.round(top)}px`;
+}
+
+function closeStandardTrafficPopup({ restoreFocus = false } = {}) {
+  if (standardTrafficPopupCleanup) {
+    standardTrafficPopupCleanup();
+    standardTrafficPopupCleanup = null;
+  }
+
+  if (standardTrafficPopup) {
+    standardTrafficPopup.remove();
+    standardTrafficPopup = null;
+  }
+
+  if (standardTrafficPopupAnchor) {
+    standardTrafficPopupAnchor.setAttribute("aria-expanded", "false");
+    if (restoreFocus && typeof standardTrafficPopupAnchor.focus === "function") {
+      standardTrafficPopupAnchor.focus();
+    }
+  }
+
+  standardTrafficPopupAnchor = null;
+}
+
+function openStandardTrafficPopup(anchorButton, { focusSelected = true } = {}) {
+  if (!anchorButton || !document.body) {
+    return;
+  }
+
+  closeStandardTrafficPopup();
+
+  const popup = document.createElement("div");
+  popup.className = "traffic-toggle-popup";
+  popup.setAttribute("role", "dialog");
+  popup.setAttribute("aria-label", "Traffic Layer");
+  popup.tabIndex = -1;
+
+  const title = document.createElement("div");
+  title.className = "traffic-toggle-popup__title";
+  title.textContent = "Traffic Layer";
+
+  const group = document.createElement("div");
+  group.className = "traffic-toggle-popup__group";
+  group.setAttribute("role", "radiogroup");
+  group.setAttribute("aria-label", "Traffic Layer");
+
+  [
+    { label: "On", value: true },
+    { label: "Off", value: false },
+  ].forEach((option) => {
+    const item = document.createElement("button");
+    const checked = currentStandardTrafficEnabled === option.value;
+    item.className = "traffic-toggle-popup__item";
+    item.type = "button";
+    item.textContent = option.label;
+    item.setAttribute("role", "radio");
+    item.setAttribute("aria-checked", String(checked));
+    item.classList.toggle("is-active", checked);
+    item.addEventListener("click", () => {
+      setStandardTrafficEnabled(option.value);
+      closeStandardTrafficPopup({ restoreFocus: true });
+    });
+    group.append(item);
+  });
+
+  popup.append(title, group);
+  document.body.append(popup);
+
+  standardTrafficPopup = popup;
+  standardTrafficPopupAnchor = anchorButton;
+  anchorButton.setAttribute("aria-expanded", "true");
+
+  const handlePointerDown = (event) => {
+    const target = event.target;
+    if (popup.contains(target) || anchorButton.contains(target)) {
+      return;
+    }
+    closeStandardTrafficPopup();
+  };
+
+  const handleKeyDown = (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeStandardTrafficPopup({ restoreFocus: true });
+      return;
+    }
+
+    if ((event.key === "ArrowDown" || event.key === "ArrowUp") && popup.contains(document.activeElement)) {
+      const items = Array.from(popup.querySelectorAll(".traffic-toggle-popup__item"));
+      if (!items.length) {
+        return;
+      }
+      const currentIndex = Math.max(0, items.indexOf(document.activeElement));
+      const delta = event.key === "ArrowDown" ? 1 : -1;
+      const nextIndex = (currentIndex + delta + items.length) % items.length;
+      event.preventDefault();
+      items[nextIndex].focus();
+    }
+  };
+
+  const handleResize = () => {
+    positionStandardTrafficPopup(anchorButton, popup);
+  };
+
+  document.addEventListener("pointerdown", handlePointerDown, true);
+  document.addEventListener("keydown", handleKeyDown, true);
+  window.addEventListener("resize", handleResize);
+
+  standardTrafficPopupCleanup = () => {
+    document.removeEventListener("pointerdown", handlePointerDown, true);
+    document.removeEventListener("keydown", handleKeyDown, true);
+    window.removeEventListener("resize", handleResize);
+  };
+
+  window.requestAnimationFrame(() => {
+    if (standardTrafficPopup !== popup) {
+      return;
+    }
+    positionStandardTrafficPopup(anchorButton, popup);
+    if (focusSelected) {
+      focusStandardTrafficPopupSelection();
+    }
+  });
+}
+
+function bindStandardModeButtonInteractions(button) {
+  if (!button || button.dataset.standardTrafficBound === "true") {
+    return;
+  }
+
+  button.dataset.standardTrafficBound = "true";
+
+  const handleResolvedStandardModePress = () => {
+    closeStandardTrafficPopup();
+    setMapMode(button.dataset.mapMode);
+  };
+
+  const releasePointerCapture = (pointerId) => {
+    if (pointerId === null || typeof button.releasePointerCapture !== "function") {
+      return;
+    }
+
+    try {
+      button.releasePointerCapture(pointerId);
+    } catch {
+      // Ignore stale pointer capture release attempts.
+    }
+  };
+
+  const finalizePointerInteraction = (event) => {
+    if (
+      standardTrafficActivePointerId !== null
+      && typeof event?.pointerId === "number"
+      && event.pointerId !== standardTrafficActivePointerId
+    ) {
+      return;
+    }
+
+    const pointerId = standardTrafficActivePointerId;
+    const hadPendingHold = standardTrafficHoldTimer !== null;
+    clearStandardTrafficHoldTimer();
+    standardTrafficActivePointerId = null;
+    releasePointerCapture(pointerId);
+
+    if (standardTrafficHoldTriggered) {
+      suppressStandardTrafficButtonClick();
+      standardTrafficHoldTriggered = false;
+      return;
+    }
+
+    if (!hadPendingHold) {
+      return;
+    }
+
+    suppressStandardTrafficButtonClick();
+    handleResolvedStandardModePress();
+  };
+
+  button.addEventListener("pointerdown", (event) => {
+    if (typeof event.button === "number" && event.button !== 0) {
+      return;
+    }
+
+    standardTrafficHoldTriggered = false;
+    standardTrafficActivePointerId = typeof event.pointerId === "number" ? event.pointerId : null;
+    clearStandardTrafficHoldTimer();
+    if (standardTrafficActivePointerId !== null && typeof button.setPointerCapture === "function") {
+      try {
+        button.setPointerCapture(standardTrafficActivePointerId);
+      } catch {
+        // Ignore unsupported pointer capture environments.
+      }
+    }
+    standardTrafficHoldTimer = window.setTimeout(() => {
+      standardTrafficHoldTimer = null;
+      standardTrafficHoldTriggered = true;
+      suppressStandardTrafficButtonClick();
+      openStandardTrafficPopup(button);
+    }, STANDARD_TRAFFIC_HOLD_DELAY_MS);
+  });
+
+  button.addEventListener("pointerup", finalizePointerInteraction);
+  button.addEventListener("pointercancel", (event) => {
+    clearStandardTrafficHoldTimer();
+    releasePointerCapture(standardTrafficActivePointerId);
+    standardTrafficActivePointerId = null;
+    if (standardTrafficHoldTriggered) {
+      suppressStandardTrafficButtonClick();
+      standardTrafficHoldTriggered = false;
+    }
+  });
+
+  button.addEventListener("keydown", (event) => {
+    if (event.repeat || (event.key !== "Enter" && event.key !== " ")) {
+      return;
+    }
+
+    standardTrafficHoldTriggered = false;
+    clearStandardTrafficHoldTimer();
+    standardTrafficHoldTimer = window.setTimeout(() => {
+      standardTrafficHoldTimer = null;
+      standardTrafficHoldTriggered = true;
+      suppressStandardTrafficButtonClick();
+      openStandardTrafficPopup(button, { focusSelected: false });
+    }, STANDARD_TRAFFIC_HOLD_DELAY_MS);
+    event.preventDefault();
+  });
+
+  button.addEventListener("keyup", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+
+    const hadPendingHold = standardTrafficHoldTimer !== null;
+    clearStandardTrafficHoldTimer();
+    if (standardTrafficHoldTriggered) {
+      suppressStandardTrafficButtonClick();
+      standardTrafficHoldTriggered = false;
+      event.preventDefault();
+      focusStandardTrafficPopupSelection();
+      return;
+    }
+
+    if (!hadPendingHold) {
+      return;
+    }
+
+    suppressStandardTrafficButtonClick();
+    event.preventDefault();
+    handleResolvedStandardModePress();
+  });
+
+  button.addEventListener("blur", () => {
+    clearStandardTrafficHoldTimer();
+    standardTrafficActivePointerId = null;
+    standardTrafficHoldTriggered = false;
+  });
+
+  button.addEventListener("click", (event) => {
+    if (shouldSuppressStandardTrafficButtonClick()) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    if (!isKeyboardActivationClick(event)) {
+      return;
+    }
+
+    handleResolvedStandardModePress();
+  });
+}
+
 function ensureMapModeToolbar() {
   if (!elMain) {
     return;
@@ -2553,7 +2978,7 @@ function ensureMapModeToolbar() {
   control.innerHTML = `
     <div class="map-mode-label">Map</div>
     <div class="map-mode-segmented" data-map-mode-group="base" role="group" aria-label="Map mode">
-      <button class="map-mode-button" type="button" data-map-mode="${BASE_STYLE_STANDARD}" aria-pressed="false">Standard</button>
+      <button class="map-mode-button" type="button" data-map-mode="${BASE_STYLE_STANDARD}" aria-pressed="false" aria-haspopup="dialog" aria-expanded="false" title="Press and hold for traffic layer options">Standard</button>
       <button class="map-mode-button" type="button" data-map-mode="${BASE_STYLE_SATELLITE}" aria-pressed="false">Satellite</button>
       <button class="map-mode-button" type="button" data-map-mode="${BASE_STYLE_HYBRID}" aria-pressed="false">Hybrid</button>
     </div>
@@ -2577,12 +3002,19 @@ function bindMapModeControlEvents() {
 
   elMapModeControl.dataset.bound = "true";
   elMapModeControl.querySelectorAll("[data-map-mode]").forEach((button) => {
+    if (normalizeMapMode(button.dataset.mapMode) === BASE_STYLE_STANDARD) {
+      bindStandardModeButtonInteractions(button);
+      return;
+    }
+
     addPreferredPressHandler(button, () => {
+      closeStandardTrafficPopup();
       setMapMode(button.dataset.mapMode);
     });
   });
   elMapModeControl.querySelectorAll("[data-standard-map-theme]").forEach((button) => {
     addPreferredPressHandler(button, () => {
+      closeStandardTrafficPopup();
       setStandardMapTheme(button.dataset.standardMapTheme);
     });
   });

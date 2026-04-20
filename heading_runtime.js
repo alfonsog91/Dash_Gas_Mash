@@ -467,14 +467,14 @@ function createHeadingRuntime({
     compassUiRoot = documentLike.createElement("div");
     Object.assign(compassUiRoot.style, {
       position: "fixed",
-      top: "12px",
-      left: "12px",
-      zIndex: "12",
+      top: "calc(env(safe-area-inset-top, 0px) + 6px)",
+      left: "calc(env(safe-area-inset-left, 0px) + 64px)",
+      zIndex: "16",
       display: "flex",
       flexDirection: "column",
       alignItems: "flex-start",
       gap: "8px",
-      maxWidth: "min(82vw, 280px)",
+      maxWidth: "min(calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 84px), 280px)",
       pointerEvents: "none",
     });
 
