@@ -31,6 +31,23 @@ function buildOpenMeteoWeatherUrl(lat, lon) {
   return url.toString();
 }
 
+function normalizeWeatherPoint(point) {
+  const lat = Number(point?.lat);
+  const lon = Number(point?.lon ?? point?.lng);
+  if (
+    !Number.isFinite(lat)
+    || !Number.isFinite(lon)
+    || lat < -90
+    || lat > 90
+    || lon < -180
+    || lon > 180
+  ) {
+    return null;
+  }
+
+  return { lat, lon };
+}
+
 function deriveRainBoostFromPrecipitationMm(precipitationMm) {
   const mmPerHour = Math.max(0, Number(precipitationMm) || 0);
   return clampRainBoost(MAX_RAIN_BOOST * (1 - Math.exp(-mmPerHour / 2.5)));
@@ -88,7 +105,13 @@ function formatWeatherSourceSummary(weatherSignal) {
   return `${sourceName}: ${weatherSignal.weatherLabel}, ${precipitationText}, ${liftText}${timeText}`;
 }
 
-async function fetchCurrentWeatherSignal({ lat, lon }, signal) {
+async function fetchCurrentWeatherSignal(point, signal) {
+  const normalizedPoint = normalizeWeatherPoint(point);
+  if (!normalizedPoint) {
+    throw new Error("Live weather point must have finite latitude and longitude.");
+  }
+
+  const { lat, lon } = normalizedPoint;
   const cacheKey = buildLiveWeatherCacheKey(lat, lon);
   const now = Date.now();
   if (
@@ -131,4 +154,5 @@ export {
   deriveWeatherSignal,
   fetchCurrentWeatherSignal,
   formatWeatherSourceSummary,
+  normalizeWeatherPoint,
 };

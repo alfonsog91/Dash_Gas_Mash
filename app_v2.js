@@ -54,13 +54,13 @@ import { createLocationRuntime } from "./location_runtime.js?v=20260412-location
 import {
   fetchCurrentWeatherSignal,
   formatWeatherSourceSummary,
-} from "./weather.js?v=20260410-live-weather";
+} from "./weather.js?v=20260427-weather-coordinate-guard";
 import {
   fetchCensusResidentialAnchors,
   formatCensusSourceSummary,
 } from "./census.js?v=20260410-census-data";
 import { createMapInteractionRuntime } from "./map_interaction_runtime.js?v=20260413-map-interaction-runtime-extract";
-import { createDataScoringRuntime } from "./data_scoring_runtime.js?v=20260413-data-scoring-runtime-extract";
+import { createDataScoringRuntime } from "./data_scoring_runtime.js?v=20260427-weather-guard";
 import { createRoutingRuntime } from "./routing_runtime.js?v=20260413-routing-runtime-extract";
 import {
   getMapRuntimeConfigSnapshot,
@@ -69,6 +69,10 @@ import {
   isMapKillSwitchEnabled,
   logDgmTelemetry,
 } from "./map_config.js?v=20260427-phase-a";
+import {
+  findTrafficLayerIds as findTrafficLayerIdsForMap,
+  setTrafficVisibility as applyTrafficVisibility,
+} from "./traffic_visibility.js?v=20260427-phase-b";
 
 const APP_BUILD_ID = "20260410-nav-hotfix";
 console.info("[DGM] app build", APP_BUILD_ID);
@@ -1297,28 +1301,21 @@ function getShouldShowTraffic(mode = currentBaseStyle) {
     || (normalizedMode === BASE_STYLE_STANDARD && currentStandardTrafficEnabled);
 }
 
-function setStandardTrafficEnabled(enabled) {
-  currentStandardTrafficEnabled = Boolean(enabled);
-  writeStoredStandardTrafficEnabled(currentStandardTrafficEnabled);
-  syncTrafficLayerVisibility(currentBaseStyle);
+function findTrafficLayerIds() {
+  return findTrafficLayerIdsForMap(map, {
+    explicitLayerIds: [LAYER_TRAFFIC_CASING, LAYER_TRAFFIC],
+  });
 }
 
-function syncTrafficLayerVisibility(mode = currentBaseStyle) {
-  const normalizedMode = normalizeMapMode(mode);
-  const showTraffic = getShouldShowTraffic(normalizedMode);
-  const showSemanticOverlays = normalizedMode === BASE_STYLE_STANDARD
-    || normalizedMode === BASE_STYLE_HYBRID;
+function setLegacyTrafficVisibility(visible) {
+  const showTraffic = Boolean(visible);
+  const changedLayerIds = [];
 
-  setLayerVisibility(LAYER_TRAFFIC_CASING, showTraffic);
-  setLayerVisibility(LAYER_TRAFFIC, showTraffic);
-  setLayerVisibility(LAYER_HYBRID_BLUE_CASING, normalizedMode === BASE_STYLE_HYBRID);
-  [
-    LAYER_OVERLAY_HOSPITALS,
-    LAYER_OVERLAY_GOLF_COURSES,
-    LAYER_OVERLAY_PARKS,
-    LAYER_OVERLAY_SCHOOLS,
-  ].forEach((layerId) => {
-    setLayerVisibility(layerId, showSemanticOverlays);
+  [LAYER_TRAFFIC_CASING, LAYER_TRAFFIC].forEach((layerId) => {
+    setLayerVisibility(layerId, showTraffic);
+    if (map.getLayer(layerId)) {
+      changedLayerIds.push(layerId);
+    }
   });
 
   for (const layer of getBasemapStyleLayers()) {
@@ -1329,8 +1326,76 @@ function syncTrafficLayerVisibility(mode = currentBaseStyle) {
     const signature = getBasemapLayerSignature(layer);
     if (/\btraffic\b|\bcongestion\b/.test(signature)) {
       setLayerVisibility(layer.id, showTraffic);
+      changedLayerIds.push(layer.id);
     }
   }
+
+  return {
+    visible: showTraffic,
+    layerIds: changedLayerIds,
+    changedLayerIds,
+    fallbackLayerIds: [],
+    failedLayerIds: [],
+    controller: "legacy",
+  };
+}
+
+function setTrafficVisibility(visible) {
+  const requestedVisible = Boolean(visible);
+  const effectiveVisible = requestedVisible && !isMapKillSwitchEnabled("traffic");
+
+  if (!isMapFeatureEnabled("trafficVisibilityController")) {
+    const legacyResult = setLegacyTrafficVisibility(effectiveVisible);
+    logDgmTelemetry("map.traffic_visibility_legacy_applied", {
+      ...legacyResult,
+      requestedVisible,
+    });
+    return legacyResult;
+  }
+
+  const result = applyTrafficVisibility(map, effectiveVisible, {
+    layerIds: findTrafficLayerIds(),
+    paintFallback: isMapFeatureEnabled("trafficPaintVisibilityFallback"),
+    logTelemetry: logDgmTelemetry,
+  });
+
+  if (requestedVisible !== effectiveVisible) {
+    logDgmTelemetry("map.traffic_visibility_killed", { requestedVisible, effectiveVisible });
+  }
+
+  return result;
+}
+
+function setStandardTrafficEnabled(enabled) {
+  currentStandardTrafficEnabled = Boolean(enabled);
+  writeStoredStandardTrafficEnabled(currentStandardTrafficEnabled);
+  logDgmTelemetry("map.traffic_standard_preference_changed", {
+    enabled: currentStandardTrafficEnabled,
+  });
+  syncTrafficLayerVisibility(currentBaseStyle);
+}
+
+function toggleTraffic() {
+  setStandardTrafficEnabled(!currentStandardTrafficEnabled);
+  return currentStandardTrafficEnabled;
+}
+
+function syncTrafficLayerVisibility(mode = currentBaseStyle) {
+  const normalizedMode = normalizeMapMode(mode);
+  const showTraffic = getShouldShowTraffic(normalizedMode);
+  const showSemanticOverlays = normalizedMode === BASE_STYLE_STANDARD
+    || normalizedMode === BASE_STYLE_HYBRID;
+
+  setTrafficVisibility(showTraffic);
+  setLayerVisibility(LAYER_HYBRID_BLUE_CASING, normalizedMode === BASE_STYLE_HYBRID);
+  [
+    LAYER_OVERLAY_HOSPITALS,
+    LAYER_OVERLAY_GOLF_COURSES,
+    LAYER_OVERLAY_PARKS,
+    LAYER_OVERLAY_SCHOOLS,
+  ].forEach((layerId) => {
+    setLayerVisibility(layerId, showSemanticOverlays);
+  });
 }
 
 function syncMapModeAutoRefreshTimer() {
@@ -1784,16 +1849,10 @@ function ensureHybridBaseLayers() {
           "rgba(28, 78, 54, 0.44)",
         ],
         "line-width": [
-          "+",
-          ["interpolate", ["linear"], ["zoom"], 7, 1.8, 11, 3.9, 16, 8.8],
-          [
-            "match", trafficCongestion,
-            "low", 0,
-            "moderate", 0.35,
-            "heavy", 0.8,
-            "severe", 1.3,
-            0.2,
-          ],
+          "interpolate", ["linear"], ["zoom"],
+          7, ["match", trafficCongestion, "low", 1.8, "moderate", 2.15, "heavy", 2.6, "severe", 3.1, 2.0],
+          11, ["match", trafficCongestion, "low", 3.9, "moderate", 4.25, "heavy", 4.7, "severe", 5.2, 4.1],
+          16, ["match", trafficCongestion, "low", 8.8, "moderate", 9.15, "heavy", 9.6, "severe", 10.1, 9.0],
         ],
         "line-opacity": [
           "match", trafficCongestion,
@@ -1830,16 +1889,10 @@ function ensureHybridBaseLayers() {
           "rgba(67, 191, 122, 0.82)",
         ],
         "line-width": [
-          "+",
-          ["interpolate", ["linear"], ["zoom"], 7, 1.2, 11, 2.6, 16, 6.5],
-          [
-            "match", trafficCongestion,
-            "low", 0,
-            "moderate", 0.25,
-            "heavy", 0.55,
-            "severe", 0.95,
-            0.1,
-          ],
+          "interpolate", ["linear"], ["zoom"],
+          7, ["match", trafficCongestion, "low", 1.2, "moderate", 1.45, "heavy", 1.75, "severe", 2.15, 1.3],
+          11, ["match", trafficCongestion, "low", 2.6, "moderate", 2.85, "heavy", 3.15, "severe", 3.55, 2.7],
+          16, ["match", trafficCongestion, "low", 6.5, "moderate", 6.75, "heavy", 7.05, "severe", 7.45, 6.6],
         ],
         "line-opacity": [
           "match", trafficCongestion,
@@ -4398,6 +4451,14 @@ function startDeviceOrientationWatch() {
 function installRuntimeDebugSurface() {
   const result = headingRuntime.installRuntimeDebugSurface({ loadForView, locateUser });
   installMapConfigRuntimeSurface({ buildId: APP_BUILD_ID });
+  if (window.DGM_RUNTIME && typeof window.DGM_RUNTIME === "object") {
+    window.DGM_RUNTIME.traffic = {
+      findTrafficLayerIds,
+      setTrafficVisibility,
+      toggleTraffic,
+      getVisible: () => getShouldShowTraffic(currentBaseStyle) && !isMapKillSwitchEnabled("traffic"),
+    };
+  }
   return result;
 }
 
