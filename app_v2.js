@@ -62,9 +62,20 @@ import {
 import { createMapInteractionRuntime } from "./map_interaction_runtime.js?v=20260413-map-interaction-runtime-extract";
 import { createDataScoringRuntime } from "./data_scoring_runtime.js?v=20260413-data-scoring-runtime-extract";
 import { createRoutingRuntime } from "./routing_runtime.js?v=20260413-routing-runtime-extract";
+import {
+  getMapRuntimeConfigSnapshot,
+  installMapConfigRuntimeSurface,
+  isMapFeatureEnabled,
+  isMapKillSwitchEnabled,
+  logDgmTelemetry,
+} from "./map_config.js?v=20260427-phase-a";
 
 const APP_BUILD_ID = "20260410-nav-hotfix";
 console.info("[DGM] app build", APP_BUILD_ID);
+logDgmTelemetry("map.app_boot", {
+  buildId: APP_BUILD_ID,
+  config: getMapRuntimeConfigSnapshot(),
+});
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
 const SHADOW_LEARNED_MODEL = Boolean(window.DGM_SHADOW_PREDICTION_MODEL);
@@ -98,7 +109,9 @@ const IOS_APP_SWITCH_GESTURE_EDGE_PX = 32;
 const IOS_APP_SWITCH_GESTURE_MIN_VERTICAL_PX = 18;
 const IOS_APP_SWITCH_GESTURE_HORIZONTAL_LEAD_PX = 10;
 const IOS_APP_SWITCH_GESTURE_MAX_ELAPSED_MS = 240;
-const ALLOW_RELATIVE_COMPASS_ALPHA_FALLBACK = isTouchInteractionDevice();
+const ALLOW_RELATIVE_COMPASS_ALPHA_FALLBACK = isMapFeatureEnabled("headingRelativeAlphaFallback")
+  && !isMapKillSwitchEnabled("heading")
+  && isTouchInteractionDevice();
 const COMPASS_PERMISSION_REQUIRED_STATE = "required";
 const COMPASS_PERMISSION_GRANTED_STATE = "granted";
 const COMPASS_PERMISSION_DENIED_STATE = "denied";
@@ -144,7 +157,8 @@ function isTouchInteractionDevice() {
 }
 
 const COMPASS_DEBUG_MODE_ENABLED = isCompassDebugModeEnabled();
-const RUNTIME_DIAGNOSTICS_ENABLED = COMPASS_DEBUG_MODE_ENABLED || isTouchInteractionDevice();
+const RUNTIME_DIAGNOSTICS_ENABLED = !isMapKillSwitchEnabled("runtimeDiagnostics")
+  && (COMPASS_DEBUG_MODE_ENABLED || isTouchInteractionDevice());
 
 if (window.location.protocol === "file:") {
   alert(
@@ -4253,6 +4267,9 @@ headingRuntime = createHeadingRuntime({
   compassDebugModeEnabled: COMPASS_DEBUG_MODE_ENABLED,
   runtimeDiagnosticsEnabled: RUNTIME_DIAGNOSTICS_ENABLED,
   allowRelativeCompassAlphaFallback: ALLOW_RELATIVE_COMPASS_ALPHA_FALLBACK,
+  compassKeyboardShortcutEnabled: isMapFeatureEnabled("headingKeyboardShortcut")
+    && !isMapKillSwitchEnabled("heading")
+    && !isMapKillSwitchEnabled("compassPermission"),
   compassPermissionRequestTimeoutMs: COMPASS_PERMISSION_REQUEST_TIMEOUT_MS,
   compassPermissionStorageKey: COMPASS_PERMISSION_STORAGE_KEY,
   headingSensorMaxWebkitCompassAccuracyDegrees: HEADING_SENSOR_MAX_WEBKIT_COMPASS_ACCURACY_DEGREES,
@@ -4309,35 +4326,79 @@ headingRuntime = createHeadingRuntime({
 });
 
 function ensureCompassUi() {
+  if (isMapKillSwitchEnabled("heading") || isMapKillSwitchEnabled("compassPermission")) {
+    logDgmTelemetry("map.heading_compass_ui_skipped", { reason: "kill_switch" });
+    return;
+  }
+
   return headingRuntime.ensureCompassUi();
 }
 
 function installCompassPermissionAutoRequest() {
+  if (
+    !isMapFeatureEnabled("headingCompassAutoRequest")
+    || isMapKillSwitchEnabled("heading")
+    || isMapKillSwitchEnabled("compassPermission")
+  ) {
+    logDgmTelemetry("map.heading_compass_auto_request_skipped", {
+      reason: isMapFeatureEnabled("headingCompassAutoRequest") ? "kill_switch" : "feature_flag",
+    });
+    return;
+  }
+
   return headingRuntime.installCompassPermissionAutoRequest();
 }
 
 function refreshHeadingConeFromState(nowMs) {
+  if (isMapKillSwitchEnabled("heading")) {
+    clearHeadingConeVisual();
+    return null;
+  }
+
   return headingRuntime.refreshHeadingConeFromState(nowMs);
 }
 
-function syncHeadingFromLocation(latlng, gpsHeading, speed, options) {
+function syncHeadingFromLocation(latlng, gpsHeading, speed, options = {}) {
+  if (isMapKillSwitchEnabled("heading")) {
+    clearHeadingConeVisual();
+    return null;
+  }
+
   return headingRuntime.syncHeadingFromLocation(latlng, gpsHeading, speed, options);
 }
 
 function startHeadingConeRenderLoop() {
+  if (isMapKillSwitchEnabled("heading")) {
+    clearHeadingConeVisual();
+    logDgmTelemetry("map.heading_render_loop_skipped", { reason: "kill_switch" });
+    return;
+  }
+
   return headingRuntime.startHeadingConeRenderLoop();
 }
 
 function syncHeadingConeRenderLoop() {
+  if (isMapKillSwitchEnabled("heading")) {
+    clearHeadingConeVisual();
+    return;
+  }
+
   return headingRuntime.syncHeadingConeRenderLoop();
 }
 
 function startDeviceOrientationWatch() {
+  if (isMapKillSwitchEnabled("heading") || isMapKillSwitchEnabled("compassPermission")) {
+    logDgmTelemetry("map.heading_orientation_watch_skipped", { reason: "kill_switch" });
+    return;
+  }
+
   return headingRuntime.startDeviceOrientationWatch();
 }
 
 function installRuntimeDebugSurface() {
-  return headingRuntime.installRuntimeDebugSurface({ loadForView, locateUser });
+  const result = headingRuntime.installRuntimeDebugSurface({ loadForView, locateUser });
+  installMapConfigRuntimeSurface({ buildId: APP_BUILD_ID });
+  return result;
 }
 
 function suppressMapTapPopupTemporarily(durationMs = MAP_TOUCH_GESTURE_SUPPRESSION_MS) {

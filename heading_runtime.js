@@ -136,6 +136,7 @@ function createHeadingRuntime({
   compassDebugModeEnabled = false,
   runtimeDiagnosticsEnabled = false,
   allowRelativeCompassAlphaFallback = false,
+  compassKeyboardShortcutEnabled = true,
   compassPermissionRequestTimeoutMs = 5000,
   compassPermissionStorageKey = "dgm:compass-permission-state",
   headingSensorMaxWebkitCompassAccuracyDegrees,
@@ -465,7 +466,9 @@ function createHeadingRuntime({
     }
 
     const documentLike = getDocumentLike();
-    installCompassKeyboardShortcut();
+    if (compassKeyboardShortcutEnabled) {
+      installCompassKeyboardShortcut();
+    }
     compassUiRoot = documentLike.createElement("div");
     Object.assign(compassUiRoot.style, {
       position: "fixed",
