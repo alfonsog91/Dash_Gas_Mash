@@ -1306,6 +1306,17 @@ function syncTrafficLayerVisibility(mode = currentBaseStyle) {
   ].forEach((layerId) => {
     setLayerVisibility(layerId, showSemanticOverlays);
   });
+
+  for (const layer of getBasemapStyleLayers()) {
+    if (!layer?.id || layer.type !== "line") {
+      continue;
+    }
+
+    const signature = getBasemapLayerSignature(layer);
+    if (/\btraffic\b|\bcongestion\b/.test(signature)) {
+      setLayerVisibility(layer.id, showTraffic);
+    }
+  }
 }
 
 function syncMapModeAutoRefreshTimer() {
@@ -3032,6 +3043,13 @@ function openStandardTrafficPopup(anchorButton, { focusSelected = true } = {}) {
     { label: "On", value: true },
     { label: "Off", value: false },
   ].forEach((option) => {
+    const applySelection = (event) => {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      setStandardTrafficEnabled(option.value);
+      closeStandardTrafficPopup({ restoreFocus: true });
+    };
+
     const item = document.createElement("button");
     const checked = currentStandardTrafficEnabled === option.value;
     item.className = "traffic-toggle-popup__item";
@@ -3040,9 +3058,19 @@ function openStandardTrafficPopup(anchorButton, { focusSelected = true } = {}) {
     item.setAttribute("role", "radio");
     item.setAttribute("aria-checked", String(checked));
     item.classList.toggle("is-active", checked);
-    item.addEventListener("click", () => {
-      setStandardTrafficEnabled(option.value);
-      closeStandardTrafficPopup({ restoreFocus: true });
+    item.addEventListener("pointerdown", (event) => {
+      if (event.pointerType !== "mouse" && event.cancelable) {
+        applySelection(event);
+      }
+    });
+    item.addEventListener("click", (event) => {
+      applySelection(event);
+    });
+    item.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") {
+        return;
+      }
+      applySelection(event);
     });
     group.append(item);
   });

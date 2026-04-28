@@ -201,6 +201,7 @@ function createHeadingRuntime({
   let compassPermissionState = readStoredCompassPermissionState() || unavailableState;
   let isCompassPermissionRequestPending = false;
   let hasInstalledCompassPermissionAutoRequest = false;
+  let hasInstalledCompassKeyboardShortcut = false;
   let hasTriggeredCompassPermissionAutoRequest = false;
   let compassUiRoot = null;
   let compassPermissionButton = null;
@@ -464,13 +465,14 @@ function createHeadingRuntime({
     }
 
     const documentLike = getDocumentLike();
+    installCompassKeyboardShortcut();
     compassUiRoot = documentLike.createElement("div");
     Object.assign(compassUiRoot.style, {
       position: "fixed",
-      top: "calc(env(safe-area-inset-top, 0px) + 56px)",
+      top: "calc(env(safe-area-inset-top, 0px) + 104px)",
       right: "calc(env(safe-area-inset-right, 0px) + 12px)",
       left: "auto",
-      zIndex: "16",
+      zIndex: "1200",
       display: "flex",
       flexDirection: "column",
       alignItems: "flex-end",
@@ -682,6 +684,36 @@ function createHeadingRuntime({
         cleanupFns.push(() => map.off(eventName, handleFirstGesture));
       }
     }
+  }
+
+  function installCompassKeyboardShortcut() {
+    if (!getDocumentLike() || hasInstalledCompassKeyboardShortcut) {
+      return;
+    }
+
+    hasInstalledCompassKeyboardShortcut = true;
+    const documentLike = getDocumentLike();
+    documentLike.addEventListener("keydown", (event) => {
+      const activeElement = documentLike.activeElement;
+      const tagName = String(activeElement?.tagName || "").toLowerCase();
+      const isEditable = Boolean(activeElement?.isContentEditable)
+        || tagName === "input"
+        || tagName === "textarea"
+        || tagName === "select";
+      if (isEditable || event.altKey || event.ctrlKey || event.metaKey) {
+        return;
+      }
+
+      if (String(event.key || "").toLowerCase() !== "v") {
+        return;
+      }
+
+      event.preventDefault();
+      ensureCompassUi();
+      requestCompassPermissionFromUserGesture().catch((error) => {
+        console.warn("[DGM] Compass permission request via keyboard failed:", error);
+      });
+    });
   }
 
   function getHeadingRenderLoopSmoothingTimeMs(source) {
