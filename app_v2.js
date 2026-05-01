@@ -78,6 +78,7 @@ import { createMapRuntimeReadyGate } from "./runtime_ready.js?v=20260501-runtime
 import { normalizeCoord } from "./coordinates.js?v=20260501-coordinates";
 import { restoreStyleState } from "./style_state.js?v=20260501-style-state";
 import { evaluateVisualPerformanceHeuristics } from "./performance_heuristics.js?v=20260501-performance-heuristics";
+import { getPhaseCManifest } from "./phase_c_manifest.js?v=20260501-phase-c-manifest";
 
 const APP_BUILD_ID = "20260410-nav-hotfix";
 console.info("[DGM] app build", APP_BUILD_ID);
@@ -99,6 +100,14 @@ if (visualPerformanceHeuristics.shouldDisableFutureVisualPolish) {
     hardwareConcurrency: visualPerformanceHeuristics.hardwareConcurrency,
   });
 }
+
+// Phase C manifest — inert predeclaration. No Phase C visual behavior is activated.
+// IDs and configs are reserved here so future Phase C code has stable references.
+const _phaseCManifest = getPhaseCManifest();
+logDgmTelemetry("map.phase_c_manifest_loaded", {
+  version: _phaseCManifest.version,
+  activated: false,
+});
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
 const SHADOW_LEARNED_MODEL = Boolean(window.DGM_SHADOW_PREDICTION_MODEL);
