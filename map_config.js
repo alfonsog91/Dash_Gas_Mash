@@ -19,6 +19,14 @@ const DEFAULT_MAP_KILL_SWITCHES = Object.freeze({
 const runtimeFeatureOverrides = new Map();
 const runtimeKillSwitchOverrides = new Map();
 
+const NON_CRITICAL_NEW_FEATURE_FLAGS = Object.freeze([
+  "trafficVisibilityController",
+  "trafficPaintVisibilityFallback",
+  "headingCompassAutoRequest",
+  "headingKeyboardShortcut",
+  "headingRelativeAlphaFallback",
+]);
+
 function getWindowLike() {
   return typeof window !== "undefined" ? window : null;
 }
@@ -174,6 +182,33 @@ function setMapKillSwitch(name, enabled, { persist = true } = {}) {
   return nextValue;
 }
 
+function disableAllNewFeatures({ persist = false, reason = "manual" } = {}) {
+  const previousFeatureFlags = getMapFeatureFlags();
+  const disabledFeatureFlags = [];
+
+  for (const name of NON_CRITICAL_NEW_FEATURE_FLAGS) {
+    if (isMapFeatureEnabled(name)) {
+      disabledFeatureFlags.push(name);
+    }
+    setMapFeatureFlag(name, false, { persist });
+  }
+
+  const snapshot = getMapRuntimeConfigSnapshot();
+  logDgmTelemetry("map_config.disable_all_new_features", {
+    reason,
+    persist,
+    disabledFeatureFlags,
+    previousFeatureFlags,
+    snapshot,
+  });
+
+  return {
+    disabledFeatureFlags,
+    previousFeatureFlags,
+    snapshot,
+  };
+}
+
 function getMapRuntimeConfigSnapshot() {
   return {
     featureFlags: getMapFeatureFlags(),
@@ -193,6 +228,7 @@ function installMapConfigRuntimeSurface({ buildId = null } = {}) {
 
   runtime.config = {
     buildId,
+    disableAllNewFeatures,
     getSnapshot: getMapRuntimeConfigSnapshot,
     isFeatureEnabled: isMapFeatureEnabled,
     isKillSwitchEnabled: isMapKillSwitchEnabled,
@@ -206,6 +242,8 @@ function installMapConfigRuntimeSurface({ buildId = null } = {}) {
 export {
   DEFAULT_MAP_FEATURE_FLAGS,
   DEFAULT_MAP_KILL_SWITCHES,
+  NON_CRITICAL_NEW_FEATURE_FLAGS,
+  disableAllNewFeatures,
   getMapRuntimeConfigSnapshot,
   installMapConfigRuntimeSurface,
   isMapFeatureEnabled,

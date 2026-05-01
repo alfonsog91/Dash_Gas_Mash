@@ -134,9 +134,23 @@ export function runTrafficVisibilityTests() {
       explicitLayerIds: ["traffic-layer"],
       logTelemetry: (event, payload) => events.push({ event, payload }),
     });
-    assert(events.length === 1, "one telemetry event is emitted");
-    assert(events[0].event === "map.traffic_visibility_changed", "telemetry event name is stable");
-    assert(events[0].payload.visible === true, "telemetry includes requested state");
+    const visibilityEvent = events.find((entry) => entry.event === "map.traffic_visibility_changed");
+    assert(visibilityEvent, "visibility telemetry event is emitted");
+    assert(visibilityEvent.payload.visible === true, "telemetry includes requested state");
+  });
+
+  runTest("paint fallback emits fallback telemetry", () => {
+    const map = createMockMap({ failLayoutLayerIds: ["traffic-layer"] });
+    const events = [];
+    setTrafficVisibility(map, false, {
+      explicitLayerIds: ["traffic-layer"],
+      paintFallback: true,
+      logTelemetry: (event, payload) => events.push({ event, payload }),
+    });
+    const fallbackEvent = events.find((entry) => entry.event === "map.fallback_triggered");
+    assert(fallbackEvent, "fallback telemetry event is emitted");
+    assert(fallbackEvent.payload.source === "traffic_visibility", "fallback telemetry identifies the source");
+    assert(fallbackEvent.payload.fallbackLayerIds.includes("traffic-layer"), "fallback telemetry includes fallback layer ids");
   });
 
   const result = { passed, failed };

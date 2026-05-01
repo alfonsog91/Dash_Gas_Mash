@@ -145,6 +145,15 @@ function setTrafficVisibility(
 
   if (typeof logTelemetry === "function") {
     logTelemetry("map.traffic_visibility_changed", result);
+    if (fallbackLayerIds.length > 0) {
+      logTelemetry("map.fallback_triggered", {
+        source: "traffic_visibility",
+        reason: "layout_property_failed",
+        visible: result.visible,
+        fallbackLayerIds,
+        failedLayerIds,
+      });
+    }
   }
 
   return result;

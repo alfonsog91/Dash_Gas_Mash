@@ -1,6 +1,8 @@
 import {
   DEFAULT_MAP_FEATURE_FLAGS,
   DEFAULT_MAP_KILL_SWITCHES,
+  NON_CRITICAL_NEW_FEATURE_FLAGS,
+  disableAllNewFeatures,
   getMapRuntimeConfigSnapshot,
   isMapFeatureEnabled,
   isMapKillSwitchEnabled,
@@ -29,6 +31,12 @@ function createLogger() {
 function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
+  }
+}
+
+function restoreDefaultFeatureFlags() {
+  for (const [name, enabled] of Object.entries(DEFAULT_MAP_FEATURE_FLAGS)) {
+    setMapFeatureFlag(name, enabled, { persist: false });
   }
 }
 
@@ -75,6 +83,26 @@ export function runMapConfigTests() {
     const snapshot = getMapRuntimeConfigSnapshot();
     assert(snapshot.featureFlags.trafficVisibilityController === true, "snapshot includes traffic feature flag");
     assert(snapshot.killSwitches.heading === false, "snapshot includes heading kill switch");
+  });
+
+  runTest("bulk disable leaves telemetry on and is reversible", () => {
+    restoreDefaultFeatureFlags();
+    const events = [];
+    window.__DGM_TELEMETRY = {
+      log: (event, payload) => events.push({ event, payload }),
+    };
+
+    const result = disableAllNewFeatures({ persist: false, reason: "test" });
+    assert(result.disabledFeatureFlags.includes("trafficVisibilityController"), "bulk disable reports disabled traffic flag");
+    assert(isMapFeatureEnabled("telemetry"), "telemetry remains enabled for observability");
+    assert(NON_CRITICAL_NEW_FEATURE_FLAGS.every((name) => !isMapFeatureEnabled(name)), "all non-critical new feature flags are disabled");
+    assert(events.some((entry) => entry.event === "map_config.disable_all_new_features"), "bulk disable emits telemetry");
+    assert(events.at(-1).payload.reason === "test", "bulk disable telemetry includes reason");
+
+    for (const [name, enabled] of Object.entries(result.previousFeatureFlags)) {
+      setMapFeatureFlag(name, enabled, { persist: false });
+    }
+    delete window.__DGM_TELEMETRY;
   });
 
   runTest("telemetry hook is optional and safe", () => {
