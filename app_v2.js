@@ -75,6 +75,7 @@ import {
 } from "./traffic_visibility.js?v=20260427-phase-b";
 import { createMapRuntimeReadyGate } from "./runtime_ready.js?v=20260501-runtime-ready";
 import { normalizeCoord } from "./coordinates.js?v=20260501-coordinates";
+import { restoreStyleState } from "./style_state.js?v=20260501-style-state";
 
 const APP_BUILD_ID = "20260410-nav-hotfix";
 console.info("[DGM] app build", APP_BUILD_ID);
@@ -1515,10 +1516,14 @@ function syncCategoryLayerVisibility() {
   const showRestaurants = elShowRestaurants?.checked !== false;
   const showParking = elShowParking?.checked !== false;
 
-  setLayerVisibility(LAYER_RESTAURANTS_GLOW, showRestaurants);
-  setLayerVisibility(LAYER_RESTAURANTS, showRestaurants);
-  setLayerVisibility(LAYER_PARKING_GLOW, showParking);
-  setLayerVisibility(LAYER_PARKING, showParking);
+  return restoreStyleState(map, {
+    visibility: {
+      [LAYER_RESTAURANTS_GLOW]: showRestaurants,
+      [LAYER_RESTAURANTS]: showRestaurants,
+      [LAYER_PARKING_GLOW]: showParking,
+      [LAYER_PARKING]: showParking,
+    },
+  });
 }
 
 function ensureHybridBaseLayers() {
@@ -1921,7 +1926,16 @@ function restoreLayersAfterStyleChange() {
   mapModeLayerRoleCache = new Map();
   ensureMapSourcesAndLayers();
   restoreMapDataSources();
-  syncCategoryLayerVisibility();
+  syncMapModeAppearance({ updateUi: false });
+  const categoryRestoreResult = syncCategoryLayerVisibility();
+  logDgmTelemetry("map.style_reload_restored", {
+    baseStyle: currentBaseStyle,
+    standardTheme: currentStandardMapTheme,
+    trafficVisible: getShouldShowTraffic(currentBaseStyle),
+    changedCategoryLayoutCount: categoryRestoreResult.changedLayoutProperties.length,
+    missingCategoryLayerIds: categoryRestoreResult.missingLayerIds,
+    failedCategoryUpdates: categoryRestoreResult.failedUpdates,
+  });
   syncHeadingConeRenderLoop();
 }
 
