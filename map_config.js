@@ -7,6 +7,7 @@ const DEFAULT_MAP_FEATURE_FLAGS = Object.freeze({
   headingCompassAutoRequest: true,
   headingKeyboardShortcut: true,
   headingRelativeAlphaFallback: true,
+  visualPerformanceHeuristics: false,
 });
 
 const DEFAULT_MAP_KILL_SWITCHES = Object.freeze({
@@ -25,6 +26,7 @@ const NON_CRITICAL_NEW_FEATURE_FLAGS = Object.freeze([
   "headingCompassAutoRequest",
   "headingKeyboardShortcut",
   "headingRelativeAlphaFallback",
+  "visualPerformanceHeuristics",
 ]);
 
 function getWindowLike() {

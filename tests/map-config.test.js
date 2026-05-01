@@ -62,6 +62,7 @@ export function runMapConfigTests() {
   runTest("defaults keep guarded map systems enabled", () => {
     assert(DEFAULT_MAP_FEATURE_FLAGS.trafficVisibilityController === true, "traffic visibility controller defaults on");
     assert(DEFAULT_MAP_FEATURE_FLAGS.headingCompassAutoRequest === true, "heading permission trigger defaults on");
+    assert(DEFAULT_MAP_FEATURE_FLAGS.visualPerformanceHeuristics === false, "visual performance heuristics default off");
     assert(DEFAULT_MAP_KILL_SWITCHES.traffic === false, "traffic kill switch defaults off");
     assert(DEFAULT_MAP_KILL_SWITCHES.heading === false, "heading kill switch defaults off");
   });

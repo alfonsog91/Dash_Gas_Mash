@@ -77,6 +77,7 @@ import {
 import { createMapRuntimeReadyGate } from "./runtime_ready.js?v=20260501-runtime-ready";
 import { normalizeCoord } from "./coordinates.js?v=20260501-coordinates";
 import { restoreStyleState } from "./style_state.js?v=20260501-style-state";
+import { evaluateVisualPerformanceHeuristics } from "./performance_heuristics.js?v=20260501-performance-heuristics";
 
 const APP_BUILD_ID = "20260410-nav-hotfix";
 console.info("[DGM] app build", APP_BUILD_ID);
@@ -85,6 +86,19 @@ logDgmTelemetry("map.app_boot", {
   config: getMapRuntimeConfigSnapshot(),
 });
 logMapFeatureFlagState({ reason: "app_boot", buildId: APP_BUILD_ID });
+const visualPerformanceHeuristics = evaluateVisualPerformanceHeuristics({
+  enabled: isMapFeatureEnabled("visualPerformanceHeuristics"),
+  environment: typeof navigator !== "undefined" ? navigator : {},
+});
+if (visualPerformanceHeuristics.shouldDisableFutureVisualPolish) {
+  logDgmTelemetry("map.fallback_triggered", {
+    source: "visual_performance_heuristics",
+    reason: visualPerformanceHeuristics.reasons.join(","),
+    disabledScope: visualPerformanceHeuristics.disabledScope,
+    deviceMemoryGb: visualPerformanceHeuristics.deviceMemoryGb,
+    hardwareConcurrency: visualPerformanceHeuristics.hardwareConcurrency,
+  });
+}
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
 const SHADOW_LEARNED_MODEL = Boolean(window.DGM_SHADOW_PREDICTION_MODEL);
