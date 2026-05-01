@@ -74,6 +74,7 @@ import {
   setTrafficVisibility as applyTrafficVisibility,
 } from "./traffic_visibility.js?v=20260427-phase-b";
 import { createMapRuntimeReadyGate } from "./runtime_ready.js?v=20260501-runtime-ready";
+import { normalizeCoord } from "./coordinates.js?v=20260501-coordinates";
 
 const APP_BUILD_ID = "20260410-nav-hotfix";
 console.info("[DGM] app build", APP_BUILD_ID);
@@ -734,13 +735,14 @@ function boundsAroundCenter(center, sizeMeters) {
 
 function lngLatToObject(value) {
   if (Array.isArray(value)) {
-    return { lng: Number(value[0]), lat: Number(value[1]) };
+    const coord = normalizeCoord({ lng: value[0], lat: value[1] });
+    return coord ? { lng: coord.lng, lat: coord.lat } : { lng: Number(value[0]), lat: Number(value[1]) };
   }
 
-  return {
-    lng: Number(value.lng ?? value.lon),
-    lat: Number(value.lat),
-  };
+  const coord = normalizeCoord(value);
+  return coord
+    ? { lng: coord.lng, lat: coord.lat }
+    : { lng: Number(value?.lng ?? value?.lon ?? value?.longitude), lat: Number(value?.lat ?? value?.latitude) };
 }
 
 function lngLatToArray(value) {
@@ -3478,10 +3480,11 @@ function normalizeMapboxMatch(rawMatch) {
     : rawMatch?.geometry?.coordinates;
   const displayName = String(rawMatch?.place_name ?? rawMatch?.properties?.label ?? rawMatch?.text ?? "").trim();
   const { title, subtitle } = splitSearchDisplayName(displayName);
+  const coord = normalizeCoord({ lng: coordinates?.[0], lat: coordinates?.[1] });
 
   return {
-    lat: Number(coordinates?.[1]),
-    lng: Number(coordinates?.[0]),
+    lat: coord?.lat ?? Number.NaN,
+    lng: coord?.lng ?? Number.NaN,
     title,
     subtitle,
     label: displayName || title,
@@ -3491,10 +3494,11 @@ function normalizeMapboxMatch(rawMatch) {
 function normalizeNominatimMatch(rawMatch) {
   const displayName = String(rawMatch?.display_name ?? "").trim();
   const { title, subtitle } = splitSearchDisplayName(displayName);
+  const coord = normalizeCoord(rawMatch);
 
   return {
-    lat: Number(rawMatch?.lat),
-    lng: Number(rawMatch?.lon),
+    lat: coord?.lat ?? Number.NaN,
+    lng: coord?.lng ?? Number.NaN,
     title,
     subtitle,
     label: displayName || title,
@@ -3509,8 +3513,8 @@ async function fetchMapboxMatches(query, { limit = 5, signal } = {}) {
   searchUrl.searchParams.set("language", "en");
   searchUrl.searchParams.set("types", "address,poi,place,locality,neighbourhood,street");
 
-  const center = map.getCenter();
-  if (Number.isFinite(center?.lng) && Number.isFinite(center?.lat)) {
+  const center = normalizeCoord(map.getCenter());
+  if (center) {
     searchUrl.searchParams.set("proximity", `${center.lng},${center.lat}`);
   }
 

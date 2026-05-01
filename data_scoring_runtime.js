@@ -1,3 +1,5 @@
+import { normalizeCoord } from "./coordinates.js?v=20260501-coordinates";
+
 function createDataScoringRuntime({
   getMap,
   getLastCurrentLocation,
@@ -111,12 +113,7 @@ function createDataScoringRuntime({
   }
 
   function isFiniteLngLat(point) {
-    return Number.isFinite(point?.lat)
-      && Number.isFinite(point?.lng)
-      && point.lat >= -90
-      && point.lat <= 90
-      && point.lng >= -180
-      && point.lng <= 180;
+    return Boolean(normalizeCoord(point));
   }
 
   function clampQueryBounds(originalBounds) {

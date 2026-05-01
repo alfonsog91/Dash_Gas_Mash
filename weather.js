@@ -1,3 +1,5 @@
+import { normalizeCoord } from "./coordinates.js?v=20260501-coordinates";
+
 const OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast";
 const LIVE_WEATHER_CACHE_TTL_MS = 10 * 60 * 1000;
 const MAX_RAIN_BOOST = 0.25;
@@ -32,20 +34,8 @@ function buildOpenMeteoWeatherUrl(lat, lon) {
 }
 
 function normalizeWeatherPoint(point) {
-  const lat = Number(point?.lat);
-  const lon = Number(point?.lon ?? point?.lng);
-  if (
-    !Number.isFinite(lat)
-    || !Number.isFinite(lon)
-    || lat < -90
-    || lat > 90
-    || lon < -180
-    || lon > 180
-  ) {
-    return null;
-  }
-
-  return { lat, lon };
+  const coord = normalizeCoord(point);
+  return coord ? { lat: coord.lat, lon: coord.lon } : null;
 }
 
 function deriveRainBoostFromPrecipitationMm(precipitationMm) {
