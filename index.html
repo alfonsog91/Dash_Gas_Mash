@@ -16,6 +16,38 @@
       window.DASH_MAPBOX_TOKEN = window.DASH_MAPBOX_TOKEN || "pk.eyJ1IjoiYWxmb25zb2c5MSIsImEiOiJjbW56bHQ5YnowZWs1MnBuODI5NXY1dnQ4In0.r-Sq8ECS8vn8iYIYaIgi7Q";
       window.DGM_PREDICTION_MODEL = window.DGM_PREDICTION_MODEL || "legacy";
       window.DGM_SHADOW_PREDICTION_MODEL = window.DGM_SHADOW_PREDICTION_MODEL || true;
+      if (new URLSearchParams(window.location.search).has("dgmSmoke")) {
+        const smokeReport = {
+          consoleErrors: [],
+          pageErrors: [],
+          unhandledRejections: [],
+        };
+        const stringifySmokeValue = (value) => {
+          if (value instanceof Error) {
+            return value.stack || value.message;
+          }
+          if (typeof value === "string") {
+            return value;
+          }
+          try {
+            return JSON.stringify(value);
+          } catch {
+            return String(value);
+          }
+        };
+        const originalConsoleError = console.error.bind(console);
+        console.error = (...args) => {
+          smokeReport.consoleErrors.push(args.map(stringifySmokeValue).join(" "));
+          originalConsoleError(...args);
+        };
+        window.addEventListener("error", (event) => {
+          smokeReport.pageErrors.push(event.message || stringifySmokeValue(event.error));
+        });
+        window.addEventListener("unhandledrejection", (event) => {
+          smokeReport.unhandledRejections.push(stringifySmokeValue(event.reason));
+        });
+        window.__DGM_SMOKE_REPORT = smokeReport;
+      }
     </script>
   </head>
   <body>

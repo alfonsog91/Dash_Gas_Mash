@@ -208,6 +208,12 @@ From the workspace folder:
 - Manual fallback in PowerShell: `& .\.venv\Scripts\python.exe -m http.server 5173`
 - Then open `http://localhost:5173/` in your browser
 
+## Browser Smoke Checks
+
+With the local server running, open [tests/browser-smoke.html](tests/browser-smoke.html) to run the bounded browser smoke harness. It uses finite readiness checks and verifies app startup, fatal overlay absence, page errors, app console errors, Mapbox expression validation errors, traffic toggling, the heading permission path, and runtime feature flag toggling.
+
+The smoke report treats external tile, glyph, CDN, network resource failures, and browser WebGL context warnings as environmental only when they are surfaced separately from app console errors. Mapbox expression validation errors are always failures.
+
 ## Basemap configuration
 
 The app now uses `Mapbox GL JS`.
