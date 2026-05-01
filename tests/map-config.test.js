@@ -7,6 +7,7 @@ import {
   isMapFeatureEnabled,
   isMapKillSwitchEnabled,
   logDgmTelemetry,
+  logMapFeatureFlagState,
   setMapFeatureFlag,
   setMapKillSwitch,
 } from "../map_config.js";
@@ -102,6 +103,22 @@ export function runMapConfigTests() {
     for (const [name, enabled] of Object.entries(result.previousFeatureFlags)) {
       setMapFeatureFlag(name, enabled, { persist: false });
     }
+    delete window.__DGM_TELEMETRY;
+  });
+
+  runTest("feature flag state telemetry is optional and observable", () => {
+    restoreDefaultFeatureFlags();
+    const events = [];
+    window.__DGM_TELEMETRY = {
+      log: (event, payload) => events.push({ event, payload }),
+    };
+
+    const snapshot = logMapFeatureFlagState({ reason: "test", buildId: "unit" });
+    const stateEvent = events.find((entry) => entry.event === "map.feature_flag_state");
+    assert(snapshot.featureFlags.telemetry === true, "snapshot is returned to caller");
+    assert(stateEvent, "feature flag state event is emitted");
+    assert(stateEvent.payload.reason === "test", "state event includes reason");
+    assert(stateEvent.payload.buildId === "unit", "state event includes build id");
     delete window.__DGM_TELEMETRY;
   });
 

@@ -172,12 +172,24 @@ function createHeadingRuntime({
   searchToggleElement = null,
   locateMeElement = null,
   compassPermissionStates = {},
+  logTelemetry = null,
 } = {}) {
   const requiredState = compassPermissionStates.required ?? "required";
   const grantedState = compassPermissionStates.granted ?? "granted";
   const deniedState = compassPermissionStates.denied ?? "denied";
   const notRequiredState = compassPermissionStates.notRequired ?? "not-required";
   const unavailableState = compassPermissionStates.unavailable ?? "unavailable";
+
+  function logHeadingPermissionFlow(stage, payload = {}) {
+    if (typeof logTelemetry !== "function") {
+      return;
+    }
+
+    logTelemetry("map.heading_permission_flow", {
+      stage,
+      ...payload,
+    });
+  }
 
   let storedHeading = null;
   let storedHeadingSource = null;
@@ -575,17 +587,20 @@ function createHeadingRuntime({
     if (!requestTarget) {
       const nextState = getWindowLike()?.DeviceOrientationEvent ? notRequiredState : unavailableState;
       setCompassPermissionState(nextState);
+      logHeadingPermissionFlow("request_unavailable", { state: nextState });
       startDeviceOrientationWatch();
       return nextState;
     }
 
     if (isCompassPermissionRequestPending) {
+      logHeadingPermissionFlow("request_pending", { state: compassPermissionState });
       return compassPermissionState;
     }
 
     isCompassPermissionRequestPending = true;
     lastCompassPermissionErrorMessage = null;
     syncCompassUi();
+    logHeadingPermissionFlow("request_started", { state: compassPermissionState });
 
     try {
       const permissionResult = await Promise.race([
@@ -596,20 +611,26 @@ function createHeadingRuntime({
       ]);
       if (permissionResult === grantedState) {
         setCompassPermissionState(grantedState);
+        logHeadingPermissionFlow("request_resolved", { state: grantedState });
         startDeviceOrientationWatch();
         syncHeadingConeRenderLoop();
         return grantedState;
       }
 
       setCompassPermissionState(deniedState);
+      logHeadingPermissionFlow("request_resolved", { state: deniedState });
       return deniedState;
     } catch (error) {
       lastCompassPermissionErrorMessage = error instanceof Error ? error.message : String(error);
-      setCompassPermissionState(
+      const nextState =
         error instanceof Error && error.message === "Compass permission request timed out."
           ? requiredState
-          : deniedState
-      );
+          : deniedState;
+      setCompassPermissionState(nextState);
+      logHeadingPermissionFlow("request_failed", {
+        state: nextState,
+        message: lastCompassPermissionErrorMessage,
+      });
       throw error;
     } finally {
       isCompassPermissionRequestPending = false;
@@ -627,6 +648,7 @@ function createHeadingRuntime({
     }
 
     hasTriggeredCompassPermissionAutoRequest = true;
+    logHeadingPermissionFlow("auto_request_triggered", { state: getResolvedCompassPermissionState() });
     requestCompassPermissionFromUserGesture().catch((error) => {
       console.warn("[DGM] Compass permission request failed:", error);
     });

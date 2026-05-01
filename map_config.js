@@ -216,6 +216,16 @@ function getMapRuntimeConfigSnapshot() {
   };
 }
 
+function logMapFeatureFlagState({ reason = "snapshot", buildId = null } = {}) {
+  const snapshot = getMapRuntimeConfigSnapshot();
+  logDgmTelemetry("map.feature_flag_state", {
+    reason,
+    buildId,
+    snapshot,
+  });
+  return snapshot;
+}
+
 function installMapConfigRuntimeSurface({ buildId = null } = {}) {
   const windowLike = getWindowLike();
   if (!windowLike) {
@@ -232,6 +242,7 @@ function installMapConfigRuntimeSurface({ buildId = null } = {}) {
     getSnapshot: getMapRuntimeConfigSnapshot,
     isFeatureEnabled: isMapFeatureEnabled,
     isKillSwitchEnabled: isMapKillSwitchEnabled,
+    logFeatureFlagState: logMapFeatureFlagState,
     setFeatureFlag: setMapFeatureFlag,
     setKillSwitch: setMapKillSwitch,
   };
@@ -249,6 +260,7 @@ export {
   isMapFeatureEnabled,
   isMapKillSwitchEnabled,
   logDgmTelemetry,
+  logMapFeatureFlagState,
   setMapFeatureFlag,
   setMapKillSwitch,
 };

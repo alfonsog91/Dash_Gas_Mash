@@ -68,6 +68,7 @@ import {
   isMapFeatureEnabled,
   isMapKillSwitchEnabled,
   logDgmTelemetry,
+  logMapFeatureFlagState,
 } from "./map_config.js?v=20260427-phase-a";
 import {
   findTrafficLayerIds as findTrafficLayerIdsForMap,
@@ -83,6 +84,7 @@ logDgmTelemetry("map.app_boot", {
   buildId: APP_BUILD_ID,
   config: getMapRuntimeConfigSnapshot(),
 });
+logMapFeatureFlagState({ reason: "app_boot", buildId: APP_BUILD_ID });
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
 const SHADOW_LEARNED_MODEL = Boolean(window.DGM_SHADOW_PREDICTION_MODEL);
@@ -1375,6 +1377,11 @@ function setStandardTrafficEnabled(enabled) {
   writeStoredStandardTrafficEnabled(currentStandardTrafficEnabled);
   logDgmTelemetry("map.traffic_standard_preference_changed", {
     enabled: currentStandardTrafficEnabled,
+  });
+  logDgmTelemetry("map.traffic_toggle", {
+    enabled: currentStandardTrafficEnabled,
+    baseStyle: currentBaseStyle,
+    effectiveVisible: getShouldShowTraffic(currentBaseStyle),
   });
   syncTrafficLayerVisibility(currentBaseStyle);
 }
@@ -4385,6 +4392,7 @@ headingRuntime = createHeadingRuntime({
   haversineMeters,
   renderHeadingCone: updateHeadingCone,
   clearHeadingCone: clearHeadingConeVisual,
+  logTelemetry: logDgmTelemetry,
   syncMapBearingToHeading,
   searchToggleElement: elSearchToggle,
   locateMeElement: elLocateMe,
@@ -4400,9 +4408,11 @@ headingRuntime = createHeadingRuntime({
 function ensureCompassUi() {
   if (isMapKillSwitchEnabled("heading") || isMapKillSwitchEnabled("compassPermission")) {
     logDgmTelemetry("map.heading_compass_ui_skipped", { reason: "kill_switch" });
+    logDgmTelemetry("map.heading_permission_flow", { stage: "ui_skipped", reason: "kill_switch" });
     return;
   }
 
+  logDgmTelemetry("map.heading_permission_flow", { stage: "ui_requested" });
   return headingRuntime.ensureCompassUi();
 }
 
@@ -4415,9 +4425,14 @@ function installCompassPermissionAutoRequest() {
     logDgmTelemetry("map.heading_compass_auto_request_skipped", {
       reason: isMapFeatureEnabled("headingCompassAutoRequest") ? "kill_switch" : "feature_flag",
     });
+    logDgmTelemetry("map.heading_permission_flow", {
+      stage: "auto_request_skipped",
+      reason: isMapFeatureEnabled("headingCompassAutoRequest") ? "kill_switch" : "feature_flag",
+    });
     return;
   }
 
+  logDgmTelemetry("map.heading_permission_flow", { stage: "auto_request_installed" });
   return headingRuntime.installCompassPermissionAutoRequest();
 }
 
