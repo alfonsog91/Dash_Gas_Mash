@@ -73,6 +73,7 @@ import {
   findTrafficLayerIds as findTrafficLayerIdsForMap,
   setTrafficVisibility as applyTrafficVisibility,
 } from "./traffic_visibility.js?v=20260427-phase-b";
+import { createMapRuntimeReadyGate } from "./runtime_ready.js?v=20260501-runtime-ready";
 
 const APP_BUILD_ID = "20260410-nav-hotfix";
 console.info("[DGM] app build", APP_BUILD_ID);
@@ -5666,10 +5667,10 @@ map.on("load", () => {
   }, 250);
 });
 
-map.on("style.load", () => {
+createMapRuntimeReadyGate(map, ({ eventName }) => {
   restoreLayersAfterStyleChange();
-});
-
-map.on("styledata", () => {
-  restoreLayersAfterStyleChange();
+  logDgmTelemetry("map.runtime_ready_restored", { eventName });
+}, {
+  events: ["style.load", "styledata", "idle"],
+  fireImmediately: false,
 });
