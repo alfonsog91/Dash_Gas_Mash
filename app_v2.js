@@ -71,9 +71,10 @@ import {
   logMapFeatureFlagState,
 } from "./map_config.js?v=20260501-phase-d-visuals";
 import {
+  discoverTrafficLayerSource as discoverTrafficLayerSourceForMap,
   findTrafficLayerIds as findTrafficLayerIdsForMap,
   setTrafficVisibility as applyTrafficVisibility,
-} from "./traffic_visibility.js?v=20260427-phase-b";
+} from "./traffic_visibility.js?v=20260502-phase-d-traffic";
 import { createMapRuntimeReadyGate } from "./runtime_ready.js?v=20260501-runtime-ready";
 import { normalizeCoord } from "./coordinates.js?v=20260501-coordinates";
 import { restoreStyleState } from "./style_state.js?v=20260501-style-state";
@@ -84,7 +85,7 @@ import {
   isPhaseDTuningEnabled as isPhaseDTuningEnabledForState,
   rollbackPhaseCActivation,
   shouldExposePhaseDDebug,
-} from "./phase_c_activation.js?v=20260501-phase-d-visuals";
+} from "./phase_c_activation.js?v=20260502-phase-d-tuning";
 
 const APP_BUILD_ID = "20260410-nav-hotfix";
 console.info("[DGM] app build", APP_BUILD_ID);
@@ -385,6 +386,7 @@ const LAYER_CINEMATIC_LIFT = "cinematic-lift-layer";
 const LAYER_CINEMATIC_TINT = "cinematic-tint-layer";
 const LAYER_TRAFFIC_CASING = "traffic-casing-layer";
 const LAYER_TRAFFIC = "traffic-layer";
+const LAYER_DGM_TRAFFIC = "dgm-traffic";
 const LAYER_HYBRID_BLUE_CASING = "layer-hybrid-blue-casing";
 const LAYER_OVERLAY_HOSPITALS = "overlay-hospitals";
 const LAYER_OVERLAY_GOLF_COURSES = "overlay-golf-courses";
@@ -416,6 +418,7 @@ const MAP_MODE_OWNED_LAYER_IDS = new Set([
   LAYER_CINEMATIC_TINT,
   LAYER_TRAFFIC_CASING,
   LAYER_TRAFFIC,
+  LAYER_DGM_TRAFFIC,
   LAYER_HYBRID_BLUE_CASING,
   LAYER_OVERLAY_HOSPITALS,
   LAYER_OVERLAY_GOLF_COURSES,
@@ -562,6 +565,8 @@ let lastRankedParkingAll = [];
 let currentBaseStyle = readStoredMapMode();
 let currentStandardMapTheme = readStoredStandardMapTheme();
 let currentStandardTrafficEnabled = readStoredStandardTrafficEnabled();
+let phaseDTrafficDefaultsHidden = false;
+let phaseDTrafficDiscoveryWarningShown = false;
 let mapModeAutoRefreshTimer = null;
 let mapModeLayerRoleCache = new Map();
 let activeSearchAbort = null;
@@ -1419,7 +1424,171 @@ function getShouldShowTraffic(mode = currentBaseStyle) {
 function findTrafficLayerIds() {
   return findTrafficLayerIdsForMap(map, {
     explicitLayerIds: [LAYER_TRAFFIC_CASING, LAYER_TRAFFIC],
+  }).filter((layerId) => layerId !== LAYER_DGM_TRAFFIC);
+}
+
+function getPhaseDTrafficDiscovery() {
+  return discoverTrafficLayerSourceForMap(map, {
+    explicitLayerIds: [LAYER_TRAFFIC_CASING, LAYER_TRAFFIC],
   });
+}
+
+function reportPhaseDTrafficDiscoveryStop(discovery) {
+  if (!phaseDTrafficDiscoveryWarningShown) {
+    const layerSummary = discovery.layers
+      .map((layer) => `${layer.id}:${layer.source || "?"}/${layer.sourceLayer || "?"}`)
+      .join(", ") || "none";
+    console.error(
+      `[DGM] Phase D traffic tuning stopped: ${discovery.reason}; expected one discoverable traffic source/source-layer, found ${layerSummary}.`,
+      discovery
+    );
+    phaseDTrafficDiscoveryWarningShown = true;
+  }
+
+  logDgmTelemetry("map.phase_d_traffic_discovery_stopped", {
+    reason: discovery.reason,
+    layerIds: discovery.layerIds,
+    sourceCandidates: discovery.sourceCandidates,
+  });
+}
+
+function setDgmTrafficLayerVisibility(visible) {
+  if (!map.getLayer(LAYER_DGM_TRAFFIC)) {
+    return false;
+  }
+
+  setLayerVisibility(LAYER_DGM_TRAFFIC, Boolean(visible));
+  return true;
+}
+
+function ensureDgmTrafficLayer(discovery) {
+  if (!discovery.ok || !discovery.source || !discovery.sourceLayer) {
+    reportPhaseDTrafficDiscoveryStop(discovery);
+    return false;
+  }
+
+  if (map.getLayer(LAYER_DGM_TRAFFIC)) {
+    return true;
+  }
+
+  const trafficCongestion = ["coalesce", ["get", "congestion"], "low"];
+  const beforeId = getBasemapOverlayBeforeId();
+  const layerSpec = {
+    id: LAYER_DGM_TRAFFIC,
+    type: "line",
+    source: discovery.source,
+    "source-layer": discovery.sourceLayer,
+    minzoom: 7,
+    layout: {
+      visibility: "none",
+      "line-cap": "round",
+      "line-join": "round",
+    },
+    paint: {
+      "line-color": [
+        "match", trafficCongestion,
+        "low", "#22c55e",
+        "moderate", "#facc15",
+        "heavy", "#ef4444",
+        "severe", "#b91c1c",
+        "#22c55e",
+      ],
+      "line-width": 3,
+      "line-opacity": 0.88,
+    },
+  };
+
+  try {
+    if (beforeId) {
+      map.addLayer(layerSpec, beforeId);
+    } else {
+      map.addLayer(layerSpec);
+    }
+  } catch (error) {
+    console.error("[DGM] Phase D traffic tuning stopped: dgm_traffic_layer_add_failed.", {
+      error,
+      source: discovery.source,
+      sourceLayer: discovery.sourceLayer,
+    });
+    logDgmTelemetry("map.phase_d_traffic_discovery_stopped", {
+      reason: "dgm_traffic_layer_add_failed",
+      source: discovery.source,
+      sourceLayer: discovery.sourceLayer,
+    });
+    return false;
+  }
+
+  return true;
+}
+
+function restorePhaseDTrafficDefaults(visible) {
+  setDgmTrafficLayerVisibility(false);
+  if (!phaseDTrafficDefaultsHidden) {
+    return;
+  }
+
+  applyTrafficVisibility(map, visible, {
+    layerIds: findTrafficLayerIds(),
+    paintFallback: isMapFeatureEnabled("trafficPaintVisibilityFallback"),
+    logTelemetry: logDgmTelemetry,
+  });
+  phaseDTrafficDefaultsHidden = false;
+}
+
+function setPhaseDTrafficVisibility(visible) {
+  const discovery = getPhaseDTrafficDiscovery();
+  if (!discovery.ok) {
+    reportPhaseDTrafficDiscoveryStop(discovery);
+    restorePhaseDTrafficDefaults(Boolean(visible));
+    setDgmTrafficLayerVisibility(false);
+    return {
+      visible: false,
+      layerIds: discovery.layerIds,
+      changedLayerIds: [],
+      fallbackLayerIds: [],
+      failedLayerIds: discovery.layerIds,
+      controller: "phase-d-discovery-stopped",
+      reason: discovery.reason,
+    };
+  }
+
+  if (!ensureDgmTrafficLayer(discovery)) {
+    restorePhaseDTrafficDefaults(Boolean(visible));
+    return {
+      visible: false,
+      layerIds: discovery.layerIds,
+      changedLayerIds: [],
+      fallbackLayerIds: [],
+      failedLayerIds: discovery.layerIds,
+      controller: "phase-d-discovery-stopped",
+      reason: "dgm_traffic_layer_not_added",
+    };
+  }
+
+  applyTrafficVisibility(map, false, {
+    layerIds: discovery.layerIds.filter((layerId) => layerId !== LAYER_DGM_TRAFFIC),
+    paintFallback: isMapFeatureEnabled("trafficPaintVisibilityFallback"),
+    logTelemetry: logDgmTelemetry,
+  });
+  phaseDTrafficDefaultsHidden = true;
+
+  const dgmVisible = Boolean(visible);
+  setDgmTrafficLayerVisibility(dgmVisible);
+  logDgmTelemetry("map.phase_d_traffic_visibility_changed", {
+    visible: dgmVisible,
+    source: discovery.source,
+    sourceLayer: discovery.sourceLayer,
+    defaultLayerIds: discovery.layerIds,
+  });
+
+  return {
+    visible: dgmVisible,
+    layerIds: [LAYER_DGM_TRAFFIC],
+    changedLayerIds: [LAYER_DGM_TRAFFIC],
+    fallbackLayerIds: [],
+    failedLayerIds: [],
+    controller: "phase-d",
+  };
 }
 
 function setLegacyTrafficVisibility(visible) {
@@ -1458,6 +1627,12 @@ function setLegacyTrafficVisibility(visible) {
 function setTrafficVisibility(visible) {
   const requestedVisible = Boolean(visible);
   const effectiveVisible = requestedVisible && !isMapKillSwitchEnabled("traffic");
+
+  if (isPhaseDTuningEnabled()) {
+    return setPhaseDTrafficVisibility(effectiveVisible);
+  }
+
+  restorePhaseDTrafficDefaults(effectiveVisible);
 
   if (!isMapFeatureEnabled("trafficVisibilityController")) {
     const legacyResult = setLegacyTrafficVisibility(effectiveVisible);

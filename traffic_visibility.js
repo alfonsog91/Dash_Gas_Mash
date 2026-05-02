@@ -40,6 +40,93 @@ function findTrafficLayerIds(map, { explicitLayerIds = [] } = {}) {
   return normalizeLayerIdList([...explicitIds, ...inferredIds]);
 }
 
+function getTrafficSourceCandidates(layers) {
+  const candidates = [];
+  const seen = new Set();
+
+  for (const layer of layers) {
+    const source = String(layer?.source || "").trim();
+    const sourceLayer = String(layer?.["source-layer"] || "").trim();
+    if (!source || !sourceLayer) {
+      continue;
+    }
+
+    const key = `${source}:${sourceLayer}`;
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    candidates.push({ source, sourceLayer });
+  }
+
+  return candidates;
+}
+
+function buildTrafficDiscoveryFailure(reason, layerIds, layers, sourceCandidates) {
+  return {
+    ok: false,
+    reason,
+    layerIds,
+    source: null,
+    sourceLayer: null,
+    sourceCandidates,
+    layers: layers.map((layer) => ({
+      id: layer.id,
+      type: layer.type,
+      source: layer.source || null,
+      sourceLayer: layer["source-layer"] || null,
+    })),
+  };
+}
+
+function findStyleLayerById(styleLayers, layerId) {
+  return styleLayers.find((layer) => layer?.id === layerId) || null;
+}
+
+function discoverTrafficLayerSource(map, { explicitLayerIds = [] } = {}) {
+  const layerIds = findTrafficLayerIds(map, { explicitLayerIds });
+  const styleLayers = getMapStyleLayers(map);
+  const layers = layerIds
+    .map((layerId) => findStyleLayerById(styleLayers, layerId)
+      || (typeof map?.getLayer === "function" ? map.getLayer(layerId) : null))
+    .filter(Boolean);
+
+  if (layers.length === 0) {
+    return buildTrafficDiscoveryFailure("traffic_layers_missing", layerIds, layers, []);
+  }
+
+  const explicitIdSet = new Set(normalizeLayerIdList(explicitLayerIds));
+  const explicitLayers = layers.filter((layer) => explicitIdSet.has(layer.id));
+  const explicitSourceCandidates = getTrafficSourceCandidates(explicitLayers);
+  const sourceCandidates = explicitSourceCandidates.length > 0
+    ? explicitSourceCandidates
+    : getTrafficSourceCandidates(layers);
+
+  if (sourceCandidates.length === 0) {
+    return buildTrafficDiscoveryFailure("traffic_source_missing", layerIds, layers, sourceCandidates);
+  }
+
+  if (sourceCandidates.length > 1) {
+    return buildTrafficDiscoveryFailure("traffic_source_mismatch", layerIds, layers, sourceCandidates);
+  }
+
+  return {
+    ok: true,
+    reason: null,
+    layerIds,
+    source: sourceCandidates[0].source,
+    sourceLayer: sourceCandidates[0].sourceLayer,
+    sourceCandidates,
+    layers: layers.map((layer) => ({
+      id: layer.id,
+      type: layer.type,
+      source: layer.source || null,
+      sourceLayer: layer["source-layer"] || null,
+    })),
+  };
+}
+
 function getPaintFallbacks(layer) {
   if (!layer || layer.type !== "line") {
     return [];
@@ -164,6 +251,7 @@ function toggleTraffic(map, currentVisible, options = {}) {
 }
 
 export {
+  discoverTrafficLayerSource,
   findTrafficLayerIds,
   isTrafficLayer,
   setTrafficVisibility,
