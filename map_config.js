@@ -33,6 +33,11 @@ const NON_CRITICAL_NEW_FEATURE_FLAGS = Object.freeze([
   "headingKeyboardShortcut",
   "headingRelativeAlphaFallback",
   "visualPerformanceHeuristics",
+  "phaseCTerrain",
+  "phaseCGlobe",
+  "phaseC3dBuildings",
+  "phaseCFog",
+  "phaseCAtmosphere",
 ]);
 
 function getWindowLike() {

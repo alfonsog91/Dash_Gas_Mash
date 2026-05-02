@@ -79,6 +79,10 @@ import { normalizeCoord } from "./coordinates.js?v=20260501-coordinates";
 import { restoreStyleState } from "./style_state.js?v=20260501-style-state";
 import { evaluateVisualPerformanceHeuristics } from "./performance_heuristics.js?v=20260501-performance-heuristics";
 import { getPhaseCManifest } from "./phase_c_manifest.js?v=20260501-phase-c-manifest";
+import {
+  applyPhaseCActivation,
+  rollbackPhaseCActivation,
+} from "./phase_c_activation.js?v=20260501-phase-c-activation";
 
 const APP_BUILD_ID = "20260410-nav-hotfix";
 console.info("[DGM] app build", APP_BUILD_ID);
@@ -103,11 +107,70 @@ if (visualPerformanceHeuristics.shouldDisableFutureVisualPolish) {
 
 // Phase C manifest — inert predeclaration. No Phase C visual behavior is activated.
 // IDs and configs are reserved here so future Phase C code has stable references.
-const _phaseCManifest = getPhaseCManifest();
+const phaseCManifest = getPhaseCManifest();
 logDgmTelemetry("map.phase_c_manifest_loaded", {
-  version: _phaseCManifest.version,
+  version: phaseCManifest.version,
   activated: false,
 });
+
+const PHASE_C_FLAG_NAMES = Object.freeze([
+  "phaseCTerrain",
+  "phaseCGlobe",
+  "phaseC3dBuildings",
+  "phaseCFog",
+  "phaseCAtmosphere",
+]);
+const phaseCActivationState = {};
+let phaseCFlagsWereActive = false;
+
+function getPhaseCFlagsSnapshot() {
+  const featureFlags = getMapRuntimeConfigSnapshot().featureFlags || {};
+  return Object.fromEntries(PHASE_C_FLAG_NAMES.map((flagName) => [flagName, featureFlags[flagName] === true]));
+}
+
+function hasAnyPhaseCFlagEnabled(phaseCFlags) {
+  return PHASE_C_FLAG_NAMES.some((flagName) => phaseCFlags[flagName] === true);
+}
+
+async function reconcilePhaseCActivation() {
+  const phaseCFlags = getPhaseCFlagsSnapshot();
+  const phaseCFlagsAreActive = hasAnyPhaseCFlagEnabled(phaseCFlags);
+
+  if (phaseCFlagsAreActive) {
+    await applyPhaseCActivation(map, phaseCManifest, phaseCFlags, logDgmTelemetry, phaseCActivationState, {
+      buildId: APP_BUILD_ID,
+    });
+    phaseCFlagsWereActive = true;
+    return;
+  }
+
+  if (phaseCFlagsWereActive) {
+    await rollbackPhaseCActivation(map, phaseCManifest, logDgmTelemetry, phaseCActivationState, {
+      buildId: APP_BUILD_ID,
+    });
+  }
+
+  phaseCFlagsWereActive = false;
+}
+
+function reconcilePhaseCAfterFlagChange(flagName) {
+  if (!PHASE_C_FLAG_NAMES.includes(flagName)) {
+    return;
+  }
+
+  if (!map || typeof map.isStyleLoaded !== "function" || !map.isStyleLoaded()) {
+    return;
+  }
+
+  reconcilePhaseCActivation().catch((error) => {
+    console.error(error);
+    logDgmTelemetry("map.phase_c_activation_error", {
+      buildId: APP_BUILD_ID,
+      reason: "flag_reconcile_failed",
+      activated: false,
+    });
+  });
+}
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
 const SHADOW_LEARNED_MODEL = Boolean(window.DGM_SHADOW_PREDICTION_MODEL);
@@ -4507,7 +4570,15 @@ function startDeviceOrientationWatch() {
 
 function installRuntimeDebugSurface() {
   const result = headingRuntime.installRuntimeDebugSurface({ loadForView, locateUser });
-  installMapConfigRuntimeSurface({ buildId: APP_BUILD_ID });
+  const configRuntime = installMapConfigRuntimeSurface({ buildId: APP_BUILD_ID });
+  if (configRuntime && typeof configRuntime.setFeatureFlag === "function") {
+    const setFeatureFlag = configRuntime.setFeatureFlag;
+    configRuntime.setFeatureFlag = (name, enabled, options) => {
+      const nextValue = setFeatureFlag(name, enabled, options);
+      reconcilePhaseCAfterFlagChange(name);
+      return nextValue;
+    };
+  }
   if (window.DGM_RUNTIME && typeof window.DGM_RUNTIME === "object") {
     window.DGM_RUNTIME.traffic = {
       findTrafficLayerIds,
@@ -5723,8 +5794,9 @@ map.on("load", () => {
   }, 250);
 });
 
-createMapRuntimeReadyGate(map, ({ eventName }) => {
+createMapRuntimeReadyGate(map, async ({ eventName }) => {
   restoreLayersAfterStyleChange();
+  await reconcilePhaseCActivation();
   logDgmTelemetry("map.runtime_ready_restored", { eventName });
 }, {
   events: ["style.load", "styledata", "idle"],
