@@ -18,6 +18,8 @@ const PHASE_C_ACTIVATION_EVENT_BY_FEATURE = Object.freeze({
 
 const PHASE_C_LIGHTING_ENABLED_EVENT = "map.phase_c_lighting_enabled";
 const PHASE_C_LIGHTING_UNSUPPORTED_EVENT = "map.phase_c_lighting_unsupported";
+const PHASE_D_TUNING_QUERY_PARAM = "phaseD";
+const PHASE_D_TUNING_STORAGE_KEY = "DGM_PHASE_D_TUNING";
 
 const PHASE_C_ERROR_REASONS_BY_FEATURE = Object.freeze({
   terrain: ["terrain_invalid", "terrain_api_error"],
@@ -53,7 +55,12 @@ function createActivationState() {
       sky: false,
       buildings3d: false,
     },
+    phaseDTuning: {},
   };
+}
+
+function getWindowLike() {
+  return typeof window !== "undefined" ? window : null;
 }
 
 function getActivationState(map, callerState = {}) {
@@ -153,6 +160,50 @@ function normalizeFlags(flags) {
 
 function hasAnyPhaseCFlag(flags) {
   return PHASE_C_FEATURE_ORDER.some((featureName) => flags[PHASE_C_FLAG_BY_FEATURE[featureName]] === true);
+}
+
+function getPhaseCActivationSnapshot(state = {}) {
+  if (isObject(state?.phaseCActivation)) {
+    return state.phaseCActivation;
+  }
+
+  if (isObject(state) && typeof state.aggregateActive === "boolean") {
+    return state;
+  }
+
+  return null;
+}
+
+function isPhaseCAggregateActive(state = {}) {
+  return getPhaseCActivationSnapshot(state)?.aggregateActive === true;
+}
+
+function isPhaseDQueryParamEnabled(windowLike = getWindowLike()) {
+  try {
+    return new URLSearchParams(windowLike?.location?.search || "").get(PHASE_D_TUNING_QUERY_PARAM) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function isPhaseDLocalStorageEnabled(windowLike = getWindowLike()) {
+  try {
+    return windowLike?.localStorage?.getItem(PHASE_D_TUNING_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function isPhaseDTuningRequested(windowLike = getWindowLike()) {
+  return isPhaseDQueryParamEnabled(windowLike) || isPhaseDLocalStorageEnabled(windowLike);
+}
+
+function isPhaseDTuningEnabled(state = {}, windowLike = getWindowLike()) {
+  return isPhaseCAggregateActive(state) && isPhaseDTuningRequested(windowLike);
+}
+
+function shouldExposePhaseDDebug(windowLike = getWindowLike()) {
+  return isPhaseDTuningRequested(windowLike) || windowLike?.location?.hostname === "localhost";
 }
 
 function updateAggregateState(activationState) {
@@ -859,6 +910,9 @@ export {
   buildPhaseCLightOptions,
   buildPhaseCTerrainSource,
   derivePhaseCCameraOptions,
+  isPhaseCAggregateActive,
+  isPhaseDTuningEnabled,
+  shouldExposePhaseDDebug,
   rollbackPhaseCActivation,
   rollbackPhaseCLighting,
 };

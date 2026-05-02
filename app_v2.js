@@ -81,7 +81,9 @@ import { evaluateVisualPerformanceHeuristics } from "./performance_heuristics.js
 import { getPhaseCManifest } from "./phase_c_manifest.js?v=20260501-phase-c-manifest";
 import {
   applyPhaseCActivation,
+  isPhaseDTuningEnabled as isPhaseDTuningEnabledForState,
   rollbackPhaseCActivation,
+  shouldExposePhaseDDebug,
 } from "./phase_c_activation.js?v=20260501-phase-d-visuals";
 
 const APP_BUILD_ID = "20260410-nav-hotfix";
@@ -122,6 +124,20 @@ const PHASE_C_FLAG_NAMES = Object.freeze([
 ]);
 const phaseCActivationState = {};
 let phaseCFlagsWereActive = false;
+
+function isPhaseDTuningEnabled() {
+  return isPhaseDTuningEnabledForState(phaseCActivationState);
+}
+
+function installPhaseDDebugSurface() {
+  if (!shouldExposePhaseDDebug()) {
+    return;
+  }
+
+  window.__DGM_DEBUG = { isPhaseDTuningEnabled };
+}
+
+installPhaseDDebugSurface();
 
 function getPhaseCFlagsSnapshot() {
   const featureFlags = getMapRuntimeConfigSnapshot().featureFlags || {};
