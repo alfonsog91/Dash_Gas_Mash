@@ -45,6 +45,13 @@ const PHASE_D_SKY_PAINT_PROPERTIES = Object.freeze([
   ["sky-gradient-center", Object.freeze([0, 0])],
   ["sky-gradient-radius", 90],
 ]);
+const PHASE_D_POI_TEXT_OPACITY = Object.freeze(["step", Object.freeze(["zoom"]), 0, 13, 1]);
+const PHASE_D_POI_TEXT_PAINT_PROPERTIES = Object.freeze([
+  ["text-opacity", PHASE_D_POI_TEXT_OPACITY],
+  ["text-color", "#111"],
+  ["text-halo-color", "#fff"],
+  ["text-halo-width", 1],
+]);
 
 const PHASE_C_ERROR_REASONS_BY_FEATURE = Object.freeze({
   terrain: ["terrain_invalid", "terrain_api_error"],
@@ -573,6 +580,27 @@ function getPaintPropertyCacheKey(layerId, propertyName) {
   return `${layerId}:${propertyName}`;
 }
 
+function getStyleLayerSignature(layer) {
+  return [
+    layer?.id,
+    layer?.source,
+    layer?.["source-layer"],
+    layer?.metadata?.["mapbox:group"],
+  ]
+    .map((value) => String(value || "").toLowerCase())
+    .join(" ");
+}
+
+function isPhaseDPoiLabelLayer(layer) {
+  if (!layer?.id || layer.type !== "symbol" || !layer.layout?.["text-field"]) {
+    return false;
+  }
+
+  return /poi|point-of-interest|landmark|airport|transit|station|maki|natural-label|place-label/.test(
+    getStyleLayerSignature(layer)
+  );
+}
+
 function setPhaseDPaintProperty(map, activationState, layerId, propertyName, propertyValue) {
   if (!layerExists(map, layerId, "paint_api_error") || typeof map?.setPaintProperty !== "function") {
     return false;
@@ -811,6 +839,7 @@ function applyPhaseDTuning(map, manifest, activationState) {
   applyPhaseDTerrainTuning(map, manifest, activationState);
   applyPhaseDLightingTuning(map, manifest, activationState);
   applyPhaseDSkyFogTuning(map, manifest, activationState);
+  applyPhaseDLabelTuning(map, activationState);
 }
 
 function rollbackPhaseDLightingTuning(map, manifest, activationState) {
@@ -930,6 +959,34 @@ function applyPhaseDSkyFogTuning(map, manifest, activationState) {
 
   applyPhaseDFogTuning(map, manifest, activationState);
   applyPhaseDSkyTuning(map, manifest, activationState);
+}
+
+function rollbackPhaseDLabelTuning(map, activationState) {
+  const tuningState = getPhaseDTuningState(activationState);
+  const layerIds = Array.isArray(tuningState.labelLayerIds) ? tuningState.labelLayerIds : [];
+  for (const layerId of layerIds) {
+    for (const [propertyName] of PHASE_D_POI_TEXT_PAINT_PROPERTIES) {
+      restorePhaseDPaintProperty(map, activationState, layerId, propertyName);
+    }
+  }
+  tuningState.labelLayerIds = [];
+}
+
+function applyPhaseDLabelTuning(map, activationState) {
+  if (!isPhaseDTuningEnabled(activationState)) {
+    rollbackPhaseDLabelTuning(map, activationState);
+    return;
+  }
+
+  const tuningState = getPhaseDTuningState(activationState);
+  const poiLayers = getMapStyleLayers(map, "paint_api_error").filter(isPhaseDPoiLabelLayer);
+  tuningState.labelLayerIds = poiLayers.map((layer) => layer.id);
+
+  for (const layer of poiLayers) {
+    for (const [propertyName, propertyValue] of PHASE_D_POI_TEXT_PAINT_PROPERTIES) {
+      setPhaseDPaintProperty(map, activationState, layer.id, propertyName, cloneJsonValue(propertyValue));
+    }
+  }
 }
 
 async function applyPhaseCLighting(map, manifest, telemetryEmitter, state = {}, options = {}) {
