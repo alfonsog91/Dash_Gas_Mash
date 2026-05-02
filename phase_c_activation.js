@@ -52,6 +52,11 @@ const PHASE_D_POI_TEXT_PAINT_PROPERTIES = Object.freeze([
   ["text-halo-color", "#fff"],
   ["text-halo-width", 1],
 ]);
+const PHASE_D_COLOR_GRADE = Object.freeze({
+  water: "#437fcf",
+  road: "#d8c16a",
+  park: "#6f9f65",
+});
 
 const PHASE_C_ERROR_REASONS_BY_FEATURE = Object.freeze({
   terrain: ["terrain_invalid", "terrain_api_error"],
@@ -601,6 +606,24 @@ function isPhaseDPoiLabelLayer(layer) {
   );
 }
 
+function isPhaseDWaterLayer(layer) {
+  return (layer?.type === "fill" || layer?.type === "line")
+    && /water|marine|ocean|river|lake|canal|stream/.test(getStyleLayerSignature(layer));
+}
+
+function isPhaseDRoadLayer(layer) {
+  return layer?.type === "line"
+    && /road|street|motorway|highway|bridge|tunnel|path|rail|runway|ferry/.test(getStyleLayerSignature(layer))
+    && !/traffic|congestion/.test(getStyleLayerSignature(layer));
+}
+
+function isPhaseDParkLayer(layer) {
+  return layer?.type === "fill"
+    && /park|landcover|landuse|grass|wood|forest|scrub|pitch|golf|leisure|recreation|cemetery/.test(
+      getStyleLayerSignature(layer)
+    );
+}
+
 function setPhaseDPaintProperty(map, activationState, layerId, propertyName, propertyValue) {
   if (!layerExists(map, layerId, "paint_api_error") || typeof map?.setPaintProperty !== "function") {
     return false;
@@ -840,6 +863,7 @@ function applyPhaseDTuning(map, manifest, activationState) {
   applyPhaseDLightingTuning(map, manifest, activationState);
   applyPhaseDSkyFogTuning(map, manifest, activationState);
   applyPhaseDLabelTuning(map, activationState);
+  applyPhaseDColorGrading(map, activationState);
 }
 
 function rollbackPhaseDLightingTuning(map, manifest, activationState) {
@@ -987,6 +1011,53 @@ function applyPhaseDLabelTuning(map, activationState) {
       setPhaseDPaintProperty(map, activationState, layer.id, propertyName, cloneJsonValue(propertyValue));
     }
   }
+}
+
+function getPhaseDColorPaintUpdate(layer) {
+  if (isPhaseDWaterLayer(layer)) {
+    return [layer.type === "line" ? "line-color" : "fill-color", PHASE_D_COLOR_GRADE.water];
+  }
+
+  if (isPhaseDRoadLayer(layer)) {
+    return ["line-color", PHASE_D_COLOR_GRADE.road];
+  }
+
+  if (isPhaseDParkLayer(layer)) {
+    return ["fill-color", PHASE_D_COLOR_GRADE.park];
+  }
+
+  return null;
+}
+
+function rollbackPhaseDColorGrading(map, activationState) {
+  const tuningState = getPhaseDTuningState(activationState);
+  const paintUpdates = Array.isArray(tuningState.colorPaintUpdates) ? tuningState.colorPaintUpdates : [];
+  for (const { layerId, propertyName } of paintUpdates) {
+    restorePhaseDPaintProperty(map, activationState, layerId, propertyName);
+  }
+  tuningState.colorPaintUpdates = [];
+}
+
+function applyPhaseDColorGrading(map, activationState) {
+  if (!isPhaseDTuningEnabled(activationState)) {
+    rollbackPhaseDColorGrading(map, activationState);
+    return;
+  }
+
+  const tuningState = getPhaseDTuningState(activationState);
+  const paintUpdates = [];
+  for (const layer of getMapStyleLayers(map, "paint_api_error")) {
+    const paintUpdate = getPhaseDColorPaintUpdate(layer);
+    if (!paintUpdate) {
+      continue;
+    }
+
+    const [propertyName, propertyValue] = paintUpdate;
+    if (setPhaseDPaintProperty(map, activationState, layer.id, propertyName, propertyValue)) {
+      paintUpdates.push({ layerId: layer.id, propertyName });
+    }
+  }
+  tuningState.colorPaintUpdates = paintUpdates;
 }
 
 async function applyPhaseCLighting(map, manifest, telemetryEmitter, state = {}, options = {}) {
