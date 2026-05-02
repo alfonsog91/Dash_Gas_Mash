@@ -21,6 +21,11 @@ const PHASE_C_LIGHTING_UNSUPPORTED_EVENT = "map.phase_c_lighting_unsupported";
 const PHASE_D_TUNING_QUERY_PARAM = "phaseD";
 const PHASE_D_TUNING_STORAGE_KEY = "DGM_PHASE_D_TUNING";
 const PHASE_D_TERRAIN_EXAGGERATION = 0.85;
+const PHASE_D_LIGHT_SPEC = Object.freeze({
+  position: Object.freeze([1.15, 210, 30]),
+  intensity: 0.7,
+});
+const PHASE_D_BUILDING_AMBIENT_INTENSITY = 0.6;
 
 const PHASE_C_ERROR_REASONS_BY_FEATURE = Object.freeze({
   terrain: ["terrain_invalid", "terrain_api_error"],
@@ -210,6 +215,10 @@ function shouldExposePhaseDDebug(windowLike = getWindowLike()) {
 function getPhaseDTuningState(activationState) {
   if (!isObject(activationState?.phaseDTuning)) {
     activationState.phaseDTuning = {};
+  }
+
+  if (!(activationState.phaseDTuning.paintProperties instanceof Map)) {
+    activationState.phaseDTuning.paintProperties = new Map();
   }
 
   return activationState.phaseDTuning;
@@ -533,6 +542,66 @@ function lightMatches(map, lightSpec) {
   return Boolean(currentLight) && JSON.stringify(currentLight) === JSON.stringify(lightSpec);
 }
 
+function lightHasPhaseDValues(map) {
+  const currentLight = getCurrentLight(map);
+  return Boolean(currentLight
+    && currentLight.intensity === PHASE_D_LIGHT_SPEC.intensity
+    && Array.isArray(currentLight.position)
+    && JSON.stringify(currentLight.position) === JSON.stringify(PHASE_D_LIGHT_SPEC.position));
+}
+
+function getPaintPropertyCacheKey(layerId, propertyName) {
+  return `${layerId}:${propertyName}`;
+}
+
+function setPhaseDPaintProperty(map, activationState, layerId, propertyName, propertyValue) {
+  if (!layerExists(map, layerId, "paint_api_error") || typeof map?.setPaintProperty !== "function") {
+    return false;
+  }
+
+  const tuningState = getPhaseDTuningState(activationState);
+  const cacheKey = getPaintPropertyCacheKey(layerId, propertyName);
+  if (!tuningState.paintProperties.has(cacheKey)) {
+    let previousValue = null;
+    if (typeof map.getPaintProperty === "function") {
+      try {
+        previousValue = cloneJsonValue(map.getPaintProperty(layerId, propertyName));
+      } catch {
+        previousValue = null;
+      }
+    }
+    tuningState.paintProperties.set(cacheKey, { layerId, propertyName, previousValue });
+  }
+
+  try {
+    map.setPaintProperty(layerId, propertyName, propertyValue);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function restorePhaseDPaintProperty(map, activationState, layerId, propertyName) {
+  const tuningState = getPhaseDTuningState(activationState);
+  const cacheKey = getPaintPropertyCacheKey(layerId, propertyName);
+  const cachedValue = tuningState.paintProperties.get(cacheKey);
+  if (!cachedValue) {
+    return false;
+  }
+
+  tuningState.paintProperties.delete(cacheKey);
+  if (!layerExists(map, layerId, "paint_api_error") || typeof map?.setPaintProperty !== "function") {
+    return false;
+  }
+
+  try {
+    map.setPaintProperty(layerId, propertyName, cachedValue.previousValue);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function supportsSkyInsertion(map, manifestSky) {
   validateSkyManifest(manifestSky);
   if (!map || map.supportsSkyLayer === false || map.__phaseCSupportsSky === false) {
@@ -721,6 +790,54 @@ function applyPhaseDTerrainTuning(map, manifest, activationState) {
 
 function applyPhaseDTuning(map, manifest, activationState) {
   applyPhaseDTerrainTuning(map, manifest, activationState);
+  applyPhaseDLightingTuning(map, manifest, activationState);
+}
+
+function rollbackPhaseDLightingTuning(map, manifest, activationState) {
+  const tuningState = getPhaseDTuningState(activationState);
+  if (tuningState.lightActive && typeof map?.setLight === "function") {
+    try {
+      map.setLight(tuningState.previousLight || buildPhaseCLightOptions(manifest));
+    } catch {
+      // Phase C rollback still owns the emergency lighting reset path.
+    }
+  }
+
+  tuningState.lightActive = false;
+  tuningState.previousLight = null;
+  const buildingLayerId = manifest?.buildings3d?.layerId;
+  if (isNonEmptyString(buildingLayerId)) {
+    restorePhaseDPaintProperty(map, activationState, buildingLayerId, "fill-extrusion-ambient-occlusion-intensity");
+  }
+}
+
+function applyPhaseDLightingTuning(map, manifest, activationState) {
+  if (!isPhaseDTuningEnabled(activationState)) {
+    rollbackPhaseDLightingTuning(map, manifest, activationState);
+    return;
+  }
+
+  const tuningState = getPhaseDTuningState(activationState);
+  if (typeof map?.setLight === "function") {
+    if (!tuningState.lightActive) {
+      tuningState.previousLight = getCurrentLight(map);
+    }
+    if (!lightHasPhaseDValues(map)) {
+      callMapApi(map, "setLight", [cloneJsonValue(PHASE_D_LIGHT_SPEC)], "lighting_api_error");
+    }
+    tuningState.lightActive = true;
+  }
+
+  const buildingLayerId = manifest?.buildings3d?.layerId;
+  if (activationState.featureActive.buildings3d === true && isNonEmptyString(buildingLayerId)) {
+    setPhaseDPaintProperty(
+      map,
+      activationState,
+      buildingLayerId,
+      "fill-extrusion-ambient-occlusion-intensity",
+      PHASE_D_BUILDING_AMBIENT_INTENSITY
+    );
+  }
 }
 
 async function applyPhaseCLighting(map, manifest, telemetryEmitter, state = {}, options = {}) {
@@ -967,6 +1084,7 @@ async function rollbackPhaseCActivation(map, manifest, telemetryEmitter, state =
   }
   activationState.cameraActive = false;
   activationState.aggregateActive = false;
+  activationState.phaseDTuning = {};
   activationState.errorReasons.clear();
 
   emitTelemetry(telemetryEmitter, "map.phase_c_rollback", {
