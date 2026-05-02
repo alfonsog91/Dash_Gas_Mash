@@ -63,8 +63,30 @@ export function runMapConfigTests() {
     assert(DEFAULT_MAP_FEATURE_FLAGS.trafficVisibilityController === true, "traffic visibility controller defaults on");
     assert(DEFAULT_MAP_FEATURE_FLAGS.headingCompassAutoRequest === true, "heading permission trigger defaults on");
     assert(DEFAULT_MAP_FEATURE_FLAGS.visualPerformanceHeuristics === false, "visual performance heuristics default off");
+    assert(DEFAULT_MAP_FEATURE_FLAGS.phaseCTerrain === true, "Phase D terrain default is enabled");
+    assert(DEFAULT_MAP_FEATURE_FLAGS.phaseCGlobe === true, "Phase D globe default is enabled");
+    assert(DEFAULT_MAP_FEATURE_FLAGS.phaseC3dBuildings === true, "Phase D buildings default is enabled");
+    assert(DEFAULT_MAP_FEATURE_FLAGS.phaseCFog === true, "Phase D fog default is enabled");
+    assert(DEFAULT_MAP_FEATURE_FLAGS.phaseCAtmosphere === true, "Phase D atmosphere default is enabled");
     assert(DEFAULT_MAP_KILL_SWITCHES.traffic === false, "traffic kill switch defaults off");
     assert(DEFAULT_MAP_KILL_SWITCHES.heading === false, "heading kill switch defaults off");
+  });
+
+  runTest("stored false overrides Phase D runtime defaults", () => {
+    if (typeof window === "undefined" || !window.localStorage) {
+      log.write("SKIP stored false overrides Phase D runtime defaults: localStorage unavailable");
+      return;
+    }
+
+    const storageKey = "dgm:map-config:feature:phaseCTerrain";
+    const previousValue = window.localStorage.getItem(storageKey);
+    window.localStorage.setItem(storageKey, "false");
+    assert(!isMapFeatureEnabled("phaseCTerrain"), "stored false disables default-on Phase D terrain");
+    window.localStorage.removeItem(storageKey);
+    assert(isMapFeatureEnabled("phaseCTerrain"), "removing stored override restores runtime default");
+    if (previousValue !== null) {
+      window.localStorage.setItem(storageKey, previousValue);
+    }
   });
 
   runTest("runtime feature flags can disable behavior", () => {

@@ -8,12 +8,12 @@ const DEFAULT_MAP_FEATURE_FLAGS = Object.freeze({
   headingKeyboardShortcut: true,
   headingRelativeAlphaFallback: true,
   visualPerformanceHeuristics: false,
-  // Phase C — all permanently false until Phase C activation is approved
-  phaseCTerrain: false,
-  phaseCGlobe: false,
-  phaseC3dBuildings: false,
-  phaseCFog: false,
-  phaseCAtmosphere: false,
+  // Phase D visual enablement defaults on at runtime; persisted false overrides still win.
+  phaseCTerrain: true,
+  phaseCGlobe: true,
+  phaseC3dBuildings: true,
+  phaseCFog: true,
+  phaseCAtmosphere: true,
 });
 
 const DEFAULT_MAP_KILL_SWITCHES = Object.freeze({

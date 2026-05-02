@@ -2,10 +2,13 @@ import { getPhaseCManifest } from "../phase_c_manifest.js";
 import {
   adaptPhaseCFog,
   applyPhaseCActivation,
+  applyPhaseCLighting,
   buildPhaseCBuildingsLayer,
+  buildPhaseCLightOptions,
   buildPhaseCTerrainSource,
   derivePhaseCCameraOptions,
   rollbackPhaseCActivation,
+  rollbackPhaseCLighting,
 } from "../phase_c_activation.js";
 
 const PASS = "PASS";
@@ -72,7 +75,7 @@ function createTelemetryRecorder() {
   return telemetry;
 }
 
-function createMockMap({ supportsSkyLayer = true, validateLayers = true } = {}) {
+function createMockMap({ supportsSkyLayer = true, supportsLight = true, throwSkyLayer = false, validateLayers = true } = {}) {
   const sources = new Map([["composite", { type: "vector" }]]);
   const layers = [
     { id: "background", type: "background" },
@@ -82,6 +85,7 @@ function createMockMap({ supportsSkyLayer = true, validateLayers = true } = {}) 
   let terrain = null;
   let projection = { name: "mercator" };
   let fog = null;
+  let light = { anchor: "viewport", color: "#ffffff", intensity: 0.5, position: [1.15, 210, 30] };
   let zoom = 12;
   let pitch = 0;
 
@@ -101,8 +105,16 @@ function createMockMap({ supportsSkyLayer = true, validateLayers = true } = {}) 
     if (layer.type === "fill-extrusion") {
       assertDeepEqual(
         layer.paint?.["fill-extrusion-height"],
-        ["to-number", ["coalesce", ["get", "height"], ["get", "building:height"], 0]],
-        "building height expression is valid"
+        [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          15,
+          0,
+          16,
+          ["to-number", ["coalesce", ["get", "height"], ["get", "building:height"], 0]],
+        ],
+        "building height expression is valid and zoom-gated"
       );
       assertDeepEqual(
         layer.paint?.["fill-extrusion-base"],
@@ -128,6 +140,9 @@ function createMockMap({ supportsSkyLayer = true, validateLayers = true } = {}) 
     },
     get fog() {
       return fog;
+    },
+    get light() {
+      return light;
     },
     get zoom() {
       return zoom;
@@ -184,7 +199,7 @@ function createMockMap({ supportsSkyLayer = true, validateLayers = true } = {}) 
       return layers.find((layer) => layer.id === layerId) || null;
     },
     addLayer(layer, beforeId) {
-      if (!supportsSkyLayer && layer?.type === "sky") {
+      if ((!supportsSkyLayer || throwSkyLayer) && layer?.type === "sky") {
         throw new Error("sky unsupported");
       }
       if (findLayerIndex(layer.id) !== -1) {
@@ -214,6 +229,15 @@ function createMockMap({ supportsSkyLayer = true, validateLayers = true } = {}) 
       pitch = options.pitch;
       calls.push({ method: "easeTo", options });
     },
+    ...(supportsLight ? {
+      getLight() {
+        return light;
+      },
+      setLight(nextLight) {
+        light = nextLight;
+        calls.push({ method: "setLight", light: nextLight });
+      },
+    } : {}),
   };
 }
 
@@ -286,16 +310,34 @@ export async function runPhaseCActivationTests() {
     const manifest = getPhaseCManifest();
     const layerSpec = buildPhaseCBuildingsLayer(manifest.buildings3d);
     assert(layerSpec.type === "fill-extrusion", "buildings layer is fill-extrusion");
+    assert(layerSpec.paint["fill-extrusion-vertical-gradient"] === true, "vertical gradient gives supported depth styling");
     assertDeepEqual(
       layerSpec.paint["fill-extrusion-height"],
-      ["to-number", ["coalesce", ["get", "height"], ["get", "building:height"], 0]],
-      "height expression matches required fallback"
+      [
+        "interpolate",
+        ["linear"],
+        ["zoom"],
+        manifest.buildings3d.minZoom,
+        0,
+        manifest.buildings3d.minZoom + 1,
+        ["to-number", ["coalesce", ["get", "height"], ["get", "building:height"], 0]],
+      ],
+      "height expression is zoom-gated and preserves fallback"
     );
     assertDeepEqual(
       layerSpec.paint["fill-extrusion-base"],
       ["to-number", ["coalesce", ["get", "min_height"], ["get", "building:min_height"], 0]],
       "base expression matches required fallback"
     );
+  });
+
+  await runTest("lighting builder provides conservative Mapbox light spec", () => {
+    const manifest = getPhaseCManifest();
+    const lightSpec = buildPhaseCLightOptions(manifest);
+    assert(lightSpec.anchor === "map", "default light anchor is map-based for sun direction");
+    assert(typeof lightSpec.color === "string", "default light color is provided");
+    assert(lightSpec.intensity > 0 && lightSpec.intensity <= 1, "light intensity is bounded");
+    assertDeepEqual(lightSpec.position, [1.15, 210, 35], "default light position is deterministic");
   });
 
   await runTest("camera derivation clamps zoom and preserves pitch duration", () => {
@@ -331,6 +373,7 @@ export async function runPhaseCActivationTests() {
     assert(activeMap.fog?.["high-color"] === manifest.fog.highColor, "fog is adapted and enabled");
     assert(activeMap.getLayer(manifest.sky.layerId), "sky layer is inserted");
     assert(activeMap.getLayer(manifest.buildings3d.layerId), "3D buildings layer is inserted");
+    assertDeepEqual(activeMap.light, buildPhaseCLightOptions(manifest), "lighting is enabled as aggregate visual behavior");
     assert(activeMap.pitch === manifest.camera.pitchDegrees, "camera preset is applied");
   });
 
@@ -347,12 +390,31 @@ export async function runPhaseCActivationTests() {
       getCallCount(map, "addLayer") === 2,
       "sky and buildings layers are inserted once each"
     );
+    assert(getCallCount(map, "setLight") === 1, "lighting is not duplicated");
     assert(telemetry.count("map.phase_c_terrain_enabled") === 1, "terrain telemetry emits once");
     assert(telemetry.count("map.phase_c_globe_enabled") === 1, "globe telemetry emits once");
     assert(telemetry.count("map.phase_c_fog_enabled") === 1, "fog telemetry emits once");
     assert(telemetry.count("map.phase_c_sky_enabled") === 1, "sky telemetry emits once");
     assert(telemetry.count("map.phase_c_3d_buildings_enabled") === 1, "building telemetry emits once");
+    assert(telemetry.count("map.phase_c_lighting_enabled") === 1, "lighting telemetry emits once");
     assert(telemetry.count("map.phase_c_camera_preset_applied") === 1, "camera telemetry emits once");
+  });
+
+  await runTest("camera preset can be skipped during active follow states", async () => {
+    const manifest = getPhaseCManifest();
+    const map = createMockMap();
+    const telemetry = createTelemetryRecorder();
+    const state = {};
+    await applyPhaseCActivation(map, manifest, PHASE_C_FLAGS_ALL_TRUE, telemetry, state, {
+      buildId: "test",
+      skipCameraPreset: true,
+    });
+
+    assert(getCallCount(map, "easeTo") === 0, "camera preset is skipped when unsafe");
+    assert(telemetry.count("map.phase_c_camera_preset_applied") === 0, "skipped camera emits no preset telemetry");
+
+    await applyPhaseCActivation(map, manifest, PHASE_C_FLAGS_ALL_TRUE, telemetry, state, { buildId: "test" });
+    assert(getCallCount(map, "easeTo") === 0, "camera preset does not run later in same aggregate activation");
   });
 
   await runTest("telemetry supports function emitters and prefers them", async () => {
@@ -424,10 +486,29 @@ export async function runPhaseCActivationTests() {
     assert(map.fog === null, "fog is cleared on rollback");
     assert(!map.getLayer(manifest.sky.layerId), "sky layer is removed on rollback");
     assert(!map.getLayer(manifest.buildings3d.layerId), "3D buildings layer is removed on rollback");
+    assertDeepEqual(map.light, { anchor: "viewport", color: "#ffffff", intensity: 0.5, position: [1.15, 210, 30] }, "lighting is restored on rollback");
 
     await applyPhaseCActivation(map, manifest, { ...PHASE_C_FLAGS_ALL_FALSE, phaseCFog: true }, telemetry, state, { buildId: "test" });
     await rollbackPhaseCActivation(map, manifest, telemetry, state, { buildId: "test" });
     assert(telemetry.count("map.phase_c_rollback") === 2, "rollback re-emits after a new aggregate activation");
+  });
+
+  await runTest("lighting unsupported warning is deterministic and idempotent", async () => {
+    const manifest = getPhaseCManifest();
+    const map = createMockMap({ supportsLight: false });
+    const telemetry = createTelemetryRecorder();
+    const state = {};
+
+    await applyPhaseCLighting(map, manifest, telemetry, state, { buildId: "test" });
+    await applyPhaseCLighting(map, manifest, telemetry, state, { buildId: "test" });
+    assert(getCallCount(map, "setLight") === 0, "missing setLight is not called");
+    assert(telemetry.count("map.phase_c_lighting_unsupported") === 1, "unsupported lighting warning emits once");
+    assert(telemetry.last("map.phase_c_lighting_unsupported").payload.reason === "setLight_unavailable", "unsupported reason is deterministic");
+    assert(telemetry.count("map.phase_c_lighting_enabled") === 1, "lighting transition telemetry emits once");
+
+    await rollbackPhaseCLighting(map, state);
+    await applyPhaseCLighting(map, manifest, telemetry, state, { buildId: "test" });
+    assert(telemetry.count("map.phase_c_lighting_unsupported") === 2, "warning re-emits after rollback transition");
   });
 
   await runTest("activation errors are deterministic and de-duplicated", async () => {
@@ -453,6 +534,19 @@ export async function runPhaseCActivationTests() {
     assert(!map.getLayer(manifest.sky.layerId), "unsupported sky is not inserted");
     assert(telemetry.count("map.phase_c_activation_error") === 1, "sky unsupported error is emitted once");
     assert(telemetry.last("map.phase_c_activation_error").payload.reason === "sky_unsupported", "sky unsupported reason is deterministic");
+  });
+
+  await runTest("sky insertion failure does not block later visual activation", async () => {
+    const manifest = getPhaseCManifest();
+    const map = createMockMap({ throwSkyLayer: true });
+    const telemetry = createTelemetryRecorder();
+    const state = {};
+
+    await applyPhaseCActivation(map, manifest, PHASE_C_FLAGS_ALL_TRUE, telemetry, state, { buildId: "test" });
+    assert(!map.getLayer(manifest.sky.layerId), "failed sky layer is not inserted");
+    assert(map.getLayer(manifest.buildings3d.layerId), "buildings still activate after sky fallback");
+    assertDeepEqual(map.light, buildPhaseCLightOptions(manifest), "lighting still activates after sky fallback");
+    assert(telemetry.last("map.phase_c_activation_error").payload.reason === "sky_unsupported", "sky insertion failure is deterministic");
   });
 
   const result = { passed, failed };

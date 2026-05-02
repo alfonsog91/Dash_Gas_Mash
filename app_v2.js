@@ -69,7 +69,7 @@ import {
   isMapKillSwitchEnabled,
   logDgmTelemetry,
   logMapFeatureFlagState,
-} from "./map_config.js?v=20260427-phase-a";
+} from "./map_config.js?v=20260501-phase-d-visuals";
 import {
   findTrafficLayerIds as findTrafficLayerIdsForMap,
   setTrafficVisibility as applyTrafficVisibility,
@@ -82,7 +82,7 @@ import { getPhaseCManifest } from "./phase_c_manifest.js?v=20260501-phase-c-mani
 import {
   applyPhaseCActivation,
   rollbackPhaseCActivation,
-} from "./phase_c_activation.js?v=20260501-phase-c-activation";
+} from "./phase_c_activation.js?v=20260501-phase-d-visuals";
 
 const APP_BUILD_ID = "20260410-nav-hotfix";
 console.info("[DGM] app build", APP_BUILD_ID);
@@ -139,6 +139,7 @@ async function reconcilePhaseCActivation() {
   if (phaseCFlagsAreActive) {
     await applyPhaseCActivation(map, phaseCManifest, phaseCFlags, logDgmTelemetry, phaseCActivationState, {
       buildId: APP_BUILD_ID,
+      skipCameraPreset: isPhaseCCameraPresetUnsafe(),
     });
     phaseCFlagsWereActive = true;
     return;
@@ -172,6 +173,11 @@ function reconcilePhaseCAfterFlagChange(flagName) {
   });
 }
 
+function isPhaseCCameraPresetUnsafe() {
+  const followingCurrentLocation = Boolean(lastCurrentLocation && locationRuntime?.getIsFollowingCurrentLocation?.());
+  return followingCurrentLocation || Boolean(routingRuntime?.isNavigationFollowCameraActive?.());
+}
+
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
 const SHADOW_LEARNED_MODEL = Boolean(window.DGM_SHADOW_PREDICTION_MODEL);
 const MAPBOX_GEOCODING_API_URL = "https://api.mapbox.com/geocoding/v5/mapbox.places";
@@ -195,6 +201,8 @@ const HEADING_RENDER_LOOP_MIN_DELTA_DEGREES = 0.12;
 const HEADING_RENDER_LOOP_MIN_LOCATION_DELTA_METERS = 0.25;
 const HEADING_RENDER_LOOP_MIN_SPEED_DELTA_MPS = 0.05;
 const HEADING_CONE_RENDER_SCALE_BIAS = 1.15;
+const HEADING_CONE_MIN_LENGTH_METERS = 10;
+const HEADING_CONE_MAX_LENGTH_METERS = 95;
 const MAP_MODE_DRAWER_OPEN_SWIPE_MIN_PX = 22;
 const MAP_MODE_DRAWER_CLOSE_SWIPE_MIN_PX = 18;
 const MAP_MODE_DRAWER_SWIPE_VERTICAL_TOLERANCE_PX = 42;
@@ -1388,9 +1396,8 @@ function syncSatelliteLayerVisibility(mode = currentBaseStyle) {
 
 function getShouldShowTraffic(mode = currentBaseStyle) {
   const normalizedMode = normalizeMapMode(mode);
-  return normalizedMode === BASE_STYLE_HYBRID
-    || normalizedMode === BASE_STYLE_SATELLITE
-    || (normalizedMode === BASE_STYLE_STANDARD && currentStandardTrafficEnabled);
+  return [BASE_STYLE_STANDARD, BASE_STYLE_SATELLITE, BASE_STYLE_HYBRID].includes(normalizedMode)
+    && currentStandardTrafficEnabled;
 }
 
 function findTrafficLayerIds() {
@@ -2734,11 +2741,14 @@ function getCachedHeadingConeLengthMeters(latitude) {
   if (zoom !== lastHeadingConeZoom || latitude !== lastHeadingConeLatitude) {
     lastHeadingConeZoom = zoom;
     lastHeadingConeLatitude = latitude;
-    lastHeadingConeLengthMeters = getHeadingConeLengthMeters(
+    const rawLengthMeters = getHeadingConeLengthMeters(
       latitude,
       zoom,
       HEADING_CONE_LENGTH_PIXELS * HEADING_CONE_RENDER_SCALE_BIAS
     );
+    lastHeadingConeLengthMeters = typeof rawLengthMeters === "number" && Number.isFinite(rawLengthMeters)
+      ? Math.min(Math.max(rawLengthMeters, HEADING_CONE_MIN_LENGTH_METERS), HEADING_CONE_MAX_LENGTH_METERS)
+      : rawLengthMeters;
   }
   return lastHeadingConeLengthMeters;
 }
@@ -4440,7 +4450,7 @@ headingRuntime = createHeadingRuntime({
   headingSensorMaxWebkitCompassAccuracyDegrees: HEADING_SENSOR_MAX_WEBKIT_COMPASS_ACCURACY_DEGREES,
   headingSensorStaleAfterMs: HEADING_SENSOR_STALE_AFTER_MS,
   headingSensorSmoothingTimeMs: HEADING_SENSOR_SMOOTHING_TIME_MS,
-  headingSensorSmoothingMinBlend: HEADING_SENSOR_SMOOTHING_MIN_BLEND,
+  headingSensorSmoothingMinBlend: Math.max(HEADING_SENSOR_SMOOTHING_MIN_BLEND, 0.56),
   headingGpsFallbackSmoothingTimeMs: HEADING_GPS_FALLBACK_SMOOTHING_TIME_MS,
   headingFilterSmoothingFactor: HEADING_FILTER_SMOOTHING_FACTOR,
   headingFilterDeadZoneDegrees: HEADING_FILTER_DEAD_ZONE_DEGREES,

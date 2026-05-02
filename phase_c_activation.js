@@ -16,6 +16,9 @@ const PHASE_C_ACTIVATION_EVENT_BY_FEATURE = Object.freeze({
   buildings3d: "map.phase_c_3d_buildings_enabled",
 });
 
+const PHASE_C_LIGHTING_ENABLED_EVENT = "map.phase_c_lighting_enabled";
+const PHASE_C_LIGHTING_UNSUPPORTED_EVENT = "map.phase_c_lighting_unsupported";
+
 const PHASE_C_ERROR_REASONS_BY_FEATURE = Object.freeze({
   terrain: ["terrain_invalid", "terrain_api_error"],
   globe: ["projection_invalid", "projection_api_error"],
@@ -37,6 +40,10 @@ function createActivationState() {
   return {
     aggregateActive: false,
     cameraActive: false,
+    lightingActive: false,
+    lightingUnsupportedWarningActive: false,
+    previousLight: null,
+    previousLightCaptured: false,
     addedTerrainSource: false,
     errorReasons: new Set(),
     featureActive: {
@@ -150,6 +157,7 @@ function hasAnyPhaseCFlag(flags) {
 
 function updateAggregateState(activationState) {
   activationState.aggregateActive = activationState.cameraActive
+    || activationState.lightingActive
     || PHASE_C_FEATURE_ORDER.some((featureName) => activationState.featureActive[featureName]);
 }
 
@@ -249,6 +257,8 @@ function buildPhaseCTerrainSource(manifestTerrain) {
 // Builds a Mapbox fill-extrusion layer while preserving height fallbacks.
 function buildPhaseCBuildingsLayer(manifestBuildings3d) {
   validateBuildingsManifest(manifestBuildings3d);
+  const heightExpression = ["to-number", ["coalesce", ["get", "height"], ["get", "building:height"], 0]];
+  const baseExpression = ["to-number", ["coalesce", ["get", "min_height"], ["get", "building:min_height"], 0]];
   return {
     id: manifestBuildings3d.layerId,
     type: "fill-extrusion",
@@ -257,10 +267,66 @@ function buildPhaseCBuildingsLayer(manifestBuildings3d) {
     minzoom: manifestBuildings3d.minZoom,
     paint: {
       "fill-extrusion-color": manifestBuildings3d.fillColor,
-      "fill-extrusion-opacity": manifestBuildings3d.fillOpacity,
-      "fill-extrusion-height": ["to-number", ["coalesce", ["get", "height"], ["get", "building:height"], 0]],
-      "fill-extrusion-base": ["to-number", ["coalesce", ["get", "min_height"], ["get", "building:min_height"], 0]],
+      "fill-extrusion-opacity": [
+        "interpolate",
+        ["linear"],
+        ["zoom"],
+        manifestBuildings3d.minZoom,
+        0,
+        manifestBuildings3d.minZoom + 1,
+        manifestBuildings3d.fillOpacity,
+      ],
+      "fill-extrusion-height": [
+        "interpolate",
+        ["linear"],
+        ["zoom"],
+        manifestBuildings3d.minZoom,
+        0,
+        manifestBuildings3d.minZoom + 1,
+        heightExpression,
+      ],
+      "fill-extrusion-base": baseExpression,
+      "fill-extrusion-vertical-gradient": true,
     },
+  };
+}
+
+function cloneJsonValue(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return null;
+  }
+}
+
+function normalizeLightPosition(position) {
+  if (!Array.isArray(position) || position.length !== 3 || !position.every(isFiniteNumber)) {
+    return [1.15, 210, 35];
+  }
+
+  return [
+    clamp(position[0], 0, 10),
+    clamp(position[1], 0, 360),
+    clamp(position[2], 0, 180),
+  ];
+}
+
+function buildPhaseCLightOptions(manifest) {
+  const manifestLight = isObject(manifest?.light) ? manifest.light : {};
+  const anchor = manifestLight.anchor === "map" || manifestLight.anchor === "viewport"
+    ? manifestLight.anchor
+    : "map";
+
+  // Mapbox GL JS v2 exposes one style light; these defaults keep extrusion depth subtle.
+  return {
+    anchor,
+    color: isNonEmptyString(manifestLight.color) ? manifestLight.color : "#fff4dc",
+    intensity: isFiniteNumber(manifestLight.intensity) ? clamp(manifestLight.intensity, 0, 1) : 0.55,
+    position: normalizeLightPosition(manifestLight.position),
   };
 }
 
@@ -366,6 +432,26 @@ function getCurrentFog(map) {
   }
 }
 
+function getCurrentLight(map) {
+  if (map && typeof map.getLight === "function") {
+    try {
+      return cloneJsonValue(map.getLight());
+    } catch {
+      return null;
+    }
+  }
+
+  if (map && typeof map.getStyle === "function") {
+    try {
+      return cloneJsonValue(map.getStyle()?.light || null);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
 function fogMatches(map, adaptedFog) {
   const currentFog = getCurrentFog(map);
   if (!currentFog) {
@@ -373,6 +459,11 @@ function fogMatches(map, adaptedFog) {
   }
 
   return JSON.stringify(currentFog) === JSON.stringify(adaptedFog);
+}
+
+function lightMatches(map, lightSpec) {
+  const currentLight = getCurrentLight(map);
+  return Boolean(currentLight) && JSON.stringify(currentLight) === JSON.stringify(lightSpec);
 }
 
 function supportsSkyInsertion(map, manifestSky) {
@@ -442,7 +533,11 @@ function activateSky(map, manifest) {
   }
 
   if (!layerExists(map, manifestSky.layerId, "sky_api_error")) {
-    callMapApi(map, "addLayer", [skyLayer], "sky_api_error");
+    try {
+      map.addLayer(skyLayer);
+    } catch {
+      return false;
+    }
   }
 
   return true;
@@ -461,10 +556,99 @@ function activateBuildings(map, manifest) {
   }
 }
 
+function emitLightingUnsupported(activationState, telemetryEmitter, buildId) {
+  if (activationState.lightingUnsupportedWarningActive) {
+    return;
+  }
+
+  activationState.lightingUnsupportedWarningActive = true;
+  emitTelemetry(telemetryEmitter, PHASE_C_LIGHTING_UNSUPPORTED_EVENT, {
+    buildId,
+    reason: "setLight_unavailable",
+    activated: false,
+  });
+}
+
+function activateLighting(map, manifest, activationState, telemetryEmitter, buildId) {
+  const lightSpec = buildPhaseCLightOptions(manifest);
+  const wasActive = activationState.lightingActive;
+
+  if (!map || typeof map.setLight !== "function") {
+    emitLightingUnsupported(activationState, telemetryEmitter, buildId);
+    activationState.lightingActive = true;
+    updateAggregateState(activationState);
+    if (!wasActive) {
+      emitTelemetry(telemetryEmitter, PHASE_C_LIGHTING_ENABLED_EVENT, {
+        buildId,
+        activated: true,
+      });
+    }
+    return;
+  }
+
+  if (!activationState.previousLightCaptured) {
+    activationState.previousLight = getCurrentLight(map);
+    activationState.previousLightCaptured = true;
+  }
+
+  if (!lightMatches(map, lightSpec)) {
+    callMapApi(map, "setLight", [lightSpec], "lighting_api_error");
+  }
+
+  activationState.lightingActive = true;
+  activationState.lightingUnsupportedWarningActive = false;
+  activationState.errorReasons.delete("lighting_api_error");
+  updateAggregateState(activationState);
+  if (!wasActive) {
+    emitTelemetry(telemetryEmitter, PHASE_C_LIGHTING_ENABLED_EVENT, {
+      buildId,
+      activated: true,
+    });
+  }
+}
+
+async function applyPhaseCLighting(map, manifest, telemetryEmitter, state = {}, options = {}) {
+  const buildId = options?.buildId ?? null;
+  let activationState;
+
+  try {
+    activationState = getActivationState(map, state);
+    activateLighting(map, manifest, activationState, telemetryEmitter, buildId);
+  } catch (error) {
+    const fallbackState = activationState || createActivationState();
+    emitActivationError(fallbackState, telemetryEmitter, buildId, getErrorReason(error));
+  }
+}
+
 function applyCameraPreset(map, manifest) {
   const currentZoom = callMapApi(map, "getZoom", [], "camera_api_error");
   const cameraOptions = derivePhaseCCameraOptions(manifest?.camera, currentZoom);
   callMapApi(map, "easeTo", [cameraOptions], "camera_api_error");
+}
+
+async function rollbackPhaseCLighting(map, state = {}, options = {}) {
+  let activationState;
+
+  try {
+    activationState = getActivationState(map, state);
+  } catch {
+    return;
+  }
+
+  if (activationState.previousLightCaptured && map && typeof map.setLight === "function") {
+    try {
+      map.setLight(activationState.previousLight || options.clearLightSpec || {});
+    } catch {
+      // Lighting rollback should not block emergency visual rollback for other features.
+    }
+  }
+
+  activationState.lightingActive = false;
+  activationState.lightingUnsupportedWarningActive = false;
+  activationState.previousLight = null;
+  activationState.previousLightCaptured = false;
+  activationState.errorReasons.delete("lighting_api_error");
+  updateAggregateState(activationState);
 }
 
 function removeTerrain(map, manifest, activationState, reason) {
@@ -562,6 +746,8 @@ async function applyPhaseCActivation(map, manifest, flags, telemetryEmitter, sta
     return;
   }
 
+  const wasAggregateActive = activationState.aggregateActive;
+
   for (const featureName of PHASE_C_FEATURE_ORDER) {
     const flagName = PHASE_C_FLAG_BY_FEATURE[featureName];
     if (phaseCFlags[flagName] || !activationState.featureActive[featureName]) {
@@ -606,7 +792,9 @@ async function applyPhaseCActivation(map, manifest, flags, telemetryEmitter, sta
     }
   }
 
-  if (!activationState.cameraActive) {
+  await applyPhaseCLighting(map, manifest, telemetryEmitter, state, { buildId });
+
+  if (!wasAggregateActive && activationState.aggregateActive && !activationState.cameraActive && options?.skipCameraPreset !== true) {
     try {
       applyCameraPreset(map, manifest);
       activationState.cameraActive = true;
@@ -644,6 +832,7 @@ async function rollbackPhaseCActivation(map, manifest, telemetryEmitter, state =
     removeFog(map, "fog_api_error");
     removeSky(map, manifest, "sky_api_error");
     removeBuildings(map, manifest, "buildings3d_api_error");
+    await rollbackPhaseCLighting(map, state);
   } catch (error) {
     emitActivationError(activationState, telemetryEmitter, buildId, getErrorReason(error));
     return;
@@ -665,8 +854,11 @@ async function rollbackPhaseCActivation(map, manifest, telemetryEmitter, state =
 export {
   adaptPhaseCFog,
   applyPhaseCActivation,
+  applyPhaseCLighting,
   buildPhaseCBuildingsLayer,
+  buildPhaseCLightOptions,
   buildPhaseCTerrainSource,
   derivePhaseCCameraOptions,
   rollbackPhaseCActivation,
+  rollbackPhaseCLighting,
 };
