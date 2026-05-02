@@ -20,6 +20,7 @@ const PHASE_C_LIGHTING_ENABLED_EVENT = "map.phase_c_lighting_enabled";
 const PHASE_C_LIGHTING_UNSUPPORTED_EVENT = "map.phase_c_lighting_unsupported";
 const PHASE_D_TUNING_QUERY_PARAM = "phaseD";
 const PHASE_D_TUNING_STORAGE_KEY = "DGM_PHASE_D_TUNING";
+const PHASE_D_TERRAIN_EXAGGERATION = 0.85;
 
 const PHASE_C_ERROR_REASONS_BY_FEATURE = Object.freeze({
   terrain: ["terrain_invalid", "terrain_api_error"],
@@ -204,6 +205,14 @@ function isPhaseDTuningEnabled(state = {}, windowLike = getWindowLike()) {
 
 function shouldExposePhaseDDebug(windowLike = getWindowLike()) {
   return isPhaseDTuningRequested(windowLike) || windowLike?.location?.hostname === "localhost";
+}
+
+function getPhaseDTuningState(activationState) {
+  if (!isObject(activationState?.phaseDTuning)) {
+    activationState.phaseDTuning = {};
+  }
+
+  return activationState.phaseDTuning;
 }
 
 function updateAggregateState(activationState) {
@@ -458,6 +467,13 @@ function terrainMatches(map, manifestTerrain) {
     && terrain.exaggeration === manifestTerrain.exaggeration);
 }
 
+function terrainMatchesExaggeration(map, sourceId, exaggeration) {
+  const terrain = getCurrentTerrain(map);
+  return Boolean(terrain
+    && terrain.source === sourceId
+    && terrain.exaggeration === exaggeration);
+}
+
 function getCurrentProjectionName(map) {
   if (!map || typeof map.getProjection !== "function") {
     return null;
@@ -658,6 +674,55 @@ function activateLighting(map, manifest, activationState, telemetryEmitter, buil
   }
 }
 
+function rollbackPhaseDTerrainTuning(map, manifest, activationState) {
+  const tuningState = getPhaseDTuningState(activationState);
+  if (!tuningState.terrainActive) {
+    return;
+  }
+
+  const manifestTerrain = manifest?.terrain;
+  validateTerrainManifest(manifestTerrain);
+  if (sourceExists(map, manifestTerrain.sourceId, "terrain_api_error")
+    && !terrainMatches(map, manifestTerrain)) {
+    callMapApi(map, "setTerrain", [{
+      source: manifestTerrain.sourceId,
+      exaggeration: manifestTerrain.exaggeration,
+    }], "terrain_api_error");
+  }
+  tuningState.terrainActive = false;
+}
+
+function applyPhaseDTerrainTuning(map, manifest, activationState) {
+  const tuningState = getPhaseDTuningState(activationState);
+  if (!isPhaseDTuningEnabled(activationState)) {
+    rollbackPhaseDTerrainTuning(map, manifest, activationState);
+    return;
+  }
+
+  if (activationState.featureActive.terrain !== true) {
+    tuningState.terrainActive = false;
+    return;
+  }
+
+  const manifestTerrain = manifest?.terrain;
+  validateTerrainManifest(manifestTerrain);
+  if (!sourceExists(map, manifestTerrain.sourceId, "terrain_api_error")) {
+    return;
+  }
+
+  if (!terrainMatchesExaggeration(map, manifestTerrain.sourceId, PHASE_D_TERRAIN_EXAGGERATION)) {
+    callMapApi(map, "setTerrain", [{
+      source: manifestTerrain.sourceId,
+      exaggeration: PHASE_D_TERRAIN_EXAGGERATION,
+    }], "terrain_api_error");
+  }
+  tuningState.terrainActive = true;
+}
+
+function applyPhaseDTuning(map, manifest, activationState) {
+  applyPhaseDTerrainTuning(map, manifest, activationState);
+}
+
 async function applyPhaseCLighting(map, manifest, telemetryEmitter, state = {}, options = {}) {
   const buildId = options?.buildId ?? null;
   let activationState;
@@ -710,6 +775,7 @@ function removeTerrain(map, manifest, activationState, reason) {
     callMapApi(map, "removeSource", [manifestTerrain.sourceId], reason);
   }
   activationState.addedTerrainSource = false;
+  getPhaseDTuningState(activationState).terrainActive = false;
 }
 
 function removeProjection(map, manifest, reason) {
@@ -844,6 +910,13 @@ async function applyPhaseCActivation(map, manifest, flags, telemetryEmitter, sta
   }
 
   await applyPhaseCLighting(map, manifest, telemetryEmitter, state, { buildId });
+
+  try {
+    applyPhaseDTuning(map, manifest, activationState);
+  } catch (error) {
+    emitActivationError(activationState, telemetryEmitter, buildId, getErrorReason(error));
+    return;
+  }
 
   if (!wasAggregateActive && activationState.aggregateActive && !activationState.cameraActive && options?.skipCameraPreset !== true) {
     try {
