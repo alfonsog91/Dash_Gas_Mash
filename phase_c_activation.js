@@ -26,6 +26,25 @@ const PHASE_D_LIGHT_SPEC = Object.freeze({
   intensity: 0.7,
 });
 const PHASE_D_BUILDING_AMBIENT_INTENSITY = 0.6;
+const PHASE_D_FOG_SPEC = Object.freeze({
+  range: Object.freeze([0.5, 10]),
+  color: "#f6fbff",
+  density: 0.002,
+});
+const PHASE_D_SKY_PAINT_PROPERTIES = Object.freeze([
+  ["sky-type", "gradient"],
+  ["sky-gradient", Object.freeze([
+    "interpolate",
+    Object.freeze(["linear"]),
+    Object.freeze(["sky-radial-progress"]),
+    0,
+    "#87CEEB",
+    1,
+    "#E6F2FF",
+  ])],
+  ["sky-gradient-center", Object.freeze([0, 0])],
+  ["sky-gradient-radius", 90],
+]);
 
 const PHASE_C_ERROR_REASONS_BY_FEATURE = Object.freeze({
   terrain: ["terrain_invalid", "terrain_api_error"],
@@ -791,6 +810,7 @@ function applyPhaseDTerrainTuning(map, manifest, activationState) {
 function applyPhaseDTuning(map, manifest, activationState) {
   applyPhaseDTerrainTuning(map, manifest, activationState);
   applyPhaseDLightingTuning(map, manifest, activationState);
+  applyPhaseDSkyFogTuning(map, manifest, activationState);
 }
 
 function rollbackPhaseDLightingTuning(map, manifest, activationState) {
@@ -838,6 +858,78 @@ function applyPhaseDLightingTuning(map, manifest, activationState) {
       PHASE_D_BUILDING_AMBIENT_INTENSITY
     );
   }
+}
+
+function buildPhaseDFogSpec({ includeDensity = true } = {}) {
+  const fogSpec = {
+    range: [...PHASE_D_FOG_SPEC.range],
+    color: PHASE_D_FOG_SPEC.color,
+  };
+
+  if (includeDensity) {
+    fogSpec.density = PHASE_D_FOG_SPEC.density;
+  }
+
+  return fogSpec;
+}
+
+function rollbackPhaseDSkyFogTuning(map, manifest, activationState) {
+  const tuningState = getPhaseDTuningState(activationState);
+  if (tuningState.fogActive && typeof map?.setFog === "function") {
+    try {
+      map.setFog(tuningState.previousFog || adaptPhaseCFog(manifest?.fog));
+    } catch {
+      // Phase C rollback owns the final fog reset path.
+    }
+  }
+  tuningState.fogActive = false;
+  tuningState.previousFog = null;
+
+  const skyLayerId = manifest?.sky?.layerId;
+  if (isNonEmptyString(skyLayerId)) {
+    for (const [propertyName] of PHASE_D_SKY_PAINT_PROPERTIES) {
+      restorePhaseDPaintProperty(map, activationState, skyLayerId, propertyName);
+    }
+  }
+}
+
+function applyPhaseDFogTuning(map, manifest, activationState) {
+  if (activationState.featureActive.fog !== true || typeof map?.setFog !== "function") {
+    return;
+  }
+
+  const tuningState = getPhaseDTuningState(activationState);
+  if (!tuningState.fogActive) {
+    tuningState.previousFog = getCurrentFog(map);
+  }
+
+  try {
+    map.setFog(buildPhaseDFogSpec({ includeDensity: true }));
+  } catch {
+    callMapApi(map, "setFog", [buildPhaseDFogSpec({ includeDensity: false })], "fog_api_error");
+  }
+  tuningState.fogActive = true;
+}
+
+function applyPhaseDSkyTuning(map, manifest, activationState) {
+  const skyLayerId = manifest?.sky?.layerId;
+  if (activationState.featureActive.sky !== true || !isNonEmptyString(skyLayerId)) {
+    return;
+  }
+
+  for (const [propertyName, propertyValue] of PHASE_D_SKY_PAINT_PROPERTIES) {
+    setPhaseDPaintProperty(map, activationState, skyLayerId, propertyName, cloneJsonValue(propertyValue));
+  }
+}
+
+function applyPhaseDSkyFogTuning(map, manifest, activationState) {
+  if (!isPhaseDTuningEnabled(activationState)) {
+    rollbackPhaseDSkyFogTuning(map, manifest, activationState);
+    return;
+  }
+
+  applyPhaseDFogTuning(map, manifest, activationState);
+  applyPhaseDSkyTuning(map, manifest, activationState);
 }
 
 async function applyPhaseCLighting(map, manifest, telemetryEmitter, state = {}, options = {}) {
