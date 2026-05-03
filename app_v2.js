@@ -82,6 +82,8 @@ import { evaluateVisualPerformanceHeuristics } from "./performance_heuristics.js
 import { getPhaseCManifest } from "./phase_c_manifest.js?v=20260501-phase-c-manifest";
 import {
   applyPhaseCActivation,
+  applyPhaseDProgrammaticCameraSmoothing,
+  getPhaseDCameraTuningParameters as getPhaseDCameraTuningParametersForState,
   isPhaseDTuningEnabled as isPhaseDTuningEnabledForState,
   rollbackPhaseCActivation,
   shouldExposePhaseDDebug,
@@ -130,6 +132,22 @@ function isPhaseDTuningEnabled() {
   return isPhaseDTuningEnabledForState(phaseCActivationState);
 }
 
+function getPhaseDCameraTuningParameters() {
+  return getPhaseDCameraTuningParametersForState(phaseCActivationState);
+}
+
+function getProgrammaticCameraOptions(cameraOptions = {}) {
+  return applyPhaseDProgrammaticCameraSmoothing(cameraOptions, getPhaseDCameraTuningParameters());
+}
+
+function getProgrammaticCameraTuningDebug() {
+  return getPhaseDCameraTuningParameters() || {
+    pitchMin: null,
+    pitchMax: null,
+    programmaticTransitionEasing: null,
+  };
+}
+
 function debugDumpState() {
   const style = typeof map?.getStyle === "function" ? map.getStyle() : null;
   const layers = Array.isArray(style?.layers)
@@ -153,6 +171,7 @@ function debugDumpState() {
       pitch: typeof map?.getPitch === "function" ? map.getPitch() : null,
       zoom: typeof map?.getZoom === "function" ? map.getZoom() : null,
       bearing: typeof map?.getBearing === "function" ? map.getBearing() : null,
+      tuning: getProgrammaticCameraTuningDebug(),
     },
   };
 }
@@ -162,10 +181,20 @@ function installPhaseDDebugSurface() {
     return;
   }
 
-  window.__DGM_DEBUG = Object.assign(window.__DGM_DEBUG || {}, {
+  const debugSurface = Object.assign(window.__DGM_DEBUG || {}, {
     isPhaseDTuningEnabled,
     debugDumpState,
+    getPhaseDCameraTuningParameters: getProgrammaticCameraTuningDebug,
   });
+  Object.defineProperties(debugSurface, {
+    pitchMin: { configurable: true, get: () => getProgrammaticCameraTuningDebug().pitchMin },
+    pitchMax: { configurable: true, get: () => getProgrammaticCameraTuningDebug().pitchMax },
+    programmaticTransitionEasing: {
+      configurable: true,
+      get: () => getProgrammaticCameraTuningDebug().programmaticTransitionEasing,
+    },
+  });
+  window.__DGM_DEBUG = debugSurface;
 }
 
 installPhaseDDebugSurface();
@@ -3958,12 +3987,12 @@ function focusSearchMatch(match) {
 
   clearActiveSearchMarker();
 
-  map.flyTo({
+  map.flyTo(getProgrammaticCameraOptions({
     center: [lng, lat],
     zoom: Math.max(map.getZoom(), 15),
     duration: 900,
     essential: true,
-  });
+  }));
 
   const marker = new mapboxgl.Marker({ color: "#ffbf45" })
     .setLngLat([lng, lat])
@@ -4470,6 +4499,7 @@ routingRuntime = createRoutingRuntime({
   stagingSpotMaxDistanceMeters: STAGING_SPOT_MAX_DISTANCE_METERS,
   microCorridorMinDistanceMeters: MICRO_CORRIDOR_MIN_DISTANCE_METERS,
   microCorridorMaxDistanceMeters: MICRO_CORRIDOR_MAX_DISTANCE_METERS,
+  getProgrammaticCameraOptions,
 });
 
 function updateCensusUi() {
@@ -4640,6 +4670,7 @@ locationRuntime = createLocationRuntime({
   locationZoomStep: LOCATION_ZOOM_STEP,
   autoFollowLocationMinCenterOffsetMeters: AUTO_FOLLOW_LOCATION_MIN_CENTER_OFFSET_METERS,
   autoFollowLocationPanDurationMs: AUTO_FOLLOW_LOCATION_PAN_DURATION_MS,
+  getProgrammaticCameraOptions,
 });
 
 function setCurrentLocationFollowEnabled(isEnabled) {

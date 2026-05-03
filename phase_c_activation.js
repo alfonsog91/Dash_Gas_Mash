@@ -31,6 +31,11 @@ const PHASE_D_FOG_SPEC = Object.freeze({
   color: "#f6fbff",
   density: 0.002,
 });
+const PHASE_D_CAMERA_TUNING_PARAMETERS = Object.freeze({
+  pitchMin: 35,
+  pitchMax: 62,
+  programmaticTransitionEasing: 0.22,
+});
 const PHASE_D_SKY_PAINT_PROPERTIES = Object.freeze([
   ["sky-type", "gradient"],
   ["sky-gradient", Object.freeze([
@@ -246,6 +251,40 @@ function isLocalhostDebugHost(windowLike = getWindowLike()) {
 
 function shouldExposePhaseDDebug(windowLike = getWindowLike()) {
   return isPhaseDTuningRequested(windowLike) || isLocalhostDebugHost(windowLike);
+}
+
+function getPhaseDCameraTuningParameters(state = {}, windowLike = getWindowLike()) {
+  if (!isPhaseDTuningEnabled(state, windowLike)) {
+    return null;
+  }
+
+  return { ...PHASE_D_CAMERA_TUNING_PARAMETERS };
+}
+
+function buildExponentialProgrammaticEasing(programmaticTransitionEasing) {
+  const strength = 1 + clamp(Number(programmaticTransitionEasing) || 0, 0.01, 1) * 8;
+  const denominator = 1 - Math.exp(-strength);
+  return (progress) => {
+    const t = clamp(Number(progress) || 0, 0, 1);
+    return denominator > 0 ? (1 - Math.exp(-strength * t)) / denominator : t;
+  };
+}
+
+function applyPhaseDProgrammaticCameraSmoothing(cameraOptions = {}, tuningParameters = null) {
+  if (!isObject(cameraOptions) || !isObject(tuningParameters)) {
+    return cameraOptions;
+  }
+
+  const nextOptions = {
+    ...cameraOptions,
+    easing: buildExponentialProgrammaticEasing(tuningParameters.programmaticTransitionEasing),
+  };
+
+  if (isFiniteNumber(nextOptions.pitch)) {
+    nextOptions.pitch = clamp(nextOptions.pitch, tuningParameters.pitchMin, tuningParameters.pitchMax);
+  }
+
+  return nextOptions;
 }
 
 function getPhaseDTuningState(activationState) {
@@ -1078,10 +1117,13 @@ async function applyPhaseCLighting(map, manifest, telemetryEmitter, state = {}, 
   }
 }
 
-function applyCameraPreset(map, manifest) {
+function applyCameraPreset(map, manifest, activationState = null) {
   const currentZoom = callMapApi(map, "getZoom", [], "camera_api_error");
   const cameraOptions = derivePhaseCCameraOptions(manifest?.camera, currentZoom);
-  callMapApi(map, "easeTo", [cameraOptions], "camera_api_error");
+  callMapApi(map, "easeTo", [applyPhaseDProgrammaticCameraSmoothing(
+    cameraOptions,
+    getPhaseDCameraTuningParameters(activationState)
+  )], "camera_api_error");
 }
 
 async function rollbackPhaseCLighting(map, state = {}, options = {}) {
@@ -1262,7 +1304,7 @@ async function applyPhaseCActivation(map, manifest, flags, telemetryEmitter, sta
 
   if (!wasAggregateActive && activationState.aggregateActive && !activationState.cameraActive && options?.skipCameraPreset !== true) {
     try {
-      applyCameraPreset(map, manifest);
+      applyCameraPreset(map, manifest, activationState);
       activationState.cameraActive = true;
       updateAggregateState(activationState);
       emitTelemetry(telemetryEmitter, "map.phase_c_camera_preset_applied", {
@@ -1320,12 +1362,14 @@ async function rollbackPhaseCActivation(map, manifest, telemetryEmitter, state =
 
 export {
   adaptPhaseCFog,
+  applyPhaseDProgrammaticCameraSmoothing,
   applyPhaseCActivation,
   applyPhaseCLighting,
   buildPhaseCBuildingsLayer,
   buildPhaseCLightOptions,
   buildPhaseCTerrainSource,
   derivePhaseCCameraOptions,
+  getPhaseDCameraTuningParameters,
   isPhaseCAggregateActive,
   isPhaseDTuningEnabled,
   shouldExposePhaseDDebug,

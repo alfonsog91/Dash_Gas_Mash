@@ -43,6 +43,7 @@ function createLocationRuntime({
   locationZoomStep,
   autoFollowLocationMinCenterOffsetMeters,
   autoFollowLocationPanDurationMs,
+  getProgrammaticCameraOptions,
 } = {}) {
   let isLocating = false;
   let hasRequestedInitialLocation = false;
@@ -78,6 +79,12 @@ function createLocationRuntime({
       : "Recenter and follow my location";
   }
 
+  function getCameraOptions(cameraOptions = {}) {
+    return typeof getProgrammaticCameraOptions === "function"
+      ? getProgrammaticCameraOptions(cameraOptions)
+      : cameraOptions;
+  }
+
   function setCurrentLocationFollowEnabled(isEnabled) {
     isFollowingCurrentLocation = Boolean(isEnabled);
   }
@@ -110,10 +117,10 @@ function createLocationRuntime({
       return;
     }
 
-    map.easeTo({
+    map.easeTo(getCameraOptions({
       center: [resolvedLatLng.lng, resolvedLatLng.lat],
       duration: force ? locationFlyDurationMs : autoFollowLocationPanDurationMs,
-    });
+    }));
   }
 
   function setCurrentLocationState(latlng, accuracyMeters, { openPopup = true } = {}) {
@@ -179,7 +186,7 @@ function createLocationRuntime({
       animateZoomToTarget(targetZoom, onComplete);
     });
 
-    map.easeTo({ zoom: nextZoom, duration: 400 });
+    map.easeTo(getCameraOptions({ zoom: nextZoom, duration: 400 }));
   }
 
   function getCurrentPosition(options = {}) {
@@ -254,12 +261,12 @@ function createLocationRuntime({
       const targetZoom = clampMapZoom(locationTargetZoom);
       const animateLocate = shouldAnimateLocate(latlng);
       if (animateLocate) {
-        map.flyTo({ center: [latlng.lng, latlng.lat], zoom: targetZoom, duration: locationFlyDurationMs });
+        map.flyTo(getCameraOptions({ center: [latlng.lng, latlng.lat], zoom: targetZoom, duration: locationFlyDurationMs }));
       } else {
         map.once("moveend", () => {
           animateZoomToTarget(targetZoom, () => {});
         });
-        map.easeTo({ center: [latlng.lng, latlng.lat], duration: locationPanDurationSeconds * 1000 });
+        map.easeTo(getCameraOptions({ center: [latlng.lng, latlng.lat], duration: locationPanDurationSeconds * 1000 }));
       }
       return;
     }
@@ -285,12 +292,12 @@ function createLocationRuntime({
       syncHeadingFromLocation?.(latlng, position.coords.heading, position.coords.speed, { previousLocation });
 
       if (animateLocate) {
-        map.flyTo({ center: lngLatToArray(latlng), zoom: targetZoom, duration: locationFlyDurationMs });
+        map.flyTo(getCameraOptions({ center: lngLatToArray(latlng), zoom: targetZoom, duration: locationFlyDurationMs }));
       } else {
         map.once("moveend", () => {
           animateZoomToTarget(targetZoom, () => {});
         });
-        map.easeTo({ center: lngLatToArray(latlng), duration: locationPanDurationSeconds * 1000 });
+        map.easeTo(getCameraOptions({ center: lngLatToArray(latlng), duration: locationPanDurationSeconds * 1000 }));
       }
     } catch (error) {
       notifyLocationError?.(describeGeolocationError(error));
