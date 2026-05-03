@@ -1,3 +1,5 @@
+import { PHASE_E_PERFORMANCE_GUARD_EFFECTS } from "./performance/monitor.js?v=20260502-phase-e-perf-guard";
+
 const PHASE_C_FEATURE_ORDER = Object.freeze(["terrain", "globe", "fog", "sky", "buildings3d"]);
 
 const PHASE_C_FLAG_BY_FEATURE = Object.freeze({
@@ -299,6 +301,27 @@ function getPhaseDTuningState(activationState) {
   }
 
   return activationState.phaseDTuning;
+}
+
+function getPhaseEPerformanceGuardDisabledEffects(performanceGuard = null) {
+  if (!isObject(performanceGuard) || performanceGuard.active !== true || !Array.isArray(performanceGuard.disabledEffects)) {
+    return [];
+  }
+
+  return Array.from(new Set(performanceGuard.disabledEffects.map((effectName) => String(effectName || "")).filter(Boolean)));
+}
+
+function isPhaseEPerformanceGuardEffectDisabled(performanceGuard, effectName) {
+  return getPhaseEPerformanceGuardDisabledEffects(performanceGuard).includes(effectName);
+}
+
+function rememberPhaseEPerformanceGuard(activationState, performanceGuard = null) {
+  const tuningState = getPhaseDTuningState(activationState);
+  tuningState.performanceGuard = {
+    active: isObject(performanceGuard) && performanceGuard.active === true,
+    reason: isNonEmptyString(performanceGuard?.reason) ? performanceGuard.reason : null,
+    disabledEffects: getPhaseEPerformanceGuardDisabledEffects(performanceGuard),
+  };
 }
 
 function updateAggregateState(activationState) {
@@ -937,13 +960,25 @@ function applyPhaseDTerrainTuning(map, manifest, activationState) {
   tuningState.terrainActive = true;
 }
 
-function applyPhaseDTuning(map, manifest, activationState) {
+function applyPhaseDTuning(map, manifest, activationState, options = {}) {
+  const performanceGuard = options?.performanceGuard || null;
+  rememberPhaseEPerformanceGuard(activationState, performanceGuard);
   applyPhaseDTerrainTuning(map, manifest, activationState);
   applyPhaseDLightingTuning(map, manifest, activationState);
   applyPhaseDBuildingLodTuning(map, manifest, activationState);
-  applyPhaseDSkyFogTuning(map, manifest, activationState);
-  applyPhaseDLabelTuning(map, activationState);
-  applyPhaseDColorGrading(map, activationState);
+  applyPhaseDSkyFogTuning(map, manifest, activationState, performanceGuard);
+
+  if (isPhaseEPerformanceGuardEffectDisabled(performanceGuard, PHASE_E_PERFORMANCE_GUARD_EFFECTS.LABEL_OPACITY)) {
+    rollbackPhaseDLabelTuning(map, activationState);
+  } else {
+    applyPhaseDLabelTuning(map, activationState);
+  }
+
+  if (isPhaseEPerformanceGuardEffectDisabled(performanceGuard, PHASE_E_PERFORMANCE_GUARD_EFFECTS.COLOR_GRADING)) {
+    rollbackPhaseDColorGrading(map, activationState);
+  } else {
+    applyPhaseDColorGrading(map, activationState);
+  }
 }
 
 function rollbackPhaseDLightingTuning(map, manifest, activationState) {
@@ -1140,7 +1175,7 @@ function buildPhaseDFogSpec({ includeDensity = true } = {}) {
   return fogSpec;
 }
 
-function rollbackPhaseDSkyFogTuning(map, manifest, activationState) {
+function rollbackPhaseDFogTuning(map, manifest, activationState) {
   const tuningState = getPhaseDTuningState(activationState);
   if (tuningState.fogActive && typeof map?.setFog === "function") {
     try {
@@ -1151,6 +1186,12 @@ function rollbackPhaseDSkyFogTuning(map, manifest, activationState) {
   }
   tuningState.fogActive = false;
   tuningState.previousFog = null;
+}
+
+function rollbackPhaseDSkyFogTuning(map, manifest, activationState) {
+  rollbackPhaseDFogTuning(map, manifest, activationState);
+
+  const tuningState = getPhaseDTuningState(activationState);
 
   const skyLayerId = manifest?.sky?.layerId;
   if (isNonEmptyString(skyLayerId)) {
@@ -1189,13 +1230,17 @@ function applyPhaseDSkyTuning(map, manifest, activationState) {
   }
 }
 
-function applyPhaseDSkyFogTuning(map, manifest, activationState) {
+function applyPhaseDSkyFogTuning(map, manifest, activationState, performanceGuard = null) {
   if (!isPhaseDTuningEnabled(activationState)) {
     rollbackPhaseDSkyFogTuning(map, manifest, activationState);
     return;
   }
 
-  applyPhaseDFogTuning(map, manifest, activationState);
+  if (isPhaseEPerformanceGuardEffectDisabled(performanceGuard, PHASE_E_PERFORMANCE_GUARD_EFFECTS.FOG_TUNING)) {
+    rollbackPhaseDFogTuning(map, manifest, activationState);
+  } else {
+    applyPhaseDFogTuning(map, manifest, activationState);
+  }
   applyPhaseDSkyTuning(map, manifest, activationState);
 }
 
@@ -1466,7 +1511,7 @@ async function applyPhaseCActivation(map, manifest, flags, telemetryEmitter, sta
   await applyPhaseCLighting(map, manifest, telemetryEmitter, state, { buildId });
 
   try {
-    applyPhaseDTuning(map, manifest, activationState);
+    applyPhaseDTuning(map, manifest, activationState, { performanceGuard: options?.performanceGuard || null });
   } catch (error) {
     emitActivationError(activationState, telemetryEmitter, buildId, getErrorReason(error));
     return;
@@ -1539,8 +1584,10 @@ export {
   buildPhaseCLightOptions,
   buildPhaseCTerrainSource,
   derivePhaseCCameraOptions,
+  getPhaseEPerformanceGuardDisabledEffects,
   getPhaseDCameraTuningParameters,
   isPhaseCAggregateActive,
+  isPhaseEPerformanceGuardEffectDisabled,
   isPhaseDTuningEnabled,
   shouldExposePhaseDDebug,
   rollbackPhaseCActivation,

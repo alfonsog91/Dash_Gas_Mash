@@ -80,6 +80,10 @@ import { normalizeCoord } from "./coordinates.js?v=20260501-coordinates";
 import { restoreStyleState } from "./style_state.js?v=20260501-style-state";
 import { evaluateVisualPerformanceHeuristics } from "./performance_heuristics.js?v=20260501-performance-heuristics";
 import {
+  PHASE_E_PERFORMANCE_GUARD_EFFECTS,
+  createPhaseEPerformanceMonitor,
+} from "./performance/monitor.js?v=20260502-phase-e-perf-guard";
+import {
   DEFAULT_WEIGHTS as SUPERPOSITION_DEFAULT_WEIGHTS,
   evaluateSuperpositionEngine,
 } from "./intelligence/superposition_engine.js?v=20260502-phase-e-superposition";
@@ -156,6 +160,18 @@ function getStatPingSuperpositionDebug() {
   return lastStatPingSuperposition;
 }
 
+function getPhaseEPerformanceDashboard() {
+  return phaseEPerformanceMonitor?.getDashboard?.() || null;
+}
+
+function getPhaseEPerformanceGuardSnapshot() {
+  return phaseEPerformanceMonitor?.getGuardSnapshot?.() || null;
+}
+
+function isPhaseEPerformanceEffectDisabled(effectName) {
+  return phaseEPerformanceMonitor?.isEffectDisabled?.(effectName) === true;
+}
+
 function debugDumpState() {
   const style = typeof map?.getStyle === "function" ? map.getStyle() : null;
   const layers = Array.isArray(style?.layers)
@@ -181,6 +197,7 @@ function debugDumpState() {
       bearing: typeof map?.getBearing === "function" ? map.getBearing() : null,
       tuning: getProgrammaticCameraTuningDebug(),
     },
+    performance: getPhaseEPerformanceDashboard(),
   };
 }
 
@@ -194,6 +211,7 @@ function installPhaseDDebugSurface() {
     debugDumpState,
     getPhaseDCameraTuningParameters: getProgrammaticCameraTuningDebug,
     getStatPingSuperpositionMetadata: getStatPingSuperpositionDebug,
+    getPhaseEPerformanceDashboard,
   });
   Object.defineProperties(debugSurface, {
     pitchMin: { configurable: true, get: () => getProgrammaticCameraTuningDebug().pitchMin },
@@ -225,6 +243,7 @@ async function reconcilePhaseCActivation() {
     await applyPhaseCActivation(map, phaseCManifest, phaseCFlags, logDgmTelemetry, phaseCActivationState, {
       buildId: APP_BUILD_ID,
       skipCameraPreset: isPhaseCCameraPresetUnsafe(),
+      performanceGuard: getPhaseEPerformanceGuardSnapshot(),
     });
     phaseCFlagsWereActive = true;
     syncPhaseDMotionSensorUx();
@@ -535,6 +554,19 @@ if (isTouchInteractionDevice() && map.doubleClickZoom) {
   map.doubleClickZoom.disable();
 }
 
+const phaseEPerformanceMonitor = createPhaseEPerformanceMonitor({
+  windowLike: window,
+  environment: typeof navigator !== "undefined" ? navigator : {},
+  telemetryEmitter: logDgmTelemetry,
+  shouldExposeDebug: shouldExposePhaseDDebug,
+  onFallback: () => {
+    reconcilePhaseCActivation().catch((error) => console.error(error));
+    syncTrafficLayerVisibility(currentBaseStyle);
+    installPhaseDDebugSurface();
+  },
+});
+phaseEPerformanceMonitor.start();
+
 const mapCanvasContainer = typeof map.getCanvasContainer === "function"
   ? map.getCanvasContainer()
   : null;
@@ -650,6 +682,7 @@ let currentStandardMapTheme = readStoredStandardMapTheme();
 let currentStandardTrafficEnabled = readStoredStandardTrafficEnabled();
 let phaseDTrafficDefaultsHidden = false;
 let phaseDTrafficDiscoveryWarningShown = false;
+let phaseEPerformanceTrafficFallbackLogged = false;
 let mapModeAutoRefreshTimer = null;
 let mapModeLayerRoleCache = new Map();
 let activeSearchAbort = null;
@@ -1630,7 +1663,35 @@ function restorePhaseDTrafficDefaults(visible) {
   phaseDTrafficDefaultsHidden = false;
 }
 
+function shouldUsePerformanceTrafficFallback() {
+  return isPhaseDTuningEnabled()
+    && isPhaseEPerformanceEffectDisabled(PHASE_E_PERFORMANCE_GUARD_EFFECTS.DGM_TRAFFIC_STYLING);
+}
+
 function setPhaseDTrafficVisibility(visible) {
+  if (shouldUsePerformanceTrafficFallback()) {
+    restorePhaseDTrafficDefaults(Boolean(visible));
+    setDgmTrafficLayerVisibility(false);
+    if (!phaseEPerformanceTrafficFallbackLogged) {
+      const guard = getPhaseEPerformanceGuardSnapshot();
+      logDgmTelemetry("map.phase_e_performance_guard_effect_disabled", {
+        reason: guard?.reason || "performance_guard_active",
+        effect: PHASE_E_PERFORMANCE_GUARD_EFFECTS.DGM_TRAFFIC_STYLING,
+        disabledEffects: guard?.disabledEffects || [],
+      });
+      phaseEPerformanceTrafficFallbackLogged = true;
+    }
+
+    return {
+      visible: Boolean(visible),
+      layerIds: findTrafficLayerIds(),
+      changedLayerIds: [],
+      fallbackLayerIds: [],
+      failedLayerIds: [],
+      controller: "phase-e-performance-guard",
+    };
+  }
+
   const discovery = getPhaseDTrafficDiscovery();
   if (!discovery.ok) {
     reportPhaseDTrafficDiscoveryStop(discovery);
