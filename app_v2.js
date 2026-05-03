@@ -218,6 +218,7 @@ async function reconcilePhaseCActivation() {
       skipCameraPreset: isPhaseCCameraPresetUnsafe(),
     });
     phaseCFlagsWereActive = true;
+    syncPhaseDMotionSensorUx();
     return;
   }
 
@@ -228,6 +229,20 @@ async function reconcilePhaseCActivation() {
   }
 
   phaseCFlagsWereActive = false;
+  syncPhaseDMotionSensorUx();
+}
+
+function syncPhaseDMotionSensorUx() {
+  if (!headingRuntime) {
+    return false;
+  }
+
+  if (!isPhaseDTuningEnabled()) {
+    headingRuntime.removeExperimentalPermissionBanner?.();
+    return false;
+  }
+
+  return headingRuntime.ensureExperimentalPermissionBanner?.() ?? false;
 }
 
 function reconcilePhaseCAfterFlagChange(flagName) {
