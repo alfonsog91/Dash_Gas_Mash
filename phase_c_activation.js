@@ -26,6 +26,8 @@ const PHASE_D_LIGHT_SPEC = Object.freeze({
   intensity: 0.7,
 });
 const PHASE_D_BUILDING_AMBIENT_INTENSITY = 0.6;
+const PHASE_D_BUILDING_LOD_THROTTLE_MS = 200;
+const PHASE_D_BUILDING_LOD_DEBOUNCE_MS = 80;
 const PHASE_D_FOG_SPEC = Object.freeze({
   range: Object.freeze([0.5, 10]),
   color: "#f6fbff",
@@ -433,6 +435,39 @@ function buildPhaseCBuildingsLayer(manifestBuildings3d) {
       "fill-extrusion-vertical-gradient": true,
     },
   };
+}
+
+function buildPhaseDBuildingOpacityExpression(manifestBuildings3d, pitchOpacityScale = 1) {
+  validateBuildingsManifest(manifestBuildings3d);
+  const targetOpacity = clamp(manifestBuildings3d.fillOpacity * pitchOpacityScale, 0, 1);
+  return [
+    "interpolate",
+    ["linear"],
+    ["zoom"],
+    manifestBuildings3d.minZoom - 0.25,
+    0,
+    manifestBuildings3d.minZoom + 0.45,
+    targetOpacity * 0.42,
+    manifestBuildings3d.minZoom + 1.25,
+    targetOpacity,
+  ];
+}
+
+function buildPhaseDBuildingHeightExpression(manifestBuildings3d, pitchHeightScale = 1) {
+  validateBuildingsManifest(manifestBuildings3d);
+  const heightExpression = ["to-number", ["coalesce", ["get", "height"], ["get", "building:height"], 0]];
+  const heightScale = clamp(pitchHeightScale, 0.65, 1.2);
+  return [
+    "interpolate",
+    ["linear"],
+    ["zoom"],
+    manifestBuildings3d.minZoom - 0.15,
+    0,
+    manifestBuildings3d.minZoom + 0.75,
+    ["*", heightExpression, heightScale * 0.72],
+    manifestBuildings3d.minZoom + 1.45,
+    ["*", heightExpression, heightScale],
+  ];
 }
 
 function cloneJsonValue(value) {
@@ -905,6 +940,7 @@ function applyPhaseDTerrainTuning(map, manifest, activationState) {
 function applyPhaseDTuning(map, manifest, activationState) {
   applyPhaseDTerrainTuning(map, manifest, activationState);
   applyPhaseDLightingTuning(map, manifest, activationState);
+  applyPhaseDBuildingLodTuning(map, manifest, activationState);
   applyPhaseDSkyFogTuning(map, manifest, activationState);
   applyPhaseDLabelTuning(map, activationState);
   applyPhaseDColorGrading(map, activationState);
@@ -954,6 +990,140 @@ function applyPhaseDLightingTuning(map, manifest, activationState) {
       "fill-extrusion-ambient-occlusion-intensity",
       PHASE_D_BUILDING_AMBIENT_INTENSITY
     );
+  }
+}
+
+function getPhaseDBuildingPitchScales(map) {
+  const pitch = typeof map?.getPitch === "function" ? Number(map.getPitch()) || 0 : 0;
+  const normalizedPitch = clamp(pitch / 62, 0, 1);
+  return {
+    opacityScale: clamp(0.72 + normalizedPitch * 0.28, 0.72, 1),
+    heightScale: clamp(0.82 + normalizedPitch * 0.22, 0.82, 1.04),
+  };
+}
+
+function clearPhaseDBuildingLodTimer(tuningState) {
+  if (tuningState.buildingLodTimer === null || tuningState.buildingLodTimer === undefined) {
+    return;
+  }
+
+  const windowLike = getWindowLike();
+  const clearTimer = typeof windowLike?.clearTimeout === "function"
+    ? windowLike.clearTimeout.bind(windowLike)
+    : typeof clearTimeout === "function"
+      ? clearTimeout
+      : null;
+  clearTimer?.(tuningState.buildingLodTimer);
+  tuningState.buildingLodTimer = null;
+}
+
+function schedulePhaseDBuildingLodUpdate(tuningState, update) {
+  clearPhaseDBuildingLodTimer(tuningState);
+  const windowLike = getWindowLike();
+  const setTimer = typeof windowLike?.setTimeout === "function"
+    ? windowLike.setTimeout.bind(windowLike)
+    : typeof setTimeout === "function"
+      ? setTimeout
+      : null;
+
+  if (!setTimer) {
+    update();
+    return;
+  }
+
+  tuningState.buildingLodTimer = setTimer(() => {
+    tuningState.buildingLodTimer = null;
+    update();
+  }, PHASE_D_BUILDING_LOD_DEBOUNCE_MS);
+}
+
+function rollbackPhaseDBuildingLodTuning(map, manifest, activationState) {
+  const tuningState = getPhaseDTuningState(activationState);
+  clearPhaseDBuildingLodTimer(tuningState);
+
+  if (tuningState.buildingLodMoveHandler && typeof map?.off === "function") {
+    map.off("move", tuningState.buildingLodMoveHandler);
+  }
+
+  tuningState.buildingLodMoveHandler = null;
+  tuningState.buildingLodLastAppliedAt = 0;
+
+  const buildingLayerId = manifest?.buildings3d?.layerId;
+  if (isNonEmptyString(buildingLayerId)) {
+    restorePhaseDPaintProperty(map, activationState, buildingLayerId, "fill-extrusion-opacity");
+    restorePhaseDPaintProperty(map, activationState, buildingLayerId, "fill-extrusion-height");
+  }
+}
+
+function applyPhaseDBuildingLodPaint(map, manifest, activationState) {
+  const manifestBuildings3d = manifest?.buildings3d;
+  validateBuildingsManifest(manifestBuildings3d);
+
+  if (activationState.featureActive.buildings3d !== true) {
+    return false;
+  }
+
+  if (!layerExists(map, manifestBuildings3d.layerId, "buildings3d_api_error")) {
+    return false;
+  }
+
+  const pitchScales = getPhaseDBuildingPitchScales(map);
+  const opacityApplied = setPhaseDPaintProperty(
+    map,
+    activationState,
+    manifestBuildings3d.layerId,
+    "fill-extrusion-opacity",
+    buildPhaseDBuildingOpacityExpression(manifestBuildings3d, pitchScales.opacityScale)
+  );
+  const heightApplied = setPhaseDPaintProperty(
+    map,
+    activationState,
+    manifestBuildings3d.layerId,
+    "fill-extrusion-height",
+    buildPhaseDBuildingHeightExpression(manifestBuildings3d, pitchScales.heightScale)
+  );
+
+  return opacityApplied || heightApplied;
+}
+
+function ensurePhaseDBuildingLodMoveHandler(map, manifest, activationState) {
+  const tuningState = getPhaseDTuningState(activationState);
+  if (tuningState.buildingLodMoveHandler || typeof map?.on !== "function") {
+    return;
+  }
+
+  const update = () => {
+    if (!isPhaseDTuningEnabled(activationState) || activationState.featureActive.buildings3d !== true) {
+      rollbackPhaseDBuildingLodTuning(map, manifest, activationState);
+      return;
+    }
+
+    tuningState.buildingLodLastAppliedAt = Date.now();
+    applyPhaseDBuildingLodPaint(map, manifest, activationState);
+  };
+
+  tuningState.buildingLodMoveHandler = () => {
+    const now = Date.now();
+    if (now - (tuningState.buildingLodLastAppliedAt || 0) >= PHASE_D_BUILDING_LOD_THROTTLE_MS) {
+      clearPhaseDBuildingLodTimer(tuningState);
+      update();
+      return;
+    }
+
+    schedulePhaseDBuildingLodUpdate(tuningState, update);
+  };
+
+  map.on("move", tuningState.buildingLodMoveHandler);
+}
+
+function applyPhaseDBuildingLodTuning(map, manifest, activationState) {
+  if (!isPhaseDTuningEnabled(activationState) || activationState.featureActive.buildings3d !== true) {
+    rollbackPhaseDBuildingLodTuning(map, manifest, activationState);
+    return;
+  }
+
+  if (applyPhaseDBuildingLodPaint(map, manifest, activationState)) {
+    ensurePhaseDBuildingLodMoveHandler(map, manifest, activationState);
   }
 }
 
