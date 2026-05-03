@@ -130,12 +130,42 @@ function isPhaseDTuningEnabled() {
   return isPhaseDTuningEnabledForState(phaseCActivationState);
 }
 
+function debugDumpState() {
+  const style = typeof map?.getStyle === "function" ? map.getStyle() : null;
+  const layers = Array.isArray(style?.layers)
+    ? style.layers.map((layer) => ({
+        id: layer.id,
+        type: layer.type,
+        source: layer.source || null,
+        sourceLayer: layer["source-layer"] || null,
+      }))
+    : [];
+  const trafficDiscovery = typeof getPhaseDTrafficDiscovery === "function"
+    ? getPhaseDTrafficDiscovery()
+    : null;
+
+  return {
+    layers,
+    trafficSources: trafficDiscovery?.ok
+      ? [{ source: trafficDiscovery.source, sourceLayer: trafficDiscovery.sourceLayer }]
+      : trafficDiscovery?.sourceCandidates || [],
+    camera: {
+      pitch: typeof map?.getPitch === "function" ? map.getPitch() : null,
+      zoom: typeof map?.getZoom === "function" ? map.getZoom() : null,
+      bearing: typeof map?.getBearing === "function" ? map.getBearing() : null,
+    },
+  };
+}
+
 function installPhaseDDebugSurface() {
   if (!shouldExposePhaseDDebug()) {
     return;
   }
 
-  window.__DGM_DEBUG = { isPhaseDTuningEnabled };
+  window.__DGM_DEBUG = Object.assign(window.__DGM_DEBUG || {}, {
+    isPhaseDTuningEnabled,
+    debugDumpState,
+  });
 }
 
 installPhaseDDebugSurface();

@@ -239,8 +239,13 @@ function isPhaseDTuningEnabled(state = {}, windowLike = getWindowLike()) {
   return isPhaseCAggregateActive(state) && isPhaseDTuningRequested(windowLike);
 }
 
+function isLocalhostDebugHost(windowLike = getWindowLike()) {
+  const hostname = String(windowLike?.location?.hostname || "").toLowerCase();
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+}
+
 function shouldExposePhaseDDebug(windowLike = getWindowLike()) {
-  return isPhaseDTuningRequested(windowLike) || windowLike?.location?.hostname === "localhost";
+  return isPhaseDTuningRequested(windowLike) || isLocalhostDebugHost(windowLike);
 }
 
 function getPhaseDTuningState(activationState) {
