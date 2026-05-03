@@ -79,6 +79,10 @@ import { createMapRuntimeReadyGate } from "./runtime_ready.js?v=20260501-runtime
 import { normalizeCoord } from "./coordinates.js?v=20260501-coordinates";
 import { restoreStyleState } from "./style_state.js?v=20260501-style-state";
 import { evaluateVisualPerformanceHeuristics } from "./performance_heuristics.js?v=20260501-performance-heuristics";
+import {
+  DEFAULT_WEIGHTS as SUPERPOSITION_DEFAULT_WEIGHTS,
+  evaluateSuperpositionEngine,
+} from "./intelligence/superposition_engine.js?v=20260502-phase-e-superposition";
 import { getPhaseCManifest } from "./phase_c_manifest.js?v=20260501-phase-c-manifest";
 import {
   applyPhaseCActivation,
@@ -148,6 +152,10 @@ function getProgrammaticCameraTuningDebug() {
   };
 }
 
+function getStatPingSuperpositionDebug() {
+  return lastStatPingSuperposition;
+}
+
 function debugDumpState() {
   const style = typeof map?.getStyle === "function" ? map.getStyle() : null;
   const layers = Array.isArray(style?.layers)
@@ -185,6 +193,7 @@ function installPhaseDDebugSurface() {
     isPhaseDTuningEnabled,
     debugDumpState,
     getPhaseDCameraTuningParameters: getProgrammaticCameraTuningDebug,
+    getStatPingSuperpositionMetadata: getStatPingSuperpositionDebug,
   });
   Object.defineProperties(debugSurface, {
     pitchMin: { configurable: true, get: () => getProgrammaticCameraTuningDebug().pitchMin },
@@ -675,6 +684,18 @@ let lastCensusDataset = null;
 let lastStats = null;
 let lastLoadedBounds = null; // tracks the bounds used for the last successful load
 let lastWeatherSignal = null;
+let lastStatPingSuperposition = null;
+
+const STAT_PING_WEIGHT_KEYS = Object.freeze([
+  "basePay",
+  "timePenalty",
+  "distancePenalty",
+  "zoneOpportunity",
+  "futureEV",
+]);
+const statPingWeights = Object.fromEntries(
+  STAT_PING_WEIGHT_KEYS.map((weightKey) => [weightKey, SUPERPOSITION_DEFAULT_WEIGHTS[weightKey]])
+);
 
 let lastParams = {
   hour: 0,
@@ -5056,6 +5077,280 @@ function renderSignalBarsHtml(signals, bucketLabel) {
   return `<div class="sig-bars"><div class="sig-header">What makes this spot score the way it does (${escapeHtml(bucketLabel)})</div>${rows}</div>`;
 }
 
+function getStatPingWeight(key) {
+  return clamp01(statPingWeights[key] ?? SUPERPOSITION_DEFAULT_WEIGHTS[key] ?? 0);
+}
+
+function getStatPingWeights() {
+  return Object.fromEntries(STAT_PING_WEIGHT_KEYS.map((weightKey) => [weightKey, getStatPingWeight(weightKey)]));
+}
+
+function getStatPingOpportunitySignal(result) {
+  if (!result) {
+    return "Neutral Signal";
+  }
+
+  const score = clamp01(
+    0.45 * (result?.assignmentProbabilityEstimate ?? 0)
+    + 0.35 * (result?.zoneOpportunity ?? 0)
+    + 0.2 * (result?.futureEV ?? 0)
+  );
+
+  if (score >= 0.58) {
+    return "Higher Opportunity";
+  }
+
+  if (score <= 0.38) {
+    return "Lower Opportunity";
+  }
+
+  return "Neutral Signal";
+}
+
+function getStatPingArrivalRate(score) {
+  const probability = clamp01(getProbabilityMid(score));
+  if (probability <= 0) {
+    return 0.04;
+  }
+  return Math.max(0.04, Math.min(0.42, -Math.log(1 - probability) / PROBABILITY_HORIZON_MINUTES));
+}
+
+function buildStatPingCandidate(point, score) {
+  const signals = score?.signals || {};
+  const expectedDistanceMeters = Math.max(0, Number(score?.expectedDistMeters) || 0);
+  return {
+    orderId: "stat-ping:selected",
+    basePay: 6 + clamp01(signals.I ?? getProbabilityMid(score)) * 18,
+    pickupMinutes: 4 + expectedDistanceMeters / 320,
+    driveMinutes: 6 + expectedDistanceMeters / 720,
+    distanceKm: expectedDistanceMeters / 1000,
+    zoneOpportunity: getProbabilityMid(score),
+    arrivalRatePerMinute: getStatPingArrivalRate(score),
+    label: "Selected spot",
+    lat: point.lat,
+    lng: point.lng,
+  };
+}
+
+function buildStatPingFutureCandidate(restaurant, index, score) {
+  const distanceMeters = Math.max(0, Number(restaurant?.distMeters) || 0);
+  const scoreMid = getProbabilityMid(score);
+  return {
+    orderId: `future-path:${restaurant?.id ?? index}`,
+    basePay: 5 + clamp01(score?.signals?.I ?? scoreMid) * 16 - index * 0.35,
+    pickupMinutes: 3 + distanceMeters / 260,
+    driveMinutes: 7 + index * 1.5,
+    distanceKm: distanceMeters / 1000,
+    zoneOpportunity: clamp01(scoreMid * (0.88 - index * 0.06) + 0.08),
+    arrivalRatePerMinute: Math.max(0.03, getStatPingArrivalRate(score) * (0.82 - index * 0.08)),
+    label: restaurant?.name || `Future path ${index + 1}`,
+  };
+}
+
+function exposeStatPingSuperpositionDebug(superposition) {
+  lastStatPingSuperposition = superposition
+    ? {
+        updatedAt: Date.now(),
+        result: superposition.result,
+        metadata: superposition.result?.metadata || null,
+      }
+    : null;
+
+  if (!shouldExposePhaseDDebug()) {
+    return;
+  }
+
+  window.__DGM_DEBUG = Object.assign(window.__DGM_DEBUG || {}, {
+    statPingSuperposition: lastStatPingSuperposition,
+    getStatPingSuperpositionMetadata: getStatPingSuperpositionDebug,
+  });
+}
+
+function buildStatPingSuperposition(point, score, likelyRestaurants = []) {
+  if (!point || !score) {
+    exposeStatPingSuperpositionDebug(null);
+    return null;
+  }
+
+  // UI integration displays metadata from a deterministic approximation of combinatorial assignment families; the core exposes transparency and does not claim optimality.
+  const candidates = [
+    buildStatPingCandidate(point, score),
+    ...likelyRestaurants.slice(0, 4).map((restaurant, index) => buildStatPingFutureCandidate(restaurant, index, score)),
+  ];
+  const [result] = evaluateSuperpositionEngine({
+    candidates,
+    searchDepth: 3,
+    weights: getStatPingWeights(),
+  });
+  const superposition = {
+    result,
+    futurePaths: candidates.slice(1, 4),
+    weights: getStatPingWeights(),
+  };
+
+  exposeStatPingSuperpositionDebug(superposition);
+  return superposition;
+}
+
+function formatStatPingScore(value) {
+  return `${Math.round(clamp01(value) * 100)}/100`;
+}
+
+function renderStatPingWeightSliders(superposition) {
+  const labels = {
+    basePay: "Base pay",
+    timePenalty: "Time penalty",
+    distancePenalty: "Distance penalty",
+    zoneOpportunity: "Zone opportunity",
+    futureEV: "Future EV",
+  };
+
+  return STAT_PING_WEIGHT_KEYS.map((weightKey) => `
+    <label class="sig-row" for="statPingWeight-${weightKey}">
+      <span class="sig-label">${escapeHtml(labels[weightKey])}</span>
+      <input id="statPingWeight-${weightKey}" type="range" min="0" max="1" step="0.01" value="${superposition.weights[weightKey].toFixed(2)}" data-stat-ping-weight="${weightKey}" />
+      <span class="sig-val" data-stat-ping-weight-value="${weightKey}">${Math.round(superposition.weights[weightKey] * 100)}%</span>
+    </label>`).join("");
+}
+
+function renderStatPingPathVisual(superposition) {
+  if (!shouldExposePhaseDDebug() || !superposition.futurePaths.length) {
+    return "";
+  }
+
+  const pathRows = superposition.futurePaths.map((path, index) => {
+    const width = Math.max(8, Math.round(clamp01(path.zoneOpportunity) * 100));
+    return `
+      <div class="sig-row">
+        <span class="sig-label">Path ${index + 1}</span>
+        <span class="sig-track"><span class="sig-fill" style="width:${width}%;background:#9ad3ff"></span></span>
+        <span class="sig-val">${Math.round(path.zoneOpportunity * 100)}%</span>
+      </div>`;
+  }).join("");
+
+  return `
+    <details class="stat-ping-paths">
+      <summary>Future paths considered</summary>
+      <div class="sig-bars">${pathRows}</div>
+    </details>`;
+}
+
+function renderStatPingSuperpositionHtml(point, superposition) {
+  if (!superposition?.result) {
+    return "";
+  }
+
+  const result = superposition.result;
+  const metadata = result.metadata || {};
+  const signal = getStatPingOpportunitySignal(result);
+  return `
+    <section class="popup-section stat-ping-superposition" data-stat-ping-lat="${Number(point.lat).toFixed(6)}" data-stat-ping-lng="${Number(point.lng).toFixed(6)}">
+      <div class="popup-section-head">
+        <div class="popup-section-title">Superposition read</div>
+        <div class="popup-section-meta" data-stat-ping-output="signal">${escapeHtml(signal)}</div>
+      </div>
+      <div class="popup-metric-grid">
+        <article class="popup-metric-card"><div class="popup-metric-label">Base pay</div><div class="popup-metric-value" data-stat-ping-output="basePayScore">${formatStatPingScore(result.basePayScore)}</div><div class="popup-metric-detail">Normalized local pay proxy</div></article>
+        <article class="popup-metric-card"><div class="popup-metric-label">Time drag</div><div class="popup-metric-value" data-stat-ping-output="timePenalty">${formatStatPingScore(result.timePenalty)}</div><div class="popup-metric-detail">Lower is less time pressure</div></article>
+        <article class="popup-metric-card"><div class="popup-metric-label">Distance drag</div><div class="popup-metric-value" data-stat-ping-output="distancePenalty">${formatStatPingScore(result.distancePenalty)}</div><div class="popup-metric-detail">Lower is less travel pressure</div></article>
+        <article class="popup-metric-card"><div class="popup-metric-label">Zone</div><div class="popup-metric-value" data-stat-ping-output="zoneOpportunity">${formatStatPingScore(result.zoneOpportunity)}</div><div class="popup-metric-detail">Local opportunity proxy</div></article>
+        <article class="popup-metric-card"><div class="popup-metric-label">Future EV</div><div class="popup-metric-value" data-stat-ping-output="futureEV">${formatStatPingScore(result.futureEV)}</div><div class="popup-metric-detail">Approximate follow-on value</div></article>
+        <article class="popup-metric-card"><div class="popup-metric-label">Assignment</div><div class="popup-metric-value" data-stat-ping-output="assignmentProbabilityEstimate">${formatStatPingScore(result.assignmentProbabilityEstimate)}</div><div class="popup-metric-detail">Relative assignment estimate</div></article>
+      </div>
+      <details>
+        <summary>Why this score?</summary>
+        <div class="popup-detail" data-stat-ping-output="why-base">Base pay contributes ${formatStatPingScore(result.basePayScore)} from the local ticket proxy.</div>
+        <div class="popup-detail" data-stat-ping-output="why-time">Time penalty is ${formatStatPingScore(result.timePenalty)} from pickup and drive minutes.</div>
+        <div class="popup-detail" data-stat-ping-output="why-distance">Distance penalty is ${formatStatPingScore(result.distancePenalty)} from expected travel.</div>
+        <div class="popup-detail" data-stat-ping-output="why-zone">Zone opportunity contributes ${formatStatPingScore(result.zoneOpportunity)} from the visible field.</div>
+        <div class="popup-detail" data-stat-ping-output="why-future">Future EV contributes ${formatStatPingScore(result.futureEV)} from deterministic successor paths.</div>
+      </details>
+      <details>
+        <summary>Complexity View</summary>
+        <div class="popup-facts">
+          <div class="popup-fact-row"><span class="popup-fact-label">Search depth</span><span class="popup-fact-value" data-stat-ping-output="searchDepth">${metadata.searchDepth}</span></div>
+          <div class="popup-fact-row"><span class="popup-fact-label">Candidates</span><span class="popup-fact-value" data-stat-ping-output="candidateCount">${metadata.candidateCount}</span></div>
+          <div class="popup-fact-row"><span class="popup-fact-label">Algorithm</span><span class="popup-fact-value" data-stat-ping-output="algorithmUsed">${escapeHtml(metadata.algorithmUsed)}</span></div>
+          <div class="popup-fact-row"><span class="popup-fact-label">Heuristic confidence</span><span class="popup-fact-value" data-stat-ping-output="heuristicConfidenceScore">${formatStatPingScore(metadata.heuristicConfidenceScore)}</span></div>
+        </div>
+        <div class="sig-bars">${renderStatPingWeightSliders(superposition)}</div>
+      </details>
+      ${renderStatPingPathVisual(superposition)}
+    </section>`;
+}
+
+function updateStatPingRoot(root, point, score, likelyRestaurants) {
+  const superposition = buildStatPingSuperposition(point, score, likelyRestaurants);
+  if (!superposition?.result || !root) {
+    return;
+  }
+
+  const result = superposition.result;
+  const metadata = result.metadata || {};
+  const output = (name, value) => {
+    root.querySelectorAll(`[data-stat-ping-output="${name}"]`).forEach((element) => {
+      element.textContent = value;
+    });
+  };
+
+  output("signal", getStatPingOpportunitySignal(result));
+  output("basePayScore", formatStatPingScore(result.basePayScore));
+  output("timePenalty", formatStatPingScore(result.timePenalty));
+  output("distancePenalty", formatStatPingScore(result.distancePenalty));
+  output("zoneOpportunity", formatStatPingScore(result.zoneOpportunity));
+  output("futureEV", formatStatPingScore(result.futureEV));
+  output("assignmentProbabilityEstimate", formatStatPingScore(result.assignmentProbabilityEstimate));
+  output("searchDepth", String(metadata.searchDepth));
+  output("candidateCount", String(metadata.candidateCount));
+  output("algorithmUsed", metadata.algorithmUsed || "");
+  output("heuristicConfidenceScore", formatStatPingScore(metadata.heuristicConfidenceScore));
+  output("why-base", `Base pay contributes ${formatStatPingScore(result.basePayScore)} from the local ticket proxy.`);
+  output("why-time", `Time penalty is ${formatStatPingScore(result.timePenalty)} from pickup and drive minutes.`);
+  output("why-distance", `Distance penalty is ${formatStatPingScore(result.distancePenalty)} from expected travel.`);
+  output("why-zone", `Zone opportunity contributes ${formatStatPingScore(result.zoneOpportunity)} from the visible field.`);
+  output("why-future", `Future EV contributes ${formatStatPingScore(result.futureEV)} from deterministic successor paths.`);
+}
+
+function handleStatPingWeightInput(event) {
+  const slider = event.target?.closest?.("[data-stat-ping-weight]");
+  if (!slider) {
+    return;
+  }
+
+  const weightKey = slider.dataset.statPingWeight;
+  if (!STAT_PING_WEIGHT_KEYS.includes(weightKey)) {
+    return;
+  }
+
+  statPingWeights[weightKey] = clamp01(slider.value);
+  document.querySelectorAll(`[data-stat-ping-weight-value="${weightKey}"]`).forEach((element) => {
+    element.textContent = `${Math.round(getStatPingWeight(weightKey) * 100)}%`;
+  });
+
+  const root = slider.closest(".stat-ping-superposition");
+  if (!root) {
+    return;
+  }
+
+  const point = {
+    lat: Number(root.dataset.statPingLat),
+    lng: Number(root.dataset.statPingLng),
+  };
+  if (!Number.isFinite(point.lat) || !Number.isFinite(point.lng)) {
+    return;
+  }
+
+  const score = getPopupPointScore(point, lastRestaurants, lastParams.tauMeters, lastParams.hour);
+  const likelyRestaurants = topLikelyMerchantsForParking(
+    { lat: point.lat, lon: point.lng, tags: { name: "Selected spot" } },
+    lastRestaurants,
+    lastParams.tauMeters,
+    lastParams.hour,
+    POPUP_NEARBY_RESTAURANT_LIMIT
+  );
+  updateStatPingRoot(root, point, score, likelyRestaurants);
+}
+
 function renderParkingPopupHtml(p, name, restaurants, tauMeters, hour) {
   const likely = topLikelyMerchantsForParking(p, restaurants, tauMeters, hour, POPUP_NEARBY_RESTAURANT_LIMIT);
   const bucketLabel = lastStats?.timeBucketLabel ?? timeBucket(hour).label;
@@ -5104,15 +5399,17 @@ function renderParkingPopupHtml(p, name, restaurants, tauMeters, hour) {
 }
 
 function renderSpotPopupHtml(latlng, restaurants, tauMeters, hour) {
-  const r = getPopupPointScore(latlng, restaurants, tauMeters, hour);
+  const point = latlngToObject(latlng);
+  const r = getPopupPointScore(point, restaurants, tauMeters, hour);
 
   const likely = topLikelyMerchantsForParking(
-    { lat: latlng.lat, lon: latlng.lng, tags: { name: "Selected spot" } },
+    { lat: point.lat, lon: point.lng, tags: { name: "Selected spot" } },
     restaurants,
     tauMeters,
     hour,
     POPUP_NEARBY_RESTAURANT_LIMIT
   );
+  const superposition = buildStatPingSuperposition(point, r, likely);
   const bucketLabel = lastStats?.timeBucketLabel ?? timeBucket(hour).label;
   const warning = lastStats === null
     ? '<div class="popup-banner popup-banner--warn">Load or refresh the current view to calibrate this stat ping against the visible field.</div>'
@@ -5128,7 +5425,7 @@ function renderSpotPopupHtml(latlng, restaurants, tauMeters, hour) {
 
   ${warning}
   <div class="popup-score">${formatProbabilityRange(getProbabilityLow(r), getProbabilityHigh(r))}<span class="popup-score-label"> chance of landing a strong order soon</span></div>
-  <div class="popup-explain">${escapeHtml(describeAdvisory(r.advisory))}</div>
+  <div class="popup-explain">${escapeHtml(getStatPingOpportunitySignal(superposition?.result))}</div>
 
   ${renderPopupMetricGrid([
     renderPopupMetricCard("Field rank", formatCompactRank(r), formatRelativeRank(r)),
@@ -5150,6 +5447,8 @@ function renderSpotPopupHtml(latlng, restaurants, tauMeters, hour) {
     ${renderExplainabilityDetails(r)}
     ${renderSignalBarsHtml(r.signals, bucketLabel)}
   </section>
+
+  ${renderStatPingSuperpositionHtml(point, superposition)}
 
   <section class="popup-section">
     <div class="popup-section-head">
@@ -5199,6 +5498,14 @@ function buildRestaurantSheetState(restaurant) {
 function buildSpotSheetState(latlng) {
   const point = latlngToObject(latlng);
   const score = getPopupPointScore(point, lastRestaurants, lastParams.tauMeters, lastParams.hour);
+  const likely = topLikelyMerchantsForParking(
+    { lat: point.lat, lon: point.lng, tags: { name: "Selected spot" } },
+    lastRestaurants,
+    lastParams.tauMeters,
+    lastParams.hour,
+    POPUP_NEARBY_RESTAURANT_LIMIT
+  );
+  const superposition = buildStatPingSuperposition(point, score, likely);
 
   return {
     kind: "spot",
@@ -5211,13 +5518,8 @@ function buildSpotSheetState(latlng) {
     score,
     chips: ["Stat ping", "10-minute read"],
     currentDistance: getDistanceFromCurrentLocation(point.lat, point.lng),
-    likely: topLikelyMerchantsForParking(
-      { lat: point.lat, lon: point.lng, tags: { name: "Selected spot" } },
-      lastRestaurants,
-      lastParams.tauMeters,
-      lastParams.hour,
-      POPUP_NEARBY_RESTAURANT_LIMIT
-    ),
+    likely,
+    superposition,
     warning: lastStats === null
       ? "Load or refresh the current view to calibrate this stat ping against the visible field."
       : "",
@@ -5553,7 +5855,7 @@ function renderPlaceSheetHero(state) {
     <div class="place-sheet-hero">
       <div class="place-sheet-hero-value">${formatProbabilityRange(getProbabilityLow(state.score), getProbabilityHigh(state.score))}</div>
       <div class="place-sheet-hero-label">${escapeHtml(state.kind === "restaurant" ? "Nearby 10-minute field" : "10-minute probability of a good order")}</div>
-      <div class="place-sheet-hero-detail">${escapeHtml(state.kind === "restaurant" ? formatRelativeRank(state.score) : describeAdvisory(state.score.advisory))}</div>
+      <div class="place-sheet-hero-detail">${escapeHtml(state.kind === "restaurant" ? formatRelativeRank(state.score) : getStatPingOpportunitySignal(state.superposition?.result))}</div>
     </div>`;
 }
 
@@ -5621,19 +5923,25 @@ function renderPlaceSheetDgmSection(state) {
   const nearbyHold = findBestNearbyParkingCandidate(state.lat, state.lng);
   const nearbyHoldCard = nearbyHold
     ? renderPopupMetricCard(
-      "Best nearby hold",
-      nearbyHold.candidate.tags?.name || nearbyHold.candidate.tags?.operator || "Visible parking",
-      `${nearbyHold.distanceMeters} m away · ${formatProbabilityRange(getProbabilityLow(nearbyHold.candidate), getProbabilityHigh(nearbyHold.candidate))}`
-    )
-    : renderPopupMetricCard("Best nearby hold", "None visible", "Zoom or refresh to expose visible parking candidates nearby.");
+        state.kind === "spot" ? "Nearby reference" : "Best nearby hold",
+        nearbyHold.candidate.tags?.name || nearbyHold.candidate.tags?.operator || "Visible parking",
+        `${nearbyHold.distanceMeters} m away · ${formatProbabilityRange(getProbabilityLow(nearbyHold.candidate), getProbabilityHigh(nearbyHold.candidate))}`
+      )
+    : renderPopupMetricCard(
+        state.kind === "spot" ? "Nearby reference" : "Best nearby hold",
+        "None visible",
+        "Zoom or refresh to expose visible parking candidates nearby."
+      );
 
   return `
     ${renderPopupMetricGrid([
-      renderPopupMetricCard(
-        "Wait bias",
-        state.score.advisory === "hold" ? "Wait here" : "Rotate soon",
-        state.kind === "restaurant" ? "Restaurant-centered field read" : "Spot-centered field read"
-      ),
+      state.kind === "spot"
+        ? renderPopupMetricCard("Opportunity signal", getStatPingOpportunitySignal(state.superposition?.result), "Descriptive field signal")
+        : renderPopupMetricCard(
+            "Wait bias",
+            state.score.advisory === "hold" ? "Wait here" : "Rotate soon",
+            "Restaurant-centered field read"
+          ),
       renderPopupMetricCard("Support depth", supportDepth.value, supportDepth.detail),
       renderPopupMetricCard("Demand mix", demandMix.value, demandMix.detail),
       renderPopupMetricCard("Crowding", crowding.value, crowding.detail),
@@ -5643,7 +5951,8 @@ function renderPlaceSheetDgmSection(state) {
     <div class="popup-detail">Uncertainty band (λ ±30%): ${formatProbabilityRange(getProbabilityLow(state.score), getProbabilityHigh(state.score))} · ${escapeHtml(describeProbabilityBand(state.score))}</div>
     <div class="popup-detail">${escapeHtml(describePickup(state.score.expectedDistMeters))}</div>
     ${renderExplainabilityDetails(state.score)}
-    ${renderSignalBarsHtml(state.score.signals, lastStats?.timeBucketLabel ?? timeBucket(lastParams.hour).label)}`;
+    ${renderSignalBarsHtml(state.score.signals, lastStats?.timeBucketLabel ?? timeBucket(lastParams.hour).label)}
+    ${state.kind === "spot" ? renderStatPingSuperpositionHtml(state, state.superposition) : ""}`;
 }
 
 function renderPlaceSheetParkingSection(state) {
@@ -6031,6 +6340,8 @@ if (elSearchResults) {
     selectRenderedSearchResult(button.dataset.index);
   });
 }
+
+document.addEventListener("input", handleStatPingWeightInput);
 
 map.on("moveend", checkDataFreshness);
 map.on("zoom", refreshHeadingConeFromState);
