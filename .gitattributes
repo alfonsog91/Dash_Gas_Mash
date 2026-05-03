@@ -1,0 +1,2 @@
+# Ensure PR stats include the superposition engine file.
+intelligence/superposition_engine.js -linguist-generated
