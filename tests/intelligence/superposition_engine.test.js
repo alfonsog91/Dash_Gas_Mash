@@ -110,6 +110,49 @@ export function runSuperpositionEngineTests() {
     assertEqual(result.metadata.algorithmUsed, ALGORITHM_USED, "candidate API exposes metadata");
   });
 
+  runTest("Opportunity Field input deterministically adjusts futureEV", () => {
+    const candidates = [
+      { orderId: "near", basePay: 10, pickupMinutes: 6, driveMinutes: 9, distanceKm: 4, zoneOpportunity: 0.4, arrivalRatePerMinute: 0.18, lat: 34.0501, lng: -117.6501 },
+      { orderId: "far", basePay: 10, pickupMinutes: 6, driveMinutes: 9, distanceKm: 4, zoneOpportunity: 0.4, arrivalRatePerMinute: 0.18, lat: 34.0600, lng: -117.6400 },
+    ];
+    const opportunityField = {
+      field: [
+        { id: "hot", lat: 34.05, lng: -117.65, opportunity: 0.9 },
+        { id: "cool", lat: 34.06, lng: -117.64, opportunity: 0.2 },
+      ],
+    };
+    const result = evaluateSuperpositionEngine({
+      candidates,
+      searchDepth: 2,
+      opportunityField,
+      opportunityFieldMaxDistanceMeters: 1200,
+      weights: { opportunityField: 0.25 },
+    });
+    assertDeepEqual(
+      result.map(({ orderId, opportunityFieldScore, futureEV, assignmentProbabilityEstimate }) => ({
+        orderId,
+        opportunityFieldScore,
+        futureEV,
+        assignmentProbabilityEstimate,
+      })),
+      [
+        { orderId: "near", opportunityFieldScore: 0.8892, futureEV: 0.3076, assignmentProbabilityEstimate: 0.5361 },
+        { orderId: "far", opportunityFieldScore: 0.2, futureEV: 0.1353, assignmentProbabilityEstimate: 0.4639 },
+      ],
+      "Opportunity Field score changes future EV deterministically"
+    );
+    assertDeepEqual(result.map((entry) => entry.metadata.opportunityField), [
+      { applied: true, score: 0.8892, cellId: "hot", distanceMeters: 14.4566, source: "nearest-cell", appliedWeight: 0.25, candidateFieldCount: 2 },
+      { applied: true, score: 0.2, cellId: "cool", distanceMeters: 0, source: "nearest-cell", appliedWeight: 0.25, candidateFieldCount: 2 },
+    ], "Opportunity Field metadata explains the adapter signal");
+  });
+
+  runTest("old behavior remains stable without Opportunity Field input", () => {
+    const baseline = evaluateSuperpositionEngine({ candidates: FIXTURE_CANDIDATES, searchDepth: 2 });
+    const explicitMissing = evaluateSuperpositionEngine({ candidates: FIXTURE_CANDIDATES, searchDepth: 2, opportunityField: null });
+    assertDeepEqual(explicitMissing, baseline, "missing Opportunity Field preserves legacy output");
+  });
+
   const result = { passed, failed };
   log.write(`Results: ${passed} passed, ${failed} failed`);
   if (typeof document !== "undefined") {

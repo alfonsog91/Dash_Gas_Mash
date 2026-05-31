@@ -8,7 +8,9 @@ const DEFAULT_WEIGHTS = Object.freeze({
   zoneOpportunity: 0.24,
   futureEV: 0.28,
   futureDiscount: 0.62,
+  opportunityField: 0.18,
 });
+const DEFAULT_OPPORTUNITY_FIELD_MAX_DISTANCE_METERS = 1200;
 
 const PRUNING_RULES = Object.freeze([
   "dominance: remove candidates no better on pay/opportunity and no worse on time/distance",
@@ -74,6 +76,16 @@ function getCandidateDistanceKm(candidate) {
   return Math.max(0, getFiniteNumber(candidate?.distanceMeters, 0) / 1000);
 }
 
+function getCandidateCoordinate(candidate, keySet) {
+  for (const key of keySet) {
+    const value = getFiniteNumber(candidate?.[key], Number.NaN);
+    if (Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return null;
+}
+
 function normalizeCandidate(candidate, index) {
   return {
     orderId: getCandidateId(candidate, index),
@@ -82,6 +94,12 @@ function normalizeCandidate(candidate, index) {
     distanceKm: getCandidateDistanceKm(candidate),
     zoneOpportunity: clamp01(candidate?.zoneOpportunity ?? candidate?.opportunity ?? 0),
     arrivalRatePerMinute: Math.max(0, getFiniteNumber(candidate?.arrivalRatePerMinute, DEFAULT_ARRIVAL_RATE_PER_MINUTE)),
+    lat: getCandidateCoordinate(candidate, ["lat", "latitude", "pickupLat"]),
+    lng: getCandidateCoordinate(candidate, ["lng", "lon", "longitude", "pickupLng", "pickupLon"]),
+    opportunityFieldCellId: candidate?.opportunityFieldCellId ? String(candidate.opportunityFieldCellId) : null,
+    directOpportunityFieldScore: Number.isFinite(Number(candidate?.opportunityFieldScore))
+      ? clamp01(candidate.opportunityFieldScore)
+      : null,
   };
 }
 
@@ -168,6 +186,90 @@ function getFutureEV(node, allNodes, { searchDepth, horizonMinutes, weights }) {
   };
 }
 
+function normalizeOpportunityFieldCells(opportunityField) {
+  const sourceCells = Array.isArray(opportunityField)
+    ? opportunityField
+    : Array.isArray(opportunityField?.field)
+      ? opportunityField.field
+      : [];
+
+  return sourceCells
+    .map((cell, index) => {
+      const lat = getFiniteNumber(cell?.lat, Number.NaN);
+      const lng = getFiniteNumber(cell?.lng ?? cell?.lon, Number.NaN);
+      const opportunity = getFiniteNumber(cell?.opportunity ?? cell?.value ?? cell?.score, Number.NaN);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(opportunity)) {
+        return null;
+      }
+      return {
+        id: String(cell?.id ?? `field-cell-${index + 1}`),
+        lat,
+        lng,
+        opportunity: clamp01(opportunity),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function getApproxDistanceMeters(left, right) {
+  const avgLat = ((left.lat + right.lat) / 2) * Math.PI / 180;
+  const metersPerLng = 111320 * Math.max(0.1, Math.cos(avgLat));
+  const dx = (left.lng - right.lng) * metersPerLng;
+  const dy = (left.lat - right.lat) * 111320;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function getOpportunityFieldSignal(candidate, fieldCells, maxDistanceMeters) {
+  if (candidate.directOpportunityFieldScore !== null) {
+    return {
+      score: candidate.directOpportunityFieldScore,
+      cellId: null,
+      distanceMeters: null,
+      source: "candidate-direct",
+    };
+  }
+
+  if (!fieldCells.length) {
+    return { score: 0, cellId: null, distanceMeters: null, source: "none" };
+  }
+
+  const directCell = candidate.opportunityFieldCellId
+    ? fieldCells.find((cell) => cell.id === candidate.opportunityFieldCellId)
+    : null;
+  if (directCell) {
+    return {
+      score: directCell.opportunity,
+      cellId: directCell.id,
+      distanceMeters: 0,
+      source: "cell-id",
+    };
+  }
+
+  if (!Number.isFinite(candidate.lat) || !Number.isFinite(candidate.lng)) {
+    return { score: 0, cellId: null, distanceMeters: null, source: "missing-coordinate" };
+  }
+
+  const nearest = fieldCells
+    .map((cell) => ({
+      cell,
+      distanceMeters: getApproxDistanceMeters(candidate, cell),
+    }))
+    .sort((left, right) => left.distanceMeters - right.distanceMeters || left.cell.id.localeCompare(right.cell.id))[0];
+  if (!nearest || nearest.distanceMeters > maxDistanceMeters) {
+    return { score: 0, cellId: nearest?.cell?.id || null, distanceMeters: nearest ? round4(nearest.distanceMeters) : null, source: "out-of-range" };
+  }
+
+  // Nearest-cell Opportunity Field influence is a deterministic locality approximation that nudges futureEV without changing engine purity.
+  const proximity = clamp01(1 - nearest.distanceMeters / Math.max(1, maxDistanceMeters));
+  return {
+    score: round4(nearest.cell.opportunity * proximity),
+    cellId: nearest.cell.id,
+    distanceMeters: round4(nearest.distanceMeters),
+    source: "nearest-cell",
+  };
+}
+
 function getHeuristicConfidenceScore({ candidateCount, searchDepth, prunedCount, expectedArrivals }) {
   // Calibrated heuristic for transparency only; this is not statistical certainty.
   const supportScore = clamp01(Math.log2(candidateCount + 1) / 4);
@@ -188,10 +290,17 @@ function evaluateSuperpositionEngine({
   searchDepth = DEFAULT_SEARCH_DEPTH,
   horizonMinutes = DEFAULT_HORIZON_MINUTES,
   weights = {},
+  opportunityField = null,
+  opportunityFieldMaxDistanceMeters = DEFAULT_OPPORTUNITY_FIELD_MAX_DISTANCE_METERS,
 } = {}) {
   const normalizedWeights = normalizeWeights(weights);
   const normalizedSearchDepth = Math.max(1, Math.floor(getFiniteNumber(searchDepth, DEFAULT_SEARCH_DEPTH)));
   const normalizedHorizonMinutes = Math.max(1, getFiniteNumber(horizonMinutes, DEFAULT_HORIZON_MINUTES));
+  const normalizedOpportunityFieldCells = normalizeOpportunityFieldCells(opportunityField);
+  const normalizedOpportunityFieldMaxDistanceMeters = Math.max(1, getFiniteNumber(
+    opportunityFieldMaxDistanceMeters,
+    DEFAULT_OPPORTUNITY_FIELD_MAX_DISTANCE_METERS
+  ));
   const candidateNodes = (Array.isArray(candidates) ? candidates : [])
     .map(normalizeCandidate)
     .map((candidate) => {
@@ -209,10 +318,23 @@ function evaluateSuperpositionEngine({
       horizonMinutes: normalizedHorizonMinutes,
       weights: normalizedWeights,
     });
+    const opportunityFieldSignal = getOpportunityFieldSignal(
+      node,
+      normalizedOpportunityFieldCells,
+      normalizedOpportunityFieldMaxDistanceMeters
+    );
+    const adjustedFutureEV = round4(clamp01(
+      future.futureEV + opportunityFieldSignal.score * normalizedWeights.opportunityField
+    ));
     return {
       ...node,
-      future,
-      adjustedUtility: node.utility + future.futureEV * normalizedWeights.futureEV,
+      future: {
+        ...future,
+        baseFutureEV: future.futureEV,
+        futureEV: adjustedFutureEV,
+      },
+      opportunityFieldSignal,
+      adjustedUtility: node.utility + adjustedFutureEV * normalizedWeights.futureEV,
     };
   });
   const probabilities = softmaxProbabilities(scoredNodes);
@@ -223,6 +345,7 @@ function evaluateSuperpositionEngine({
     timePenalty: node.parts.timePenalty,
     distancePenalty: node.parts.distancePenalty,
     zoneOpportunity: node.parts.zoneOpportunity,
+    opportunityFieldScore: node.opportunityFieldSignal.score,
     futureEV: node.future.futureEV,
     assignmentProbabilityEstimate: round4(clamp01(probabilities[index])),
     metadata: {
@@ -239,6 +362,16 @@ function evaluateSuperpositionEngine({
       prunedCandidateCount: node.future.prunedCount,
       sequenceCandidateCount: node.future.sequenceCandidateCount,
       poissonExpectedArrivals: node.future.expectedArrivals,
+      baseFutureEV: node.future.baseFutureEV,
+      opportunityField: {
+        applied: node.opportunityFieldSignal.score > 0,
+        score: node.opportunityFieldSignal.score,
+        cellId: node.opportunityFieldSignal.cellId,
+        distanceMeters: node.opportunityFieldSignal.distanceMeters,
+        source: node.opportunityFieldSignal.source,
+        appliedWeight: normalizedWeights.opportunityField,
+        candidateFieldCount: normalizedOpportunityFieldCells.length,
+      },
     },
   }));
 }
