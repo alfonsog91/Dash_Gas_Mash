@@ -237,6 +237,7 @@ export async function runPerfGuardTests() {
     assert(result.averageFrameTimeMs === 50, "average frame time is reported");
     assert(result.gpuMemoryMb === 1024, "available GPU memory is preserved");
     assertDeepEqual(result.disabledEffects, Object.values(PHASE_E_PERFORMANCE_GUARD_EFFECTS), "all configured non-essential effects are disabled");
+    assert(result.disabledEffects.includes(PHASE_E_PERFORMANCE_GUARD_EFFECTS.OPPORTUNITY_OVERLAY), "Phase F Opportunity Overlay is disabled by the guard");
   });
 
   await runTest("GPU memory remains optional", () => {

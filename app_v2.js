@@ -82,11 +82,12 @@ import { evaluateVisualPerformanceHeuristics } from "./performance_heuristics.js
 import {
   PHASE_E_PERFORMANCE_GUARD_EFFECTS,
   createPhaseEPerformanceMonitor,
-} from "./performance/monitor.js?v=20260502-phase-e-perf-guard";
+} from "./performance/monitor.js?v=20260530-phase-f-opportunity-guard";
 import {
   DEFAULT_WEIGHTS as SUPERPOSITION_DEFAULT_WEIGHTS,
   evaluateSuperpositionEngine,
 } from "./intelligence/superposition_engine.js?v=20260502-phase-e-superposition";
+import { generateOpportunityField } from "./intelligence/opportunity_field.js?v=20260530-phase-f-opportunity-field";
 import { getPhaseCManifest } from "./phase_c_manifest.js?v=20260501-phase-c-manifest";
 import {
   applyPhaseCActivation,
@@ -160,6 +161,10 @@ function getStatPingSuperpositionDebug() {
   return lastStatPingSuperposition;
 }
 
+function getPhaseFOpportunityDebug() {
+  return lastPhaseFOpportunityDebug;
+}
+
 function getPhaseEPerformanceDashboard() {
   return phaseEPerformanceMonitor?.getDashboard?.() || null;
 }
@@ -198,6 +203,7 @@ function debugDumpState() {
       tuning: getProgrammaticCameraTuningDebug(),
     },
     performance: getPhaseEPerformanceDashboard(),
+    opportunity: getPhaseFOpportunityDebug(),
   };
 }
 
@@ -211,6 +217,7 @@ function installPhaseDDebugSurface() {
     debugDumpState,
     getPhaseDCameraTuningParameters: getProgrammaticCameraTuningDebug,
     getStatPingSuperpositionMetadata: getStatPingSuperpositionDebug,
+    getPhaseFOpportunityMetadata: getPhaseFOpportunityDebug,
     getPhaseEPerformanceDashboard,
   });
   Object.defineProperties(debugSurface, {
@@ -247,6 +254,8 @@ async function reconcilePhaseCActivation() {
     });
     phaseCFlagsWereActive = true;
     syncPhaseDMotionSensorUx();
+    syncOpportunityControl();
+    scheduleOpportunityFieldRecompute({ immediate: true });
     return;
   }
 
@@ -258,6 +267,8 @@ async function reconcilePhaseCActivation() {
 
   phaseCFlagsWereActive = false;
   syncPhaseDMotionSensorUx();
+  syncOpportunityControl();
+  syncOpportunityOverlayVisibility();
 }
 
 function syncPhaseDMotionSensorUx() {
@@ -409,6 +420,12 @@ const STANDARD_MAP_THEME_DARK = "dark";
 const STANDARD_MAP_THEME_AUTO = "auto";
 const MAP_MODE_AUTO_REFRESH_MS = 60 * 1000;
 const STANDARD_TRAFFIC_HOLD_DELAY_MS = 300;
+const PHASE_F_OPPORTUNITY_GRID_RESOLUTION_METERS = 220;
+const PHASE_F_OPPORTUNITY_SMOOTHING_SIGMA_METERS = 420;
+const PHASE_F_OPPORTUNITY_DECAY_WINDOW_MINUTES = 90;
+const PHASE_F_OPPORTUNITY_RECOMPUTE_THROTTLE_MS = 650;
+const PHASE_F_OPPORTUNITY_MAX_RENDERED_CELLS = 320;
+const PHASE_F_OPPORTUNITY_DEFAULT_OPACITY = 0.56;
 const mapboxgl = window.mapboxgl;
 
 function renderFatalMapError(message, kicker = "Map unavailable") {
@@ -465,6 +482,7 @@ if (mapboxgl.accessToken === MAPBOX_PLACEHOLDER_TOKEN || !String(mapboxgl.access
 const SOURCE_RESTAURANTS = "restaurants";
 const SOURCE_PARKING = "parking";
 const SOURCE_HEAT = "heat";
+const SOURCE_OPPORTUNITY_FIELD = "opportunity-field";
 const SOURCE_SPOT = "spot";
 const SOURCE_CURRENT_LOCATION = "current-location";
 const SOURCE_CURRENT_LOCATION_ACCURACY = "current-location-accuracy";
@@ -475,6 +493,7 @@ const SOURCE_CINEMATIC_GRADE = "cinematic-grade";
 const SOURCE_TRAFFIC = "traffic";
 
 const LAYER_HEAT = "heat-layer";
+const LAYER_OPPORTUNITY_FIELD = "opportunity-field-layer";
 const LAYER_RESTAURANTS_GLOW = "restaurants-glow-layer";
 const LAYER_RESTAURANTS = "restaurants-layer";
 const LAYER_PARKING_GLOW = "parking-glow-layer";
@@ -507,6 +526,7 @@ const LAYER_ROUTE = "route-layer";
 
 const MAP_MODE_OWNED_LAYER_IDS = new Set([
   LAYER_HEAT,
+  LAYER_OPPORTUNITY_FIELD,
   LAYER_RESTAURANTS_GLOW,
   LAYER_RESTAURANTS,
   LAYER_PARKING_GLOW,
@@ -562,6 +582,8 @@ const phaseEPerformanceMonitor = createPhaseEPerformanceMonitor({
   onFallback: () => {
     reconcilePhaseCActivation().catch((error) => console.error(error));
     syncTrafficLayerVisibility(currentBaseStyle);
+    syncOpportunityOverlayVisibility();
+    syncOpportunityControl();
     installPhaseDDebugSurface();
   },
 });
@@ -683,6 +705,7 @@ let currentStandardTrafficEnabled = readStoredStandardTrafficEnabled();
 let phaseDTrafficDefaultsHidden = false;
 let phaseDTrafficDiscoveryWarningShown = false;
 let phaseEPerformanceTrafficFallbackLogged = false;
+let phaseEPerformanceOpportunityFallbackLogged = false;
 let mapModeAutoRefreshTimer = null;
 let mapModeLayerRoleCache = new Map();
 let activeSearchAbort = null;
@@ -718,6 +741,12 @@ let lastStats = null;
 let lastLoadedBounds = null; // tracks the bounds used for the last successful load
 let lastWeatherSignal = null;
 let lastStatPingSuperposition = null;
+let lastPhaseFOpportunityDebug = null;
+let lastPhaseFOpportunityField = null;
+let phaseFOpportunityOverlayEnabled = false;
+let phaseFOpportunityOpacity = PHASE_F_OPPORTUNITY_DEFAULT_OPACITY;
+let phaseFOpportunityRecomputeTimer = null;
+let phaseFOpportunityRecomputeRunning = false;
 
 const STAT_PING_WEIGHT_KEYS = Object.freeze([
   "basePay",
@@ -893,6 +922,7 @@ let elMapModeDrawer = null;
 let elMapModeDrawerEdge = null;
 let elMapModeDrawerPanel = null;
 let elMapModeDrawerTab = null;
+let elOpportunityControl = null;
 let activeMapModeDrawerSwipe = null;
 
 function getRoutingState() {
@@ -1286,6 +1316,7 @@ function getCinematicTheme(standardTheme = getResolvedStandardMapTheme()) {
 function getBasemapOverlayBeforeId() {
   const styleLayers = map.getStyle()?.layers || [];
   const firstAppLayerId = [
+    LAYER_OPPORTUNITY_FIELD,
     LAYER_HEAT,
     LAYER_ROUTE_CASING,
     LAYER_ROUTE,
@@ -2373,6 +2404,7 @@ function restoreLayersAfterStyleChange() {
   mapModeLayerRoleCache = new Map();
   ensureMapSourcesAndLayers();
   restoreMapDataSources();
+  renderOpportunityFieldOverlay();
   syncMapModeAppearance({ updateUi: false });
   const categoryRestoreResult = syncCategoryLayerVisibility();
   logDgmTelemetry("map.style_reload_restored", {
@@ -3894,7 +3926,10 @@ function ensureMapModeToolbar() {
 
 function bindMapModeControlEvents() {
   ensureMapModeToolbar();
+  ensureOpportunityControl();
   if (!elMapModeControl || elMapModeControl.dataset.bound === "true") {
+    bindOpportunityControlEvents();
+    syncOpportunityControl();
     return;
   }
 
@@ -3915,6 +3950,104 @@ function bindMapModeControlEvents() {
       closeStandardTrafficPopup();
       setStandardMapTheme(button.dataset.standardMapTheme);
     });
+  });
+  bindOpportunityControlEvents();
+  syncOpportunityControl();
+}
+
+function ensureOpportunityControl() {
+  ensureMapModeToolbar();
+  if (elOpportunityControl) {
+    return;
+  }
+
+  const drawerBody = elMapModeDrawer?.querySelector(".map-mode-drawer__body");
+  if (!drawerBody) {
+    return;
+  }
+
+  const control = document.createElement("section");
+  control.className = "map-mode-control";
+  control.hidden = true;
+  control.setAttribute("aria-label", "Opportunity overlay");
+  control.innerHTML = `
+    <details data-opportunity-details>
+      <summary class="map-mode-label">Opportunity</summary>
+      <label class="checkbox">
+        <input type="checkbox" data-opportunity-toggle />
+        <span>Overlay</span>
+      </label>
+      <label class="map-mode-label" for="phaseFOpportunityOpacity">Opacity <span data-opportunity-opacity-value>${Math.round(phaseFOpportunityOpacity * 100)}%</span></label>
+      <input id="phaseFOpportunityOpacity" type="range" min="0" max="1" step="0.05" value="${phaseFOpportunityOpacity}" data-opportunity-opacity />
+      <div class="hint" data-opportunity-status>Waiting for field</div>
+    </details>
+  `;
+  drawerBody.append(control);
+  elOpportunityControl = control;
+}
+
+function syncOpportunityControl() {
+  if (!elOpportunityControl) {
+    return;
+  }
+
+  const tuningEnabled = isPhaseDTuningEnabled();
+  const guarded = isPhaseFOpportunityGuarded();
+  elOpportunityControl.hidden = !tuningEnabled;
+
+  const toggle = elOpportunityControl.querySelector("[data-opportunity-toggle]");
+  const opacity = elOpportunityControl.querySelector("[data-opportunity-opacity]");
+  const opacityValue = elOpportunityControl.querySelector("[data-opportunity-opacity-value]");
+  const status = elOpportunityControl.querySelector("[data-opportunity-status]");
+  if (toggle) {
+    toggle.checked = phaseFOpportunityOverlayEnabled;
+    toggle.disabled = !tuningEnabled || guarded;
+  }
+  if (opacity) {
+    opacity.value = String(phaseFOpportunityOpacity);
+    opacity.disabled = !tuningEnabled || guarded || !phaseFOpportunityOverlayEnabled;
+  }
+  if (opacityValue) {
+    opacityValue.textContent = `${Math.round(phaseFOpportunityOpacity * 100)}%`;
+  }
+  if (status) {
+    const metadata = lastPhaseFOpportunityField?.metadata;
+    status.textContent = guarded
+      ? "Perf guard disabled"
+      : metadata
+        ? `${lastPhaseFOpportunityField.field.length} cells · ${Math.round(metadata.heuristicConfidenceScore * 100)} confidence`
+        : "Waiting for field";
+  }
+}
+
+function bindOpportunityControlEvents() {
+  if (!elOpportunityControl || elOpportunityControl.dataset.bound === "true") {
+    return;
+  }
+
+  elOpportunityControl.dataset.bound = "true";
+  elOpportunityControl.addEventListener("change", (event) => {
+    const toggle = event.target?.closest?.("[data-opportunity-toggle]");
+    if (!toggle) {
+      return;
+    }
+    phaseFOpportunityOverlayEnabled = Boolean(toggle.checked);
+    if (phaseFOpportunityOverlayEnabled) {
+      scheduleOpportunityFieldRecompute({ immediate: !lastPhaseFOpportunityField });
+    } else {
+      syncOpportunityOverlayVisibility();
+    }
+    syncOpportunityControl();
+  });
+
+  elOpportunityControl.addEventListener("input", (event) => {
+    const slider = event.target?.closest?.("[data-opportunity-opacity]");
+    if (!slider) {
+      return;
+    }
+    phaseFOpportunityOpacity = clamp01(slider.value);
+    renderOpportunityFieldOverlay();
+    syncOpportunityControl();
   });
 }
 
@@ -4143,6 +4276,193 @@ function setLayerVisibility(layerId, visible) {
   map.setLayoutProperty(layerId, "visibility", visible ? "visible" : "none");
 }
 
+function isPhaseFOpportunityGuarded() {
+  return isPhaseDTuningEnabled()
+    && isPhaseEPerformanceEffectDisabled(PHASE_E_PERFORMANCE_GUARD_EFFECTS.OPPORTUNITY_OVERLAY);
+}
+
+function getPhaseFOpportunitySamples() {
+  const timestamp = Date.now();
+  return lastRankedParkingAll
+    .filter((candidate) => Number.isFinite(Number(candidate?.lat)) && Number.isFinite(Number(candidate?.lon ?? candidate?.lng)))
+    .slice(0, 80)
+    .map((candidate) => ({
+      lat: Number(candidate.lat),
+      lng: Number(candidate.lon ?? candidate.lng),
+      count: Math.max(1, Math.round(Number(candidate.effectiveMerchants ?? candidate.merchantCount ?? 1) || 1)),
+      aggregateEV: getProbabilityMid(candidate),
+      timestamp,
+    }));
+}
+
+function createOpportunityFieldFeature(cell) {
+  const feature = createCirclePolygonFeature(
+    { lat: cell.lat, lng: cell.lng },
+    PHASE_F_OPPORTUNITY_GRID_RESOLUTION_METERS * 0.58,
+    20
+  );
+  feature.properties = {
+    opportunity: cell.opportunity,
+    opacity: Math.max(0.04, cell.opportunity * phaseFOpportunityOpacity),
+    recentDensity: cell.recentDensity,
+    historicalDensity: cell.historicalDensity,
+    zoneBoost: cell.zoneBoost,
+    travelCost: cell.travelCost,
+  };
+  return feature;
+}
+
+function getRenderedOpportunityCells(field) {
+  return [...field]
+    .filter((cell) => cell.opportunity > 0.025)
+    .sort((left, right) => right.opportunity - left.opportunity || left.id.localeCompare(right.id))
+    .slice(0, PHASE_F_OPPORTUNITY_MAX_RENDERED_CELLS)
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function clearOpportunityFieldOverlay() {
+  setSourceData(SOURCE_OPPORTUNITY_FIELD, featureCollection());
+  setLayerVisibility(LAYER_OPPORTUNITY_FIELD, false);
+}
+
+function exposePhaseFOpportunityDebug(fieldResult, renderedCellCount) {
+  lastPhaseFOpportunityDebug = fieldResult
+    ? {
+        updatedAt: Date.now(),
+        enabled: phaseFOpportunityOverlayEnabled,
+        opacity: phaseFOpportunityOpacity,
+        renderedCellCount,
+        metadata: fieldResult.metadata,
+        components: fieldResult.components,
+      }
+    : null;
+
+  if (!shouldExposePhaseDDebug()) {
+    return;
+  }
+
+  window.__DGM_DEBUG = Object.assign(window.__DGM_DEBUG || {}, {
+    phaseFOpportunity: lastPhaseFOpportunityDebug,
+    getPhaseFOpportunityMetadata: getPhaseFOpportunityDebug,
+  });
+}
+
+function renderOpportunityFieldOverlay() {
+  if (!isPhaseDTuningEnabled() || !phaseFOpportunityOverlayEnabled || isPhaseFOpportunityGuarded()) {
+    clearOpportunityFieldOverlay();
+    exposePhaseFOpportunityDebug(lastPhaseFOpportunityField, 0);
+    return false;
+  }
+
+  if (!lastPhaseFOpportunityField?.field?.length) {
+    clearOpportunityFieldOverlay();
+    exposePhaseFOpportunityDebug(lastPhaseFOpportunityField, 0);
+    return false;
+  }
+
+  const renderedCells = getRenderedOpportunityCells(lastPhaseFOpportunityField.field);
+  setSourceData(SOURCE_OPPORTUNITY_FIELD, featureCollection(renderedCells.map(createOpportunityFieldFeature)));
+  setLayerVisibility(LAYER_OPPORTUNITY_FIELD, true);
+  exposePhaseFOpportunityDebug(lastPhaseFOpportunityField, renderedCells.length);
+  return true;
+}
+
+function syncOpportunityOverlayVisibility() {
+  if (!isPhaseDTuningEnabled()) {
+    clearOpportunityFieldOverlay();
+    return false;
+  }
+
+  if (isPhaseFOpportunityGuarded()) {
+    clearOpportunityFieldOverlay();
+    if (!phaseEPerformanceOpportunityFallbackLogged) {
+      const guard = getPhaseEPerformanceGuardSnapshot();
+      logDgmTelemetry("map.phase_e_performance_guard_effect_disabled", {
+        reason: guard?.reason || "performance_guard_active",
+        effect: PHASE_E_PERFORMANCE_GUARD_EFFECTS.OPPORTUNITY_OVERLAY,
+        disabledEffects: guard?.disabledEffects || [],
+      });
+      phaseEPerformanceOpportunityFallbackLogged = true;
+    }
+    return false;
+  }
+
+  return renderOpportunityFieldOverlay();
+}
+
+function recomputeOpportunityField() {
+  if (!isPhaseDTuningEnabled() || !phaseFOpportunityOverlayEnabled || isPhaseFOpportunityGuarded()) {
+    syncOpportunityOverlayVisibility();
+    syncOpportunityControl();
+    return null;
+  }
+
+  const samples = getPhaseFOpportunitySamples();
+  if (!samples.length) {
+    lastPhaseFOpportunityField = null;
+    clearOpportunityFieldOverlay();
+    exposePhaseFOpportunityDebug(null, 0);
+    syncOpportunityControl();
+    return null;
+  }
+
+  try {
+    lastPhaseFOpportunityField = generateOpportunityField(samples, {
+      gridResolution: PHASE_F_OPPORTUNITY_GRID_RESOLUTION_METERS,
+      smoothingSigma: PHASE_F_OPPORTUNITY_SMOOTHING_SIGMA_METERS,
+      decayWindow: PHASE_F_OPPORTUNITY_DECAY_WINDOW_MINUTES,
+      timestamp: Date.now(),
+      clusterMinSamples: 4,
+      weights: { recentDensity: 0.52, historicalDensity: 0.14, zoneBoost: 0.24, travelCost: 0.1 },
+    });
+  } catch (error) {
+    lastPhaseFOpportunityField = null;
+    clearOpportunityFieldOverlay();
+    exposePhaseFOpportunityDebug(null, 0);
+    logDgmTelemetry("map.phase_f_opportunity_recompute_failed", {
+      reason: error?.message || String(error),
+    });
+    syncOpportunityControl();
+    return null;
+  }
+  renderOpportunityFieldOverlay();
+  syncOpportunityControl();
+  return lastPhaseFOpportunityField;
+}
+
+function scheduleOpportunityFieldRecompute({ immediate = false } = {}) {
+  if (phaseFOpportunityRecomputeTimer !== null) {
+    window.clearTimeout(phaseFOpportunityRecomputeTimer);
+    phaseFOpportunityRecomputeTimer = null;
+  }
+
+  if (!isPhaseDTuningEnabled() || !phaseFOpportunityOverlayEnabled) {
+    syncOpportunityOverlayVisibility();
+    syncOpportunityControl();
+    return;
+  }
+
+  const run = () => {
+    phaseFOpportunityRecomputeTimer = null;
+    if (phaseFOpportunityRecomputeRunning) {
+      return;
+    }
+    phaseFOpportunityRecomputeRunning = true;
+    try {
+      recomputeOpportunityField();
+    } finally {
+      phaseFOpportunityRecomputeRunning = false;
+    }
+  };
+
+  if (immediate) {
+    run();
+    return;
+  }
+
+  phaseFOpportunityRecomputeTimer = window.setTimeout(run, PHASE_F_OPPORTUNITY_RECOMPUTE_THROTTLE_MS);
+}
+
 function createCirclePolygonFeature(latlng, radiusMeters, steps = 48) {
   const center = lngLatToObject(latlng);
   const coordinates = [];
@@ -4173,17 +4493,39 @@ function ensureMapSourcesAndLayers() {
   if (map.getSource(SOURCE_RESTAURANTS)) {
     syncCategoryLayerVisibility();
     syncMapModeAppearance();
+    syncOpportunityOverlayVisibility();
     return;
   }
 
   map.addSource(SOURCE_RESTAURANTS, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_PARKING, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_HEAT, { type: "geojson", data: featureCollection() });
+  map.addSource(SOURCE_OPPORTUNITY_FIELD, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_SPOT, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_CURRENT_LOCATION, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_CURRENT_LOCATION_ACCURACY, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_HEADING, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_ROUTE, { type: "geojson", data: featureCollection() });
+
+  map.addLayer({
+    id: LAYER_OPPORTUNITY_FIELD,
+    type: "fill",
+    source: SOURCE_OPPORTUNITY_FIELD,
+    layout: {
+      visibility: "none",
+    },
+    paint: {
+      "fill-color": [
+        "interpolate", ["linear"], ["coalesce", ["get", "opportunity"], 0],
+        0, "rgba(18, 64, 120, 0)",
+        0.28, "#1fb6a6",
+        0.58, "#f4c542",
+        0.82, "#f97316",
+        1, "#f8fbff",
+      ],
+      "fill-opacity": ["coalesce", ["get", "opacity"], 0],
+    },
+  });
 
   map.addLayer({
     id: LAYER_HEAT,
@@ -4432,6 +4774,7 @@ function ensureMapSourcesAndLayers() {
   bindMapInteractionLayerEvents();
   syncCategoryLayerVisibility();
   syncMapModeAppearance();
+  syncOpportunityOverlayVisibility();
 }
 
 function setHourDefaults() {
@@ -6296,7 +6639,9 @@ function escapeHtml(s) {
 }
 
 async function loadForView() {
-  return dataScoringRuntime.loadForView();
+  const result = await dataScoringRuntime.loadForView();
+  scheduleOpportunityFieldRecompute();
+  return result;
 }
 
 installRuntimeDebugSurface();

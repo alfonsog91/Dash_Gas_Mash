@@ -3,6 +3,7 @@ const PHASE_E_PERFORMANCE_GUARD_EFFECTS = Object.freeze({
   FOG_TUNING: "phaseDFogTuning",
   LABEL_OPACITY: "phaseDLabelOpacity",
   DGM_TRAFFIC_STYLING: "dgmTrafficStyling",
+  OPPORTUNITY_OVERLAY: "phaseFOpportunityOverlay",
 });
 
 const PHASE_E_PERFORMANCE_GUARD_EFFECT_LIST = Object.freeze(Object.values(PHASE_E_PERFORMANCE_GUARD_EFFECTS));
