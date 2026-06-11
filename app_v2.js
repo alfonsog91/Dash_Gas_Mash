@@ -88,6 +88,10 @@ import {
   evaluateSuperpositionEngine,
 } from "./intelligence/superposition_engine.js?v=20260502-phase-e-superposition";
 import { generateOpportunityField } from "./intelligence/opportunity_field.js?v=20260530-phase-f-opportunity-field";
+import {
+  generateVegetationInstances,
+  resolveLodMode,
+} from "./intelligence/vegetation_core.js?v=20260610-phaseg-vegetation-core";
 import { createProviderRegistry } from "./intelligence/place_provider_adapter.js?v=20260610-phaseg-place-provider";
 import {
   createPlacePhotosHandler,
@@ -96,6 +100,7 @@ import {
 } from "./intelligence/place_photos.js?v=20260610-phaseg-place-photos";
 import { createPlaceCard } from "./ui/place_card.js?v=20260610-phaseg-place-card";
 import { createPlaceSearch, boundingBoxAround } from "./intelligence/place_search.js?v=20260610-phaseg-place-search";
+import { createVegetationLayer } from "./ui/vegetation_layer.js?v=20260610-phaseg-vegetation-layer";
 import { getPhaseCManifest } from "./phase_c_manifest.js?v=20260501-phase-c-manifest";
 import {
   applyPhaseCActivation,
@@ -3935,9 +3940,12 @@ function ensureMapModeToolbar() {
 function bindMapModeControlEvents() {
   ensureMapModeToolbar();
   ensureOpportunityControl();
+  ensureVegetationControl();
   if (!elMapModeControl || elMapModeControl.dataset.bound === "true") {
     bindOpportunityControlEvents();
     syncOpportunityControl();
+    bindVegetationControlEvents();
+    syncVegetationControl();
     return;
   }
 
@@ -3961,6 +3969,8 @@ function bindMapModeControlEvents() {
   });
   bindOpportunityControlEvents();
   syncOpportunityControl();
+  bindVegetationControlEvents();
+  syncVegetationControl();
 }
 
 function ensureOpportunityControl() {
@@ -4058,6 +4068,107 @@ function bindOpportunityControlEvents() {
     syncOpportunityControl();
   });
 }
+
+function ensureVegetationControl() {
+  ensureMapModeToolbar();
+  if (elVegetationControl) {
+    return;
+  }
+
+  const drawerBody = elMapModeDrawer?.querySelector(".map-mode-drawer__body");
+  if (!drawerBody) {
+    return;
+  }
+
+  const layer = getPhaseGVegetationLayer();
+  const control = document.createElement("section");
+  control.className = "map-mode-control";
+  control.hidden = true;
+  control.setAttribute("aria-label", "Vegetation overlay");
+  control.innerHTML = `
+    <details data-vegetation-details>
+      <summary class="map-mode-label">Vegetation</summary>
+      <label class="checkbox">
+        <input type="checkbox" data-vegetation-toggle />
+        <span>Trees &amp; woods</span>
+      </label>
+      <label class="map-mode-label" for="phaseGVegetationDensity">Density <span data-vegetation-density-value>1</span></label>
+      <input id="phaseGVegetationDensity" type="range" min="1" max="6" step="1" value="1" data-vegetation-density />
+      <div class="hint" data-vegetation-status>Disabled</div>
+    </details>
+  `;
+  drawerBody.append(control);
+  elVegetationControl = control;
+  // Keep the layer instance referenced so creation happens with the control.
+  void layer;
+}
+
+function syncVegetationControl() {
+  if (!elVegetationControl) {
+    return;
+  }
+
+  const allowed = isPhaseGVegetationAllowed();
+  const guarded = isPhaseGVegetationGuarded();
+  elVegetationControl.hidden = !allowed;
+
+  const toggle = elVegetationControl.querySelector("[data-vegetation-toggle]");
+  const density = elVegetationControl.querySelector("[data-vegetation-density]");
+  const densityValue = elVegetationControl.querySelector("[data-vegetation-density-value]");
+  const status = elVegetationControl.querySelector("[data-vegetation-status]");
+  if (toggle) {
+    toggle.checked = phaseGVegetationEnabled;
+    toggle.disabled = !allowed || guarded;
+  }
+  if (density) {
+    density.disabled = !allowed || guarded || !phaseGVegetationEnabled;
+  }
+  if (densityValue && density) {
+    densityValue.textContent = String(density.value);
+  }
+  if (status) {
+    const metadata = getPhaseGVegetationLayer().getDebugMetadata();
+    status.textContent = guarded
+      ? "Perf guard disabled"
+      : !phaseGVegetationEnabled
+        ? "Disabled"
+        : metadata
+          ? `${metadata.instanceCount} instances · ${metadata.currentMode}`
+          : "Active";
+  }
+}
+
+function bindVegetationControlEvents() {
+  if (!elVegetationControl || elVegetationControl.dataset.bound === "true") {
+    return;
+  }
+
+  elVegetationControl.dataset.bound = "true";
+  elVegetationControl.addEventListener("change", (event) => {
+    const toggle = event.target?.closest?.("[data-vegetation-toggle]");
+    if (!toggle) {
+      return;
+    }
+    phaseGVegetationEnabled = Boolean(toggle.checked);
+    getPhaseGVegetationLayer().setEnabled(phaseGVegetationEnabled);
+    if (phaseGVegetationEnabled) {
+      refreshPhaseGVegetationSamples();
+    }
+    syncPhaseGVegetationVisibility();
+    syncVegetationControl();
+  });
+
+  elVegetationControl.addEventListener("input", (event) => {
+    const slider = event.target?.closest?.("[data-vegetation-density]");
+    if (!slider) {
+      return;
+    }
+    getPhaseGVegetationLayer().setDensityThreshold(Number(slider.value));
+    syncPhaseGVegetationVisibility();
+    syncVegetationControl();
+  });
+}
+
 
 function renderSearchResults(results) {
   if (!elSearchResults) return;
@@ -5415,6 +5526,102 @@ function handleMapClick(event) {
   handleMapBackgroundClick(event);
 }
 
+// Phase G vegetation layer (owner-gated heavy effect). Visible only when
+// (isPhaseDTuningEnabled() OR an owner-local toggle) AND the user toggle is on
+// AND the phaseGVegetationLayer perf-guard effect has not tripped.
+let phaseGVegetationLayer = null;
+let phaseGVegetationEnabled = false;
+let elVegetationControl = null;
+
+function isPhaseGVegetationOwnerToggleEnabled() {
+  // Owner-local enable independent of full Phase D tuning.
+  try {
+    if (new URLSearchParams(window.location.search).get("vegetation") === "true") {
+      return true;
+    }
+  } catch {
+    // URL parsing is advisory only.
+  }
+  if (window.DGM_VEGETATION === true) {
+    return true;
+  }
+  try {
+    return window.localStorage?.getItem("dgm:phaseg:vegetation") === "true";
+  } catch {
+    return false;
+  }
+}
+
+function isPhaseGVegetationAllowed() {
+  return isPhaseDTuningEnabled() || isPhaseGVegetationOwnerToggleEnabled();
+}
+
+function isPhaseGVegetationGuarded() {
+  return isPhaseEPerformanceEffectDisabled(PHASE_E_PERFORMANCE_GUARD_EFFECTS.VEGETATION_LAYER);
+}
+
+function getPhaseGVegetationLayer() {
+  if (!phaseGVegetationLayer) {
+    phaseGVegetationLayer = createVegetationLayer({
+      getMap: () => map,
+      generateInstances: generateVegetationInstances,
+      resolveLod: resolveLodMode,
+      shouldExposeDebug: shouldExposePhaseDDebug,
+    });
+  }
+  return phaseGVegetationLayer;
+}
+
+// Deterministic synthetic vegetation around the current view center. This stands
+// in for a real vegetation provider (OSM natural=wood / landcover tiles) until
+// one is wired; the generation/LOD math itself lives in vegetation_core.js.
+function buildPhaseGVegetationSamples() {
+  if (typeof map?.getCenter !== "function") {
+    return [];
+  }
+  const center = map.getCenter();
+  const lat = Number(center.lat);
+  const lng = Number(center.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return [];
+  }
+  const samples = [];
+  for (let i = -3; i <= 3; i += 1) {
+    for (let j = -3; j <= 3; j += 1) {
+      samples.push({ type: "tree", lat: lat + i * 0.0008, lng: lng + j * 0.0008 });
+    }
+  }
+  samples.push({
+    type: "wood",
+    density: 2,
+    polygon: [
+      [lng + 0.004, lat + 0.003],
+      [lng + 0.008, lat + 0.003],
+      [lng + 0.008, lat + 0.006],
+      [lng + 0.004, lat + 0.006],
+      [lng + 0.004, lat + 0.003],
+    ],
+  });
+  return samples;
+}
+
+function refreshPhaseGVegetationSamples() {
+  if (!phaseGVegetationEnabled || !isPhaseGVegetationAllowed() || isPhaseGVegetationGuarded()) {
+    return;
+  }
+  getPhaseGVegetationLayer().setSamples(buildPhaseGVegetationSamples());
+}
+
+function syncPhaseGVegetationVisibility() {
+  const layer = getPhaseGVegetationLayer();
+  const allowed = isPhaseGVegetationAllowed() && phaseGVegetationEnabled;
+  return layer.syncVisibility({
+    zoom: typeof map?.getZoom === "function" ? map.getZoom() : 0,
+    guardDisabled: isPhaseGVegetationGuarded(),
+    allowed,
+  });
+}
+
 function installRuntimeDebugSurface() {
   const result = headingRuntime.installRuntimeDebugSurface({ loadForView, locateUser });
   const configRuntime = installMapConfigRuntimeSurface({ buildId: APP_BUILD_ID });
@@ -5441,6 +5648,23 @@ function installRuntimeDebugSurface() {
       getProviderRegistry: getPhaseGPlaceProviderRegistry,
       getDebugMetadata: () => getPhaseGPlaceCardController().getDebugMetadata(),
       search: getPhaseGPlaceSearch(),
+    };
+    window.DGM_RUNTIME.vegetation = {
+      setEnabled: (value) => {
+        phaseGVegetationEnabled = Boolean(value);
+        getPhaseGVegetationLayer().setEnabled(phaseGVegetationEnabled);
+        if (phaseGVegetationEnabled) {
+          refreshPhaseGVegetationSamples();
+        }
+        return phaseGVegetationEnabled;
+      },
+      setSamples: (samples) => getPhaseGVegetationLayer().setSamples(samples),
+      setDensityThreshold: (value) => getPhaseGVegetationLayer().setDensityThreshold(value),
+      getInstanceCount: () => getPhaseGVegetationLayer().getInstanceCount(),
+      syncVisibility: ({ zoom, guardDisabled, allowed } = {}) =>
+        getPhaseGVegetationLayer().syncVisibility({ zoom, guardDisabled, allowed }),
+      getActiveMode: () => getPhaseGVegetationLayer().getActiveMode(),
+      getDebugMetadata: () => getPhaseGVegetationLayer().getDebugMetadata(),
     };
   }
   return result;
@@ -6904,6 +7128,10 @@ if (elSearchResults) {
 document.addEventListener("input", handleStatPingWeightInput);
 
 map.on("moveend", checkDataFreshness);
+map.on("moveend", () => {
+  refreshPhaseGVegetationSamples();
+  syncPhaseGVegetationVisibility();
+});
 map.on("zoom", refreshHeadingConeFromState);
 map.on("rotate", refreshHeadingConeFromState);
 map.on("dragstart", handleManualMapCameraStart);

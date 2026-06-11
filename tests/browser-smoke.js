@@ -292,6 +292,53 @@ async function runPlaceCardSmoke(runtime, appWindow) {
   return { websiteMode: model.websitePlan.mode, photoCount: model.photoRefs.length };
 }
 
+async function runVegetationSmoke(runtime) {
+  const vegetation = runtime.vegetation;
+  assert(vegetation && typeof vegetation.syncVisibility === "function", "vegetation runtime surface is exposed");
+
+  // Seed deterministic samples and enable the owner-local toggle path.
+  vegetation.setSamples([
+    { type: "wood", density: 2, polygon: [[-117.651, 34.05], [-117.649, 34.05], [-117.649, 34.0512], [-117.651, 34.0512], [-117.651, 34.05]] },
+    { type: "tree", lat: 34.06, lng: -117.6 },
+    { type: "tree", lat: 34.0601, lng: -117.6001 },
+  ]);
+  vegetation.setEnabled(true);
+
+  const baseInstances = vegetation.getInstanceCount();
+  assert(baseInstances > 0, "vegetation generates sprite instances from samples");
+
+  // High zoom + allowed + no guard => sprite billboards.
+  const spriteMode = vegetation.syncVisibility({ zoom: 16, guardDisabled: false, allowed: true });
+  assert(spriteMode === "sprite", "high zoom renders sprite billboards when allowed");
+
+  // Mid zoom => aggregated extrusions.
+  const extrusionMode = vegetation.syncVisibility({ zoom: 10, guardDisabled: false, allowed: true });
+  assert(extrusionMode === "extrusion", "mid zoom renders aggregated extrusions");
+
+  // Simulated low-FPS perf guard disables the layer entirely.
+  const guardedMode = vegetation.syncVisibility({ zoom: 16, guardDisabled: true, allowed: true });
+  assert(guardedMode === "hidden", "a tripped perf guard hides vegetation");
+
+  // Not allowed (no tuning and no owner toggle) also hides it.
+  const disallowedMode = vegetation.syncVisibility({ zoom: 16, guardDisabled: false, allowed: false });
+  assert(disallowedMode === "hidden", "vegetation stays hidden when not allowed");
+
+  // Density slider updates instance count (raising the threshold reduces it).
+  vegetation.setDensityThreshold(99);
+  assert(vegetation.getInstanceCount() < baseInstances, "raising density threshold reduces the instance count");
+  vegetation.setDensityThreshold(1);
+
+  // Debug metadata is exposed on the debug host (localhost).
+  const debugMetadata = vegetation.getDebugMetadata();
+  assert(debugMetadata && typeof debugMetadata.instanceCount === "number", "vegetation debug metadata is exposed on the debug host");
+
+  // Leave the layer hidden so it does not affect later checks.
+  vegetation.setEnabled(false);
+  vegetation.syncVisibility({ zoom: 16, guardDisabled: false, allowed: false });
+
+  return { baseInstances, spriteMode, extrusionMode };
+}
+
 async function runDgmBrowserSmoke({ targetUrl = "../index.html?dgmSmoke=1" } = {}) {
   const log = createLogger();
   const storageSnapshot = snapshotSmokeStorage();
@@ -317,11 +364,14 @@ async function runDgmBrowserSmoke({ targetUrl = "../index.html?dgmSmoke=1" } = {
     const placeCard = await runPlaceCardSmoke(readiness.runtime, iframe.contentWindow);
     log.write("PASS Phase G place card open, accessibility, security, and debug gating");
 
+    const vegetation = await runVegetationSmoke(readiness.runtime);
+    log.write("PASS Phase G vegetation toggle, LOD, perf-guard gating, and density slider");
+
     const errors = assertNoCapturedErrors(getSmokeReport(iframe.contentWindow));
     log.write("PASS captured page, console, and Mapbox validation checks");
 
     const result = {
-      passed: 9,
+      passed: 10,
       failed: 0,
       readiness: {
         canvasCount: readiness.canvasCount,
@@ -331,11 +381,12 @@ async function runDgmBrowserSmoke({ targetUrl = "../index.html?dgmSmoke=1" } = {
       headingPermission,
       featureFlag,
       placeCard,
+      vegetation,
       errors,
     };
     window.__DGM_BROWSER_SMOKE_RESULT = result;
-    document.title = "All 9 browser smoke checks passed";
-    log.write("Results: 9 passed, 0 failed");
+    document.title = "All 10 browser smoke checks passed";
+    log.write("Results: 10 passed, 0 failed");
     return result;
   } catch (error) {
     const result = {
