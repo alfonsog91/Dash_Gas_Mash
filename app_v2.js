@@ -95,6 +95,7 @@ import {
   createBrowserCanvasFactory,
 } from "./intelligence/place_photos.js?v=20260610-phaseg-place-photos";
 import { createPlaceCard } from "./ui/place_card.js?v=20260610-phaseg-place-card";
+import { createPlaceSearch, boundingBoxAround } from "./intelligence/place_search.js?v=20260610-phaseg-place-search";
 import { getPhaseCManifest } from "./phase_c_manifest.js?v=20260501-phase-c-manifest";
 import {
   applyPhaseCActivation,
@@ -5348,6 +5349,72 @@ async function openPhaseGPlaceCardById(placeId, { lat, lon } = {}) {
   return getPhaseGPlaceCardController().open(place);
 }
 
+let phaseGPlaceSearch = null;
+
+function getPhaseGPlaceSearch() {
+  if (!phaseGPlaceSearch) {
+    phaseGPlaceSearch = createPlaceSearch({
+      getProvider: () => getPhaseGPlaceProviderRegistry().getActiveProvider(),
+      onPlace: (place) => getPhaseGPlaceCardController().open(place),
+    });
+  }
+  return phaseGPlaceSearch;
+}
+
+// Phase G POI tap: when a base-map POI label (with a name) is under the click and
+// no app marker is there, kick off a debounced provider lookup that opens the
+// place card. Returns true when a POI was claimed so the caller can skip the
+// default background stats popup. Failures degrade silently to the normal flow.
+function tryOpenPhaseGPlaceCardFromClick(event) {
+  if (!map || typeof map.queryRenderedFeatures !== "function" || !event?.point) {
+    return false;
+  }
+
+  // Defer to existing app markers (restaurant/parking/location) when present.
+  const appLayerIds = [LAYER_RESTAURANTS, LAYER_PARKING, LAYER_CURRENT_LOCATION_DOT, LAYER_CURRENT_LOCATION_HALO]
+    .filter((layerId) => map.getLayer(layerId));
+  if (appLayerIds.length > 0 && map.queryRenderedFeatures(event.point, { layers: appLayerIds }).length > 0) {
+    return false;
+  }
+
+  let features = [];
+  try {
+    features = map.queryRenderedFeatures(event.point) || [];
+  } catch {
+    return false;
+  }
+
+  const poiFeature = features.find(
+    (feature) => /poi/i.test(String(feature?.layer?.id || "")) && feature?.properties?.name
+  );
+  if (!poiFeature) {
+    return false;
+  }
+
+  const lngLat = lngLatToObject(event.lngLat);
+  const poiId = poiFeature.properties?.id ?? poiFeature.id;
+  const request = {
+    id: poiId !== undefined && poiId !== null ? `poi:${String(poiId)}` : null,
+    lat: lngLat.lat,
+    lon: lngLat.lng,
+  };
+  if (!request.id) {
+    request.bbox = boundingBoxAround(lngLat.lat, lngLat.lng);
+  }
+
+  getPhaseGPlaceSearch().requestByClick(request).catch(() => {});
+  return true;
+}
+
+// Map click owner: try the Phase G POI place card first, then fall back to the
+// existing background interaction (stats popup / tap handling).
+function handleMapClick(event) {
+  if (tryOpenPhaseGPlaceCardFromClick(event)) {
+    return;
+  }
+  handleMapBackgroundClick(event);
+}
+
 function installRuntimeDebugSurface() {
   const result = headingRuntime.installRuntimeDebugSurface({ loadForView, locateUser });
   const configRuntime = installMapConfigRuntimeSurface({ buildId: APP_BUILD_ID });
@@ -5373,6 +5440,7 @@ function installRuntimeDebugSurface() {
       isOpen: () => phaseGPlaceCardController?.isOpen() ?? false,
       getProviderRegistry: getPhaseGPlaceProviderRegistry,
       getDebugMetadata: () => getPhaseGPlaceCardController().getDebugMetadata(),
+      search: getPhaseGPlaceSearch(),
     };
   }
   return result;
@@ -6842,7 +6910,7 @@ map.on("dragstart", handleManualMapCameraStart);
 map.on("rotatestart", handleManualMapCameraStart);
 map.on("zoomstart", handleManualMapCameraStart);
 
-map.on("click", handleMapBackgroundClick);
+map.on("click", handleMapClick);
 
 map.on("load", () => {
   ensureMapSourcesAndLayers();
