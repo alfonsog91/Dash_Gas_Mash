@@ -1,0 +1,229 @@
+/* Phase G place card styles (new styles/ folder convention).
+   Loaded lazily by ui/place_card.js via an injected <link>. Scoped under the
+   .dgm-place-card namespace so it cannot collide with existing app styles. */
+
+.dgm-place-card {
+  position: fixed;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  z-index: 1200;
+  width: min(440px, 100vw);
+  max-height: 80dvh;
+  display: flex;
+  flex-direction: column;
+  background: #14181f;
+  color: #f3f5f8;
+  border-radius: 16px 16px 0 0;
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.dgm-place-card__header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 16px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.dgm-place-card__name {
+  margin: 0;
+  font-size: 1.15rem;
+  line-height: 1.3;
+  flex: 1;
+}
+
+.dgm-place-card__meta {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+  flex-basis: 100%;
+  font-size: 0.85rem;
+  color: #aeb6c2;
+}
+
+.dgm-place-card__rating {
+  color: #ffce54;
+}
+
+.dgm-place-card__close {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.1);
+  color: inherit;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.dgm-place-card__close:hover,
+.dgm-place-card__close:focus-visible {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.dgm-place-card__body {
+  padding: 12px 16px 20px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.dgm-place-card__section-title {
+  margin: 0 0 6px;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #8b94a3;
+}
+
+.dgm-place-card__phone {
+  display: inline-block;
+  color: #6fb1ff;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.dgm-place-card__phone:hover,
+.dgm-place-card__phone:focus-visible {
+  text-decoration: underline;
+}
+
+.dgm-place-card__hours-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.85rem;
+}
+
+.dgm-place-card__hours-row {
+  display: flex;
+  gap: 12px;
+}
+
+.dgm-place-card__hours-day {
+  flex: 0 0 40px;
+  color: #8b94a3;
+}
+
+.dgm-place-card__photos {
+  position: relative;
+}
+
+.dgm-place-card__photo {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  background: #232a34;
+  border-radius: 10px;
+  cursor: zoom-in;
+  min-height: 120px;
+}
+
+.dgm-place-card__photo.is-placeholder {
+  background: repeating-linear-gradient(45deg, #232a34, #232a34 8px, #2a323d 8px, #2a323d 16px);
+}
+
+.dgm-place-card__carousel-controls {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  pointer-events: none;
+  padding: 0 6px;
+}
+
+.dgm-place-card__carousel-prev,
+.dgm-place-card__carousel-next {
+  pointer-events: auto;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 1.3rem;
+  cursor: pointer;
+}
+
+.dgm-place-card__website {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dgm-place-card__iframe {
+  width: 100%;
+  height: 200px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.dgm-place-card__iframe.is-blocked {
+  display: none;
+}
+
+.dgm-place-card__website-newtab {
+  align-self: flex-start;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: transparent;
+  color: #6fb1ff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dgm-place-card__website-note {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #aeb6c2;
+}
+
+.dgm-place-card__footer {
+  margin-top: 4px;
+}
+
+.dgm-place-card__navigate {
+  width: 100%;
+  padding: 14px;
+  border: none;
+  border-radius: 12px;
+  background: #2f6df6;
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dgm-place-card__navigate:hover,
+.dgm-place-card__navigate:focus-visible {
+  background: #4880ff;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .dgm-place-card {
+    animation: dgm-place-card-rise 180ms ease-out;
+  }
+}
+
+@keyframes dgm-place-card-rise {
+  from {
+    transform: translate(-50%, 12px);
+    opacity: 0;
+  }
+  to {
+    transform: translate(-50%, 0);
+    opacity: 1;
+  }
+}

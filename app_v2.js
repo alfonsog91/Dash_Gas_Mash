@@ -88,6 +88,13 @@ import {
   evaluateSuperpositionEngine,
 } from "./intelligence/superposition_engine.js?v=20260502-phase-e-superposition";
 import { generateOpportunityField } from "./intelligence/opportunity_field.js?v=20260530-phase-f-opportunity-field";
+import { createProviderRegistry } from "./intelligence/place_provider_adapter.js?v=20260610-phaseg-place-provider";
+import {
+  createPlacePhotosHandler,
+  createBrowserImageLoader,
+  createBrowserCanvasFactory,
+} from "./intelligence/place_photos.js?v=20260610-phaseg-place-photos";
+import { createPlaceCard } from "./ui/place_card.js?v=20260610-phaseg-place-card";
 import { getPhaseCManifest } from "./phase_c_manifest.js?v=20260501-phase-c-manifest";
 import {
   applyPhaseCActivation,
@@ -5270,6 +5277,77 @@ function startDeviceOrientationWatch() {
   return headingRuntime.startDeviceOrientationWatch();
 }
 
+// Phase G place card (Place Pages). Enabled by default; provider and photos are
+// loaded lazily on first use so startup stays light. The perf guard gates only
+// heavy photo work (phaseGPlacePhotos); the card itself remains available.
+let phaseGPlaceProviderRegistry = null;
+let phaseGPlacePhotosHandler = null;
+let phaseGPlaceCardController = null;
+
+function isPhaseGPlacePhotosGuardDisabled() {
+  return isPhaseEPerformanceEffectDisabled(PHASE_E_PERFORMANCE_GUARD_EFFECTS.PLACE_PHOTOS);
+}
+
+function getPhaseGPlaceProviderRegistry() {
+  if (!phaseGPlaceProviderRegistry) {
+    phaseGPlaceProviderRegistry = createProviderRegistry();
+  }
+  return phaseGPlaceProviderRegistry;
+}
+
+function getPhaseGPlacePhotosHandler() {
+  if (!phaseGPlacePhotosHandler) {
+    phaseGPlacePhotosHandler = createPlacePhotosHandler({
+      loadImage: createBrowserImageLoader(),
+      createCanvas: createBrowserCanvasFactory(),
+      isGuardDisabled: isPhaseGPlacePhotosGuardDisabled,
+      shouldExposeDebug: shouldExposePhaseDDebug,
+    });
+  }
+  return phaseGPlacePhotosHandler;
+}
+
+function getPhaseGPlaceCardController() {
+  if (!phaseGPlaceCardController) {
+    phaseGPlaceCardController = createPlaceCard({
+      onNavigate: (place) => {
+        if (!place || !Number.isFinite(place.lat) || !Number.isFinite(place.lon)) {
+          return;
+        }
+        startInAppNavigation({ lat: place.lat, lng: place.lon, title: place.name }).catch((error) => {
+          console.error(error);
+          setNavigationStatus(error?.message ?? String(error), "error");
+        });
+      },
+      getPhotosHandler: getPhaseGPlacePhotosHandler,
+      isPhotoGuardDisabled: isPhaseGPlacePhotosGuardDisabled,
+      shouldExposeDebug: shouldExposePhaseDDebug,
+    });
+
+    if (shouldExposePhaseDDebug() && typeof window !== "undefined") {
+      window.__DGM_DEBUG = Object.assign(window.__DGM_DEBUG || {}, {
+        getPhaseGPlaceCardMetadata: () => phaseGPlaceCardController?.getDebugMetadata() ?? null,
+      });
+    }
+  }
+  return phaseGPlaceCardController;
+}
+
+// Lazily fetch a place by id (or coordinates) through the active provider and
+// open the place card. The map-click integration in the next commit calls this;
+// it is exposed on the debug runtime now so the smoke harness can drive it.
+async function openPhaseGPlaceCardById(placeId, { lat, lon } = {}) {
+  const provider = getPhaseGPlaceProviderRegistry().getActiveProvider();
+  if (!provider) {
+    return null;
+  }
+  const place = await provider.fetchPlaceById(placeId, { lat, lon });
+  if (!place) {
+    return null;
+  }
+  return getPhaseGPlaceCardController().open(place);
+}
+
 function installRuntimeDebugSurface() {
   const result = headingRuntime.installRuntimeDebugSurface({ loadForView, locateUser });
   const configRuntime = installMapConfigRuntimeSurface({ buildId: APP_BUILD_ID });
@@ -5287,6 +5365,14 @@ function installRuntimeDebugSurface() {
       setTrafficVisibility,
       toggleTraffic,
       getVisible: () => getShouldShowTraffic(currentBaseStyle) && !isMapKillSwitchEnabled("traffic"),
+    };
+    window.DGM_RUNTIME.placeCard = {
+      open: (place) => getPhaseGPlaceCardController().open(place),
+      openById: openPhaseGPlaceCardById,
+      close: () => getPhaseGPlaceCardController().close(),
+      isOpen: () => phaseGPlaceCardController?.isOpen() ?? false,
+      getProviderRegistry: getPhaseGPlaceProviderRegistry,
+      getDebugMetadata: () => getPhaseGPlaceCardController().getDebugMetadata(),
     };
   }
   return result;

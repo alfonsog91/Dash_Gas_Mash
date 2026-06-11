@@ -1,3 +1,5 @@
+import { resolveWebsitePreviewPlan, buildTelHref } from "../ui/place_card.js?v=20260610-phaseg-place-card";
+
 const SMOKE_TIMEOUT_MS = 30000;
 const SMOKE_POLL_INTERVAL_MS = 100;
 const STORAGE_SNAPSHOT_KEYS = Object.freeze([
@@ -227,6 +229,69 @@ function assertNoCapturedErrors(smokeReport) {
   };
 }
 
+async function runPlaceCardSmoke(runtime, appWindow) {
+  const placeCard = runtime.placeCard;
+  assert(placeCard && typeof placeCard.open === "function", "place card runtime surface is exposed");
+
+  // Security invariant (pure helper): a sandboxed preview never combines
+  // allow-scripts with allow-same-origin, and non-http schemes are not framed.
+  const stripPlan = resolveWebsitePreviewPlan("https://example.com", { sandbox: ["allow-scripts", "allow-same-origin"] });
+  assert(stripPlan.mode === "iframe", "http(s) websites resolve to an iframe preview");
+  assert(!stripPlan.sandbox.includes("allow-same-origin"), "allow-same-origin is stripped when combined with allow-scripts");
+  assert(resolveWebsitePreviewPlan("javascript:alert(1)").mode === "none", "non-http websites are not previewable");
+  assert(String(buildTelHref("(909) 555-0148")).startsWith("tel:"), "tel: href is built from a phone number");
+
+  // Same-origin website avoids cross-origin framing console noise in the smoke.
+  const sameOriginWebsite = new URL("style.json", appWindow.location.href).href;
+  const place = {
+    id: "smoke-poi-1",
+    name: "Smoke Test POI",
+    lat: 34.06,
+    lon: -117.59,
+    category: "gas_station",
+    rating: 4.4,
+    phone: "(909) 555-0148",
+    website: sameOriginWebsite,
+    hours: { periods: [{ day: 1, open: "0600", close: "2200" }] },
+    photoRefs: [{ ref: "smoke-a" }, { ref: "smoke-b" }],
+  };
+
+  const model = placeCard.open(place);
+  assert(model && model.id === "smoke-poi-1", "tapping a POI opens the place card");
+
+  const doc = appWindow.document;
+  const cardEl = doc.querySelector(".dgm-place-card");
+  assert(cardEl, "place card dialog is rendered");
+  assert(cardEl.getAttribute("role") === "dialog", "place card uses role=dialog");
+  assert(cardEl.getAttribute("aria-modal") === "true", "place card is aria-modal");
+
+  const phoneLink = cardEl.querySelector(".dgm-place-card__phone");
+  assert(phoneLink && (phoneLink.getAttribute("href") || "").startsWith("tel:"), "tel: link is present on the card");
+
+  const iframe = cardEl.querySelector(".dgm-place-card__iframe");
+  assert(iframe, "website preview iframe is rendered when a website is present");
+  const sandboxTokens = (iframe.getAttribute("sandbox") || "").split(/\s+/);
+  assert(!sandboxTokens.includes("allow-same-origin"), "rendered iframe sandbox excludes allow-same-origin");
+  assert(cardEl.querySelector(".dgm-place-card__website-newtab"), "new-tab fallback control is present");
+
+  const photos = cardEl.querySelector(".dgm-place-card__photos");
+  assert(photos && photos.getAttribute("data-photo-count") === "2", "photos carousel lazily renders the photo set");
+
+  const navigate = cardEl.querySelector(".dgm-place-card__navigate");
+  assert(navigate && /Navigate to/.test(navigate.getAttribute("aria-label") || ""), "Navigate button is present and labelled");
+
+  // Debug metadata is gated by shouldExposePhaseDDebug(); the smoke runs on a
+  // localhost debug host, so it is exposed and structured.
+  const debugMetadata = placeCard.getDebugMetadata();
+  assert(debugMetadata && debugMetadata.activePlaceId === "smoke-poi-1", "debug metadata is exposed on the debug host");
+
+  placeCard.close();
+  assert(placeCard.isOpen() === false, "place card closes cleanly");
+  assert(!doc.querySelector(".dgm-place-card"), "place card is removed from the DOM after close");
+
+  return { websiteMode: model.websitePlan.mode, photoCount: model.photoRefs.length };
+}
+
 async function runDgmBrowserSmoke({ targetUrl = "../index.html?dgmSmoke=1" } = {}) {
   const log = createLogger();
   const storageSnapshot = snapshotSmokeStorage();
@@ -249,11 +314,14 @@ async function runDgmBrowserSmoke({ targetUrl = "../index.html?dgmSmoke=1" } = {
     const featureFlag = runFeatureFlagSmoke(readiness.runtime);
     log.write("PASS feature flag runtime toggle");
 
+    const placeCard = await runPlaceCardSmoke(readiness.runtime, iframe.contentWindow);
+    log.write("PASS Phase G place card open, accessibility, security, and debug gating");
+
     const errors = assertNoCapturedErrors(getSmokeReport(iframe.contentWindow));
     log.write("PASS captured page, console, and Mapbox validation checks");
 
     const result = {
-      passed: 8,
+      passed: 9,
       failed: 0,
       readiness: {
         canvasCount: readiness.canvasCount,
@@ -262,11 +330,12 @@ async function runDgmBrowserSmoke({ targetUrl = "../index.html?dgmSmoke=1" } = {
       traffic,
       headingPermission,
       featureFlag,
+      placeCard,
       errors,
     };
     window.__DGM_BROWSER_SMOKE_RESULT = result;
-    document.title = "All 8 browser smoke checks passed";
-    log.write("Results: 8 passed, 0 failed");
+    document.title = "All 9 browser smoke checks passed";
+    log.write("Results: 9 passed, 0 failed");
     return result;
   } catch (error) {
     const result = {
