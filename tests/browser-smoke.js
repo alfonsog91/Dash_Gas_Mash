@@ -1,4 +1,5 @@
 import { resolveWebsitePreviewPlan, buildTelHref } from "../ui/place_card.js?v=20260610-phaseg-place-card";
+import { animateCameraAlongPath } from "../ui/vehicle_marker.js?v=20260610-phaseg-vehicle-marker";
 
 const SMOKE_TIMEOUT_MS = 30000;
 const SMOKE_POLL_INTERVAL_MS = 100;
@@ -339,6 +340,47 @@ async function runVegetationSmoke(runtime) {
   return { baseInstances, spriteMode, extrusionMode };
 }
 
+async function runVehicleCameraSmoke(runtime, appWindow) {
+  const vehicle = runtime.vehicle;
+  assert(vehicle && typeof vehicle.setEnabled === "function", "vehicle runtime surface is exposed");
+
+  // Deterministic camera keyframes (the asserted-on function) work in the live app.
+  const keyframes = vehicle.animateCameraAlongPath([[-117.6, 34.06], [-117.59, 34.07]], { frames: 3, easing: "linear", pitch: 45 });
+  assert(keyframes.length === 3, "animateCameraAlongPath yields the requested keyframes");
+  assert(JSON.stringify(keyframes[0].center) === JSON.stringify([-117.6, 34.06]), "first keyframe is the path start");
+  assert(JSON.stringify(keyframes[2].center) === JSON.stringify([-117.59, 34.07]), "last keyframe is the path end");
+
+  // Enabling the vehicle hides the blue dot and shows the sprite marker. The
+  // vehicle is owner-gated, so opt in via the owner toggle before enabling.
+  appWindow.DGM_VEHICLE = true;
+  const enabled = vehicle.setEnabled(true);
+  assert(enabled === true, "vehicle is enabled once the owner toggle is set");
+  vehicle.update({ lng: -117.6, lat: 34.06, heading: 90, speed: 10 });
+
+  const doc = appWindow.document;
+  const dotLayerHidden = appWindow.DGM_RUNTIME?.map?.getLayer?.("current-location-dot");
+  if (dotLayerHidden) {
+    const visibility = appWindow.DGM_RUNTIME.map.getLayoutProperty("current-location-dot", "visibility");
+    assert(visibility === "none", "the blue dot is hidden while the vehicle marker owns the location visual");
+  }
+  assert(appWindow.DGM_RUNTIME.map.getLayer("dgm-vehicle-layer"), "vehicle symbol layer is added");
+  assert(vehicle.isVisible() === true, "vehicle marker is visible when enabled");
+
+  const state = vehicle.getState();
+  assert(Math.round(state.lng * 100) / 100 === -117.6, "vehicle state tracks the update position");
+  assert(state.renderedHeading === 90, "first update snaps the rendered heading");
+
+  const debugMetadata = vehicle.getDebugMetadata();
+  assert(debugMetadata && typeof debugMetadata.updates === "number", "vehicle debug metadata is exposed on the debug host");
+
+  // Restore the blue dot so later checks and normal UX are unaffected.
+  vehicle.setEnabled(false);
+  appWindow.DGM_VEHICLE = false;
+  assert(vehicle.isEnabled() === false, "vehicle disables cleanly and restores the blue dot");
+
+  return { keyframeCount: keyframes.length, renderedHeading: state.renderedHeading };
+}
+
 async function runDgmBrowserSmoke({ targetUrl = "../index.html?dgmSmoke=1" } = {}) {
   const log = createLogger();
   const storageSnapshot = snapshotSmokeStorage();
@@ -367,11 +409,14 @@ async function runDgmBrowserSmoke({ targetUrl = "../index.html?dgmSmoke=1" } = {
     const vegetation = await runVegetationSmoke(readiness.runtime);
     log.write("PASS Phase G vegetation toggle, LOD, perf-guard gating, and density slider");
 
+    const vehicle = await runVehicleCameraSmoke(readiness.runtime, iframe.contentWindow);
+    log.write("PASS Phase G vehicle marker, blue-dot replacement, and deterministic camera keyframes");
+
     const errors = assertNoCapturedErrors(getSmokeReport(iframe.contentWindow));
     log.write("PASS captured page, console, and Mapbox validation checks");
 
     const result = {
-      passed: 10,
+      passed: 11,
       failed: 0,
       readiness: {
         canvasCount: readiness.canvasCount,
@@ -382,11 +427,12 @@ async function runDgmBrowserSmoke({ targetUrl = "../index.html?dgmSmoke=1" } = {
       featureFlag,
       placeCard,
       vegetation,
+      vehicle,
       errors,
     };
     window.__DGM_BROWSER_SMOKE_RESULT = result;
-    document.title = "All 10 browser smoke checks passed";
-    log.write("Results: 10 passed, 0 failed");
+    document.title = "All 11 browser smoke checks passed";
+    log.write("Results: 11 passed, 0 failed");
     return result;
   } catch (error) {
     const result = {

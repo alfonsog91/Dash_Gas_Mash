@@ -101,6 +101,11 @@ import {
 import { createPlaceCard } from "./ui/place_card.js?v=20260610-phaseg-place-card";
 import { createPlaceSearch, boundingBoxAround } from "./intelligence/place_search.js?v=20260610-phaseg-place-search";
 import { createVegetationLayer } from "./ui/vegetation_layer.js?v=20260610-phaseg-vegetation-layer";
+import {
+  createVehicleMarker,
+  animateCameraAlongPath as animatePhaseGCameraAlongPath,
+  buildFollowCamera as buildPhaseGFollowCamera,
+} from "./ui/vehicle_marker.js?v=20260610-phaseg-vehicle-marker";
 import { getPhaseCManifest } from "./phase_c_manifest.js?v=20260501-phase-c-manifest";
 import {
   applyPhaseCActivation,
@@ -5230,6 +5235,7 @@ locationRuntime = createLocationRuntime({
   autoFollowLocationMinCenterOffsetMeters: AUTO_FOLLOW_LOCATION_MIN_CENTER_OFFSET_METERS,
   autoFollowLocationPanDurationMs: AUTO_FOLLOW_LOCATION_PAN_DURATION_MS,
   getProgrammaticCameraOptions,
+  syncVehicleFollowCamera: syncPhaseGVehicleFollowCamera,
 });
 
 function setCurrentLocationFollowEnabled(isEnabled) {
@@ -5622,6 +5628,83 @@ function syncPhaseGVegetationVisibility() {
   });
 }
 
+// Phase G vehicle marker (owner-gated heavy effect). Replaces the blue dot with a
+// heading-rotated symbol sprite + speed-adaptive camera follow. Default UX (blue
+// dot) is preserved unless the owner opts in, and the marker is suppressed when
+// the phaseGVehicleModel perf-guard effect trips.
+let phaseGVehicleMarker = null;
+let phaseGVehicleEnabled = false;
+
+function isPhaseGVehicleOwnerToggleEnabled() {
+  try {
+    if (new URLSearchParams(window.location.search).get("vehicle") === "true") {
+      return true;
+    }
+  } catch {
+    // URL parsing is advisory only.
+  }
+  if (window.DGM_VEHICLE === true) {
+    return true;
+  }
+  try {
+    return window.localStorage?.getItem("dgm:phaseg:vehicle") === "true";
+  } catch {
+    return false;
+  }
+}
+
+function isPhaseGVehicleAllowed() {
+  return isPhaseDTuningEnabled() || isPhaseGVehicleOwnerToggleEnabled();
+}
+
+function isPhaseGVehicleGuarded() {
+  return isPhaseEPerformanceEffectDisabled(PHASE_E_PERFORMANCE_GUARD_EFFECTS.VEHICLE_MODEL);
+}
+
+function getPhaseGVehicleMarker() {
+  if (!phaseGVehicleMarker) {
+    phaseGVehicleMarker = createVehicleMarker({
+      getMap: () => map,
+      isGuardDisabled: isPhaseGVehicleGuarded,
+      shouldExposeDebug: shouldExposePhaseDDebug,
+    });
+  }
+  return phaseGVehicleMarker;
+}
+
+// Heading-locked, speed-adaptive camera follow for the vehicle. Skipped while a
+// route is active (routing_runtime owns the navigation camera then) or guarded.
+function syncPhaseGVehicleFollowCamera({ lng, lat, heading, speed } = {}) {
+  if (!phaseGVehicleEnabled || isPhaseGVehicleGuarded() || activeRoute) {
+    return;
+  }
+  if (!Number.isFinite(Number(lng)) || !Number.isFinite(Number(lat)) || typeof map?.easeTo !== "function") {
+    return;
+  }
+  const camera = buildPhaseGFollowCamera({
+    lng,
+    lat,
+    heading: Number.isFinite(Number(heading)) ? Number(heading) : map.getBearing?.() || 0,
+    speed: Number(speed) || 0,
+  });
+  if (camera) {
+    map.easeTo(getProgrammaticCameraOptions({ ...camera, duration: 600 }));
+  }
+}
+
+function setPhaseGVehicleEnabled(enabled) {
+  phaseGVehicleEnabled = Boolean(enabled) && isPhaseGVehicleAllowed();
+  if (!locationRuntime) {
+    return phaseGVehicleEnabled;
+  }
+  if (phaseGVehicleEnabled && !isPhaseGVehicleGuarded()) {
+    locationRuntime.replaceDotWithVehicle(getPhaseGVehicleMarker());
+  } else {
+    locationRuntime.replaceDotWithVehicle(null);
+  }
+  return phaseGVehicleEnabled;
+}
+
 function installRuntimeDebugSurface() {
   const result = headingRuntime.installRuntimeDebugSurface({ loadForView, locateUser });
   const configRuntime = installMapConfigRuntimeSurface({ buildId: APP_BUILD_ID });
@@ -5665,6 +5748,16 @@ function installRuntimeDebugSurface() {
         getPhaseGVegetationLayer().syncVisibility({ zoom, guardDisabled, allowed }),
       getActiveMode: () => getPhaseGVegetationLayer().getActiveMode(),
       getDebugMetadata: () => getPhaseGVegetationLayer().getDebugMetadata(),
+    };
+    window.DGM_RUNTIME.vehicle = {
+      setEnabled: setPhaseGVehicleEnabled,
+      isEnabled: () => phaseGVehicleEnabled,
+      update: (motion) => getPhaseGVehicleMarker().update(motion),
+      getState: () => getPhaseGVehicleMarker().getState(),
+      isVisible: () => getPhaseGVehicleMarker().isVisible(),
+      animateCameraAlongPath: animatePhaseGCameraAlongPath,
+      buildFollowCamera: buildPhaseGFollowCamera,
+      getDebugMetadata: () => getPhaseGVehicleMarker().getDebugMetadata(),
     };
   }
   return result;
