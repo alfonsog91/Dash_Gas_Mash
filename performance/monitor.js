@@ -4,6 +4,12 @@ const PHASE_E_PERFORMANCE_GUARD_EFFECTS = Object.freeze({
   LABEL_OPACITY: "phaseDLabelOpacity",
   DGM_TRAFFIC_STYLING: "dgmTrafficStyling",
   OPPORTUNITY_OVERLAY: "phaseFOpportunityOverlay",
+  // Phase G heavy effects. Appended following the Phase F precedent (one constant per
+  // effect, no registry refactor). The object stays frozen and the guard remains
+  // all-or-nothing on trip: registering a name only adds it to the global disable set.
+  PLACE_PHOTOS: "phaseGPlacePhotos",
+  VEGETATION_LAYER: "phaseGVegetationLayer",
+  VEHICLE_MODEL: "phaseGVehicleModel",
 });
 
 const PHASE_E_PERFORMANCE_GUARD_EFFECT_LIST = Object.freeze(Object.values(PHASE_E_PERFORMANCE_GUARD_EFFECTS));

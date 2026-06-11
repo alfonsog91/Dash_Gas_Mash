@@ -240,6 +240,36 @@ export async function runPerfGuardTests() {
     assert(result.disabledEffects.includes(PHASE_E_PERFORMANCE_GUARD_EFFECTS.OPPORTUNITY_OVERLAY), "Phase F Opportunity Overlay is disabled by the guard");
   });
 
+  await runTest("Phase G heavy effects are registered by name", () => {
+    assert(PHASE_E_PERFORMANCE_GUARD_EFFECTS.PLACE_PHOTOS === "phaseGPlacePhotos", "place photos effect constant is exposed");
+    assert(PHASE_E_PERFORMANCE_GUARD_EFFECTS.VEGETATION_LAYER === "phaseGVegetationLayer", "vegetation layer effect constant is exposed");
+    assert(PHASE_E_PERFORMANCE_GUARD_EFFECTS.VEHICLE_MODEL === "phaseGVehicleModel", "vehicle model effect constant is exposed");
+  });
+
+  await runTest("sustained mobile FPS drop disables Phase G heavy effects", () => {
+    const result = evaluatePhaseEPerformanceGuard({
+      isMobile: true,
+      frameDurationsMs: Array.from({ length: 6 }, () => 50),
+      thresholds: { minMobileFps: 30, sustainedFrameSamples: 4 },
+    });
+
+    assert(result.active === true, "mobile low FPS triggers the guard");
+    assert(result.disabledEffects.includes(PHASE_E_PERFORMANCE_GUARD_EFFECTS.PLACE_PHOTOS), "Phase G place photos are disabled on trip");
+    assert(result.disabledEffects.includes(PHASE_E_PERFORMANCE_GUARD_EFFECTS.VEGETATION_LAYER), "Phase G vegetation layer is disabled on trip");
+    assert(result.disabledEffects.includes(PHASE_E_PERFORMANCE_GUARD_EFFECTS.VEHICLE_MODEL), "Phase G vehicle model is disabled on trip");
+  });
+
+  await runTest("no-trip case leaves Phase G heavy effects enabled", () => {
+    const result = evaluatePhaseEPerformanceGuard({
+      isMobile: true,
+      frameDurationsMs: Array.from({ length: 6 }, () => 10),
+      thresholds: { minMobileFps: 30, sustainedFrameSamples: 4 },
+    });
+
+    assert(result.active === false, "healthy FPS does not trip the guard");
+    assertDeepEqual(result.disabledEffects, [], "no effects are disabled when the guard is idle");
+  });
+
   await runTest("GPU memory remains optional", () => {
     assert(getAvailableGpuMemoryMb({}) === null, "missing GPU memory stays null");
     assert(getAvailableGpuMemoryMb({ gpu: { memoryMb: 768 } }) === 768, "nested GPU memory is read when present");
