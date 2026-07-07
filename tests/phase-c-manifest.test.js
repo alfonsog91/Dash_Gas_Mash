@@ -87,7 +87,7 @@ export function runPhaseCManifestTests() {
     assert(a.projection.globe === b.projection.globe, "repeated calls return the same projection");
   });
 
-  runTest("Phase D runtime defaults enable Phase C visual flags", () => {
+  runTest("all Phase C feature flags default to false", () => {
     const phaseCFlags = ["phaseCTerrain", "phaseCGlobe", "phaseC3dBuildings", "phaseCFog", "phaseCAtmosphere"];
     for (const flag of phaseCFlags) {
       assert(
@@ -95,8 +95,8 @@ export function runPhaseCManifestTests() {
         `${flag} is present in DEFAULT_MAP_FEATURE_FLAGS`
       );
       assert(
-        DEFAULT_MAP_FEATURE_FLAGS[flag] === true,
-        `${flag} defaults to true for Phase D runtime enablement`
+        DEFAULT_MAP_FEATURE_FLAGS[flag] === false,
+        `${flag} defaults to false`
       );
     }
   });
