@@ -1,6 +1,8 @@
 ---
 name: Phase C
-description: Describe when to use this prompt
+description: "Use when implementing or updating the Phase C map activation lifecycle."
+---
+
 EXECUTABLE PHASE C ACTIVATION PROMPT — FINAL
 
 Paste this exact block into your code generation tool (Copilot) and run it. This is the single, authoritative execution prompt to implement Phase C activation. Generate the files and patches described below exactly as written.
@@ -152,7 +154,6 @@ IMPLEMENTATION NOTES
 - Only include TODOs for build/system values if those values are truly missing; do not add unnecessary TODOs for `APP_BUILD_ID` if it already exists.
 
 END OF PROMPT — generate the files and patches above exactly as specified.
----
 <!-- Tip: Use /create-prompt in chat to generate content with agent assistance -->
 
 Define the prompt content here. You can include instructions, examples, and any other relevant information to guide the AI's responses.

@@ -1,18 +1,19 @@
 // ──────────────────────────────────────────────────────────────────
 //
-// PHASE C MANIFEST — INERT PREDECLARATION ONLY
+// PHASE C MANIFEST — SIDE-EFFECT-FREE CONFIGURATION
 //
 // This file declares the canonical IDs, source URLs, and parameter
 // defaults for Phase C (terrain, globe, 3D buildings, fog, sky).
-// Nothing here activates any Phase C visual behavior on the map.
-// Caller code to apply terrain, set globe projection, add 3D
-// building layers, configure fog, or enable sky does not exist
-// until Phase C is explicitly activated.
+// Importing it never activates any Phase C visual behavior on the map.
+// Runtime activation is implemented in phase_c_activation.js and runs
+// only from the map readiness lifecycle in app_v2.js.
 //
 // Activation requires:
 //   1. The corresponding `phaseC*` feature flags in map_config.js
-//      to be explicitly enabled (all default to false).
-//   2. Separate Phase C activation code (not yet implemented).
+//      to be enabled. The current runtime defaults them to true; a
+//      persisted, window-config, or runtime override can disable each one.
+//   2. A ready map, so phase_c_activation.js can safely reconcile the
+//      requested visual features.
 //
 // GOVERNANCE: This module contains no side effects. Importing it
 // does not modify the map, DOM, or any shared state.

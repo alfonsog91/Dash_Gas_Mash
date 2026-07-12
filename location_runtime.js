@@ -85,9 +85,13 @@ function createLocationRuntime({
   }
 
   function getCameraOptions(cameraOptions = {}) {
-    return typeof getProgrammaticCameraOptions === "function"
-      ? getProgrammaticCameraOptions(cameraOptions)
-      : cameraOptions;
+    const fallbackOptions = cameraOptions && typeof cameraOptions === "object" ? cameraOptions : {};
+    if (typeof getProgrammaticCameraOptions !== "function") {
+      return fallbackOptions;
+    }
+
+    const resolvedOptions = getProgrammaticCameraOptions(fallbackOptions);
+    return resolvedOptions && typeof resolvedOptions === "object" ? resolvedOptions : fallbackOptions;
   }
 
   function setCurrentLocationFollowEnabled(isEnabled) {
@@ -333,10 +337,16 @@ function createLocationRuntime({
 
   function stopBlueDotBreathingAnimation() {
     const windowLike = getWindowLike();
-    if (blueDotBreathingAnimationFrame !== null && windowLike) {
-      windowLike.cancelAnimationFrame(blueDotBreathingAnimationFrame);
-      blueDotBreathingAnimationFrame = null;
+    if (blueDotBreathingAnimationFrame !== null && typeof windowLike?.cancelAnimationFrame === "function") {
+      try {
+        windowLike.cancelAnimationFrame(blueDotBreathingAnimationFrame);
+      } catch {
+        // A torn-down browser frame should not prevent location cleanup.
+      }
     }
+    blueDotBreathingAnimationFrame = null;
+    hasStartedBlueDotBreathingAnimation = false;
+    lastBlueDotBreathingRadius = null;
   }
 
   // Phase G blue-dot ownership API. Only this runtime mutates the dot; app_v2.js
@@ -347,12 +357,19 @@ function createLocationRuntime({
       return;
     }
     const visibility = visible ? "visible" : "none";
-    if (map.getLayer(currentLocationDotLayerId)) {
-      map.setLayoutProperty(currentLocationDotLayerId, "visibility", visibility);
+
+    function setLayerVisibility(layerId) {
+      try {
+        if (map.getLayer(layerId)) {
+          map.setLayoutProperty(layerId, "visibility", visibility);
+        }
+      } catch {
+        // Styles can replace a layer between getLayer() and setLayoutProperty().
+      }
     }
-    if (map.getLayer(currentLocationHaloLayerId)) {
-      map.setLayoutProperty(currentLocationHaloLayerId, "visibility", visibility);
-    }
+
+    setLayerVisibility(currentLocationDotLayerId);
+    setLayerVisibility(currentLocationHaloLayerId);
   }
 
   function hideDot() {
@@ -365,6 +382,7 @@ function createLocationRuntime({
   function showDot() {
     isBlueDotHidden = false;
     setBlueDotLayerVisibility(true);
+    startBlueDotBreathingAnimation();
     return true;
   }
 
@@ -394,35 +412,53 @@ function createLocationRuntime({
 
   function startBlueDotBreathingAnimation() {
     const windowLike = getWindowLike();
-    if (hasStartedBlueDotBreathingAnimation || !windowLike) return;
+    if (
+      hasStartedBlueDotBreathingAnimation
+      || !windowLike
+      || typeof windowLike.requestAnimationFrame !== "function"
+    ) {
+      return;
+    }
 
     hasStartedBlueDotBreathingAnimation = true;
     const tick = (timestampMs) => {
       const map = getMap?.();
       const nextRadius = getBlueDotBreathingRadius(timestampMs);
-      if (
-        !isBlueDotHidden
-        && map.getLayer(currentLocationDotLayerId)
-        && (
-          lastBlueDotBreathingRadius === null
-          || Math.abs(nextRadius - lastBlueDotBreathingRadius) >= blueDotRadiusEpsilonPx
-        )
-      ) {
-        lastBlueDotBreathingRadius = nextRadius;
-        if (map.getLayer(currentLocationHaloLayerId)) {
-          map.setPaintProperty(
-            currentLocationHaloLayerId,
-            "circle-radius",
-            getBlueDotHaloRadius(nextRadius)
-          );
+      try {
+        if (
+          !isBlueDotHidden
+          && map?.getLayer?.(currentLocationDotLayerId)
+          && (
+            lastBlueDotBreathingRadius === null
+            || Math.abs(nextRadius - lastBlueDotBreathingRadius) >= blueDotRadiusEpsilonPx
+          )
+        ) {
+          if (map.getLayer(currentLocationHaloLayerId)) {
+            map.setPaintProperty(
+              currentLocationHaloLayerId,
+              "circle-radius",
+              getBlueDotHaloRadius(nextRadius)
+            );
+          }
+          map.setPaintProperty(currentLocationDotLayerId, "circle-radius", nextRadius);
+          lastBlueDotBreathingRadius = nextRadius;
         }
-        map.setPaintProperty(currentLocationDotLayerId, "circle-radius", nextRadius);
+      } catch {
+        // Style reloads can invalidate a layer while a frame is pending.
       }
+
+      if (!hasStartedBlueDotBreathingAnimation) {
+        blueDotBreathingAnimationFrame = null;
+        return;
+      }
+
       blueDotBreathingAnimationFrame = windowLike.requestAnimationFrame(tick);
     };
 
     blueDotBreathingAnimationFrame = windowLike.requestAnimationFrame(tick);
-    windowLike.addEventListener("beforeunload", stopBlueDotBreathingAnimation, { once: true });
+    if (typeof windowLike.addEventListener === "function") {
+      windowLike.addEventListener("beforeunload", stopBlueDotBreathingAnimation, { once: true });
+    }
   }
 
   function startContinuousLocationWatch() {

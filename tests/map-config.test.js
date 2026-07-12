@@ -41,6 +41,39 @@ function restoreDefaultFeatureFlags() {
   }
 }
 
+function installTelemetryRecorder(events) {
+  const hasWindow = typeof window !== "undefined";
+  const hadWindowProperty = Object.prototype.hasOwnProperty.call(globalThis, "window");
+  const previousWindow = globalThis.window;
+  const windowLike = hasWindow ? window : {};
+  const hadTelemetry = Object.prototype.hasOwnProperty.call(windowLike, "__DGM_TELEMETRY");
+  const previousTelemetry = windowLike.__DGM_TELEMETRY;
+
+  if (!hasWindow) {
+    globalThis.window = windowLike;
+  }
+
+  windowLike.__DGM_TELEMETRY = {
+    log: (event, payload) => events.push({ event, payload }),
+  };
+
+  return () => {
+    if (hadTelemetry) {
+      windowLike.__DGM_TELEMETRY = previousTelemetry;
+    } else {
+      delete windowLike.__DGM_TELEMETRY;
+    }
+
+    if (!hasWindow) {
+      if (hadWindowProperty) {
+        globalThis.window = previousWindow;
+      } else {
+        delete globalThis.window;
+      }
+    }
+  };
+}
+
 export function runMapConfigTests() {
   const log = createLogger();
   let passed = 0;
@@ -112,37 +145,37 @@ export function runMapConfigTests() {
   runTest("bulk disable leaves telemetry on and is reversible", () => {
     restoreDefaultFeatureFlags();
     const events = [];
-    window.__DGM_TELEMETRY = {
-      log: (event, payload) => events.push({ event, payload }),
-    };
+    const restoreTelemetry = installTelemetryRecorder(events);
+    try {
+      const result = disableAllNewFeatures({ persist: false, reason: "test" });
+      assert(result.disabledFeatureFlags.includes("trafficVisibilityController"), "bulk disable reports disabled traffic flag");
+      assert(isMapFeatureEnabled("telemetry"), "telemetry remains enabled for observability");
+      assert(NON_CRITICAL_NEW_FEATURE_FLAGS.every((name) => !isMapFeatureEnabled(name)), "all non-critical new feature flags are disabled");
+      assert(events.some((entry) => entry.event === "map_config.disable_all_new_features"), "bulk disable emits telemetry");
+      assert(events.at(-1).payload.reason === "test", "bulk disable telemetry includes reason");
 
-    const result = disableAllNewFeatures({ persist: false, reason: "test" });
-    assert(result.disabledFeatureFlags.includes("trafficVisibilityController"), "bulk disable reports disabled traffic flag");
-    assert(isMapFeatureEnabled("telemetry"), "telemetry remains enabled for observability");
-    assert(NON_CRITICAL_NEW_FEATURE_FLAGS.every((name) => !isMapFeatureEnabled(name)), "all non-critical new feature flags are disabled");
-    assert(events.some((entry) => entry.event === "map_config.disable_all_new_features"), "bulk disable emits telemetry");
-    assert(events.at(-1).payload.reason === "test", "bulk disable telemetry includes reason");
-
-    for (const [name, enabled] of Object.entries(result.previousFeatureFlags)) {
-      setMapFeatureFlag(name, enabled, { persist: false });
+      for (const [name, enabled] of Object.entries(result.previousFeatureFlags)) {
+        setMapFeatureFlag(name, enabled, { persist: false });
+      }
+    } finally {
+      restoreTelemetry();
     }
-    delete window.__DGM_TELEMETRY;
   });
 
   runTest("feature flag state telemetry is optional and observable", () => {
     restoreDefaultFeatureFlags();
     const events = [];
-    window.__DGM_TELEMETRY = {
-      log: (event, payload) => events.push({ event, payload }),
-    };
-
-    const snapshot = logMapFeatureFlagState({ reason: "test", buildId: "unit" });
-    const stateEvent = events.find((entry) => entry.event === "map.feature_flag_state");
-    assert(snapshot.featureFlags.telemetry === true, "snapshot is returned to caller");
-    assert(stateEvent, "feature flag state event is emitted");
-    assert(stateEvent.payload.reason === "test", "state event includes reason");
-    assert(stateEvent.payload.buildId === "unit", "state event includes build id");
-    delete window.__DGM_TELEMETRY;
+    const restoreTelemetry = installTelemetryRecorder(events);
+    try {
+      const snapshot = logMapFeatureFlagState({ reason: "test", buildId: "unit" });
+      const stateEvent = events.find((entry) => entry.event === "map.feature_flag_state");
+      assert(snapshot.featureFlags.telemetry === true, "snapshot is returned to caller");
+      assert(stateEvent, "feature flag state event is emitted");
+      assert(stateEvent.payload.reason === "test", "state event includes reason");
+      assert(stateEvent.payload.buildId === "unit", "state event includes build id");
+    } finally {
+      restoreTelemetry();
+    }
   });
 
   runTest("telemetry hook is optional and safe", () => {

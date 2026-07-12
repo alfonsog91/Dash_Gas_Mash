@@ -50,7 +50,7 @@ import {
   normalizeHeadingDegrees,
 } from "./heading_cone.js?v=20260410-heading-damping";
 import { createHeadingRuntime } from "./heading_runtime.js?v=20260412-heading-runtime-extract";
-import { createLocationRuntime } from "./location_runtime.js?v=20260412-location-runtime-extract";
+import { createLocationRuntime } from "./location_runtime.js?v=20260711-premerge-location-runtime";
 import {
   fetchCurrentWeatherSignal,
   formatWeatherSourceSummary,
@@ -61,7 +61,7 @@ import {
 } from "./census.js?v=20260410-census-data";
 import { createMapInteractionRuntime } from "./map_interaction_runtime.js?v=20260413-map-interaction-runtime-extract";
 import { createDataScoringRuntime } from "./data_scoring_runtime.js?v=20260427-weather-guard";
-import { createRoutingRuntime } from "./routing_runtime.js?v=20260413-routing-runtime-extract";
+import { createRoutingRuntime } from "./routing_runtime.js?v=20260711-premerge-routing-runtime";
 import {
   getMapRuntimeConfigSnapshot,
   installMapConfigRuntimeSurface,
@@ -69,7 +69,7 @@ import {
   isMapKillSwitchEnabled,
   logDgmTelemetry,
   logMapFeatureFlagState,
-} from "./map_config.js?v=20260501-phase-d-visuals";
+} from "./map_config.js?v=20260711-premerge-map-config";
 import {
   discoverTrafficLayerSource as discoverTrafficLayerSourceForMap,
   findTrafficLayerIds as findTrafficLayerIdsForMap,
@@ -106,7 +106,7 @@ import {
   animateCameraAlongPath as animatePhaseGCameraAlongPath,
   buildFollowCamera as buildPhaseGFollowCamera,
 } from "./ui/vehicle_marker.js?v=20260610-phaseg-vehicle-marker";
-import { getPhaseCManifest } from "./phase_c_manifest.js?v=20260501-phase-c-manifest";
+import { getPhaseCManifest } from "./phase_c_manifest.js?v=20260711-premerge-manifest";
 import {
   applyPhaseCActivation,
   applyPhaseDProgrammaticCameraSmoothing,
@@ -137,8 +137,8 @@ if (visualPerformanceHeuristics.shouldDisableFutureVisualPolish) {
   });
 }
 
-// Phase C manifest — inert predeclaration. No Phase C visual behavior is activated.
-// IDs and configs are reserved here so future Phase C code has stable references.
+// The manifest is side-effect-free on import. Visual activation is reconciled only
+// from the map readiness lifecycle below, using the Phase C feature-flag snapshot.
 const phaseCManifest = getPhaseCManifest();
 logDgmTelemetry("map.phase_c_manifest_loaded", {
   version: phaseCManifest.version,

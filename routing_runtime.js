@@ -130,9 +130,13 @@ function createRoutingRuntime({
   }
 
   function getCameraOptions(cameraOptions = {}) {
-    return typeof getProgrammaticCameraOptions === "function"
-      ? getProgrammaticCameraOptions(cameraOptions)
-      : cameraOptions;
+    const fallbackOptions = cameraOptions && typeof cameraOptions === "object" ? cameraOptions : {};
+    if (typeof getProgrammaticCameraOptions !== "function") {
+      return fallbackOptions;
+    }
+
+    const resolvedOptions = getProgrammaticCameraOptions(fallbackOptions);
+    return resolvedOptions && typeof resolvedOptions === "object" ? resolvedOptions : fallbackOptions;
   }
 
   function fitRouteToView(route) {
