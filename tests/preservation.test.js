@@ -25,6 +25,7 @@ import {
   deriveRainBoostFromPrecipitationMm,
   deriveWeatherSignal,
   formatWeatherSourceSummary,
+  normalizeWeatherPoint,
 } from "../weather.js";
 import {
   filterCensusAnchorsForBounds,
@@ -513,6 +514,9 @@ function testLiveWeatherSignalMapping() {
   assert(weatherUrl.includes("current=precipitation%2Crain%2Cshowers%2Cweather_code"), "weather URL requests only current public precipitation fields");
   assert(weatherUrl.includes("latitude=34.1064"), "weather URL includes latitude");
   assert(weatherUrl.includes("longitude=-117.5931"), "weather URL includes longitude");
+  assert(normalizeWeatherPoint({ lat: 34.1064, lng: -117.5931 })?.lon === -117.5931, "weather point accepts Mapbox lng coordinates");
+  assert(normalizeWeatherPoint({ lat: 34.1064, lon: -117.5931 })?.lon === -117.5931, "weather point accepts lon coordinates");
+  assert(normalizeWeatherPoint({ lat: 34.1064, lng: Number.NaN }) === null, "weather point rejects invalid longitude");
 
   const signal = deriveWeatherSignal({
     latitude: 34.1,

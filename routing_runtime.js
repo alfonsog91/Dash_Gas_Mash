@@ -62,6 +62,7 @@ function createRoutingRuntime({
   stagingSpotMaxDistanceMeters,
   microCorridorMinDistanceMeters,
   microCorridorMaxDistanceMeters,
+  getProgrammaticCameraOptions,
 } = {}) {
   function getState() {
     return typeof getRoutingState === "function" ? getRoutingState() : {};
@@ -128,16 +129,26 @@ function createRoutingRuntime({
     return bounds;
   }
 
+  function getCameraOptions(cameraOptions = {}) {
+    const fallbackOptions = cameraOptions && typeof cameraOptions === "object" ? cameraOptions : {};
+    if (typeof getProgrammaticCameraOptions !== "function") {
+      return fallbackOptions;
+    }
+
+    const resolvedOptions = getProgrammaticCameraOptions(fallbackOptions);
+    return resolvedOptions && typeof resolvedOptions === "object" ? resolvedOptions : fallbackOptions;
+  }
+
   function fitRouteToView(route) {
     const map = getMap?.();
     const bounds = buildRouteBounds(route?.geometry?.coordinates);
     if (!map || !bounds) return;
 
-    map.fitBounds(bounds, {
+    map.fitBounds(bounds, getCameraOptions({
       padding: { top: 180, right: 32, bottom: 220, left: 32 },
       duration: 850,
       maxZoom: 16,
-    });
+    }));
   }
 
   function clearRouteOverlay() {
@@ -289,14 +300,14 @@ function createRoutingRuntime({
     }
 
     patchState({ lastNavigationCameraSyncAt: now });
-    map.easeTo({
+    map.easeTo(getCameraOptions({
       center: [resolvedLatLng.lng, resolvedLatLng.lat],
       bearing: targetBearing,
       pitch: targetPitch,
       zoom: targetZoom,
       duration: force ? 700 : 320,
       essential: true,
-    });
+    }));
   }
 
   function focusActiveNavigationCamera({ force = false, mode = "driver" } = {}) {
@@ -343,7 +354,7 @@ function createRoutingRuntime({
 
     const map = getMap?.();
     if (map) {
-      map.easeTo({ bearing: 0, pitch: 0, duration: 650, essential: true });
+      map.easeTo(getCameraOptions({ bearing: 0, pitch: 0, duration: 650, essential: true }));
     }
   }
 

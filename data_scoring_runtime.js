@@ -1,3 +1,5 @@
+import { normalizeCoord } from "./coordinates.js?v=20260501-coordinates";
+
 function createDataScoringRuntime({
   getMap,
   getLastCurrentLocation,
@@ -108,6 +110,10 @@ function createDataScoringRuntime({
 
     dataStatusElement.textContent = message;
     dataStatusElement.className = message ? `data-status data-status--${level}` : "";
+  }
+
+  function isFiniteLngLat(point) {
+    return Boolean(normalizeCoord(point));
   }
 
   function clampQueryBounds(originalBounds) {
@@ -468,16 +474,17 @@ function createDataScoringRuntime({
       const bbox = mapBoundsToAdapter(getMap?.().getBounds());
       const queryBounds = clampQueryBounds(bbox);
       const weatherPoint = lngLatToObject(getLastCurrentLocation?.() || getMap?.().getCenter());
+      const canFetchLiveWeather = useLiveWeather && isFiniteLngLat(weatherPoint);
       const censusPromise = useCensusData
         ? fetchCensusResidentialAnchors(queryBounds, activeAbort.signal)
           .then((result) => ({ ok: true, ...result }))
           .catch((error) => ({ ok: false, error }))
         : Promise.resolve({ ok: false, skipped: true, anchors: [] });
-      const weatherPromise = useLiveWeather
+      const weatherPromise = canFetchLiveWeather
         ? fetchCurrentWeatherSignal(weatherPoint, activeAbort.signal)
           .then((weatherSignal) => ({ ok: true, weatherSignal }))
           .catch((error) => ({ ok: false, error }))
-        : Promise.resolve({ ok: false, skipped: true });
+        : Promise.resolve({ ok: false, skipped: true, reason: useLiveWeather ? "invalid-weather-point" : "disabled" });
 
       const [allRestaurants, parking, residentialAnchors, censusResult, weatherResult] = await Promise.all([
         fetchFoodPlaces(queryBounds, activeAbort.signal),

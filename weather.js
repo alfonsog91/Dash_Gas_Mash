@@ -1,3 +1,5 @@
+import { normalizeCoord } from "./coordinates.js?v=20260501-coordinates";
+
 const OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast";
 const LIVE_WEATHER_CACHE_TTL_MS = 10 * 60 * 1000;
 const MAX_RAIN_BOOST = 0.25;
@@ -29,6 +31,11 @@ function buildOpenMeteoWeatherUrl(lat, lon) {
   url.searchParams.set("timezone", "auto");
   url.searchParams.set("forecast_days", "1");
   return url.toString();
+}
+
+function normalizeWeatherPoint(point) {
+  const coord = normalizeCoord(point);
+  return coord ? { lat: coord.lat, lon: coord.lon } : null;
 }
 
 function deriveRainBoostFromPrecipitationMm(precipitationMm) {
@@ -88,7 +95,13 @@ function formatWeatherSourceSummary(weatherSignal) {
   return `${sourceName}: ${weatherSignal.weatherLabel}, ${precipitationText}, ${liftText}${timeText}`;
 }
 
-async function fetchCurrentWeatherSignal({ lat, lon }, signal) {
+async function fetchCurrentWeatherSignal(point, signal) {
+  const normalizedPoint = normalizeWeatherPoint(point);
+  if (!normalizedPoint) {
+    throw new Error("Live weather point must have finite latitude and longitude.");
+  }
+
+  const { lat, lon } = normalizedPoint;
   const cacheKey = buildLiveWeatherCacheKey(lat, lon);
   const now = Date.now();
   if (
@@ -131,4 +144,5 @@ export {
   deriveWeatherSignal,
   fetchCurrentWeatherSignal,
   formatWeatherSourceSummary,
+  normalizeWeatherPoint,
 };

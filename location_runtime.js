@@ -43,6 +43,8 @@ function createLocationRuntime({
   locationZoomStep,
   autoFollowLocationMinCenterOffsetMeters,
   autoFollowLocationPanDurationMs,
+  getProgrammaticCameraOptions,
+  syncVehicleFollowCamera,
 } = {}) {
   let isLocating = false;
   let hasRequestedInitialLocation = false;
@@ -52,6 +54,10 @@ function createLocationRuntime({
   let blueDotBreathingAnimationFrame = null;
   let lastBlueDotBreathingRadius = null;
   let isFollowingCurrentLocation = Boolean(initialIsFollowingCurrentLocation);
+  // Phase G: when a vehicle marker replaces the blue dot, the dot/halo layers are
+  // hidden and live motion is forwarded to the vehicle marker instead.
+  let isBlueDotHidden = false;
+  let activeVehicleMarker = null;
 
   function getWindowLike() {
     return typeof window !== "undefined" ? window : null;
@@ -76,6 +82,16 @@ function createLocationRuntime({
     locateMeElement.title = isLocating
       ? "Recentering on your current location"
       : "Recenter and follow my location";
+  }
+
+  function getCameraOptions(cameraOptions = {}) {
+    const fallbackOptions = cameraOptions && typeof cameraOptions === "object" ? cameraOptions : {};
+    if (typeof getProgrammaticCameraOptions !== "function") {
+      return fallbackOptions;
+    }
+
+    const resolvedOptions = getProgrammaticCameraOptions(fallbackOptions);
+    return resolvedOptions && typeof resolvedOptions === "object" ? resolvedOptions : fallbackOptions;
   }
 
   function setCurrentLocationFollowEnabled(isEnabled) {
@@ -110,10 +126,10 @@ function createLocationRuntime({
       return;
     }
 
-    map.easeTo({
+    map.easeTo(getCameraOptions({
       center: [resolvedLatLng.lng, resolvedLatLng.lat],
       duration: force ? locationFlyDurationMs : autoFollowLocationPanDurationMs,
-    });
+    }));
   }
 
   function setCurrentLocationState(latlng, accuracyMeters, { openPopup = true } = {}) {
@@ -143,6 +159,15 @@ function createLocationRuntime({
     refreshHeadingConeFromState?.();
     syncMapToCurrentLocation(currentLngLat, { force: !hasCenteredInitialCurrentLocation });
     hasCenteredInitialCurrentLocation = true;
+
+    // Phase G: forward position to the vehicle marker when it owns the location
+    // visual. Heading/speed arrive separately via the continuous watch.
+    if (activeVehicleMarker) {
+      activeVehicleMarker.update?.({ lng: currentLngLat.lng, lat: currentLngLat.lat });
+      if (!hasActiveRoute?.()) {
+        syncVehicleFollowCamera?.({ lng: currentLngLat.lng, lat: currentLngLat.lat });
+      }
+    }
 
     if (openPopup) {
       openPopupAtLngLat?.(currentLngLat, `You are here<br/><span class="mono">Accuracy ±${Math.round(accuracyRadius)} m</span>`);
@@ -179,7 +204,7 @@ function createLocationRuntime({
       animateZoomToTarget(targetZoom, onComplete);
     });
 
-    map.easeTo({ zoom: nextZoom, duration: 400 });
+    map.easeTo(getCameraOptions({ zoom: nextZoom, duration: 400 }));
   }
 
   function getCurrentPosition(options = {}) {
@@ -254,12 +279,12 @@ function createLocationRuntime({
       const targetZoom = clampMapZoom(locationTargetZoom);
       const animateLocate = shouldAnimateLocate(latlng);
       if (animateLocate) {
-        map.flyTo({ center: [latlng.lng, latlng.lat], zoom: targetZoom, duration: locationFlyDurationMs });
+        map.flyTo(getCameraOptions({ center: [latlng.lng, latlng.lat], zoom: targetZoom, duration: locationFlyDurationMs }));
       } else {
         map.once("moveend", () => {
           animateZoomToTarget(targetZoom, () => {});
         });
-        map.easeTo({ center: [latlng.lng, latlng.lat], duration: locationPanDurationSeconds * 1000 });
+        map.easeTo(getCameraOptions({ center: [latlng.lng, latlng.lat], duration: locationPanDurationSeconds * 1000 }));
       }
       return;
     }
@@ -285,12 +310,12 @@ function createLocationRuntime({
       syncHeadingFromLocation?.(latlng, position.coords.heading, position.coords.speed, { previousLocation });
 
       if (animateLocate) {
-        map.flyTo({ center: lngLatToArray(latlng), zoom: targetZoom, duration: locationFlyDurationMs });
+        map.flyTo(getCameraOptions({ center: lngLatToArray(latlng), zoom: targetZoom, duration: locationFlyDurationMs }));
       } else {
         map.once("moveend", () => {
           animateZoomToTarget(targetZoom, () => {});
         });
-        map.easeTo({ center: lngLatToArray(latlng), duration: locationPanDurationSeconds * 1000 });
+        map.easeTo(getCameraOptions({ center: lngLatToArray(latlng), duration: locationPanDurationSeconds * 1000 }));
       }
     } catch (error) {
       notifyLocationError?.(describeGeolocationError(error));
@@ -312,42 +337,128 @@ function createLocationRuntime({
 
   function stopBlueDotBreathingAnimation() {
     const windowLike = getWindowLike();
-    if (blueDotBreathingAnimationFrame !== null && windowLike) {
-      windowLike.cancelAnimationFrame(blueDotBreathingAnimationFrame);
-      blueDotBreathingAnimationFrame = null;
+    if (blueDotBreathingAnimationFrame !== null && typeof windowLike?.cancelAnimationFrame === "function") {
+      try {
+        windowLike.cancelAnimationFrame(blueDotBreathingAnimationFrame);
+      } catch {
+        // A torn-down browser frame should not prevent location cleanup.
+      }
     }
+    blueDotBreathingAnimationFrame = null;
+    hasStartedBlueDotBreathingAnimation = false;
+    lastBlueDotBreathingRadius = null;
+  }
+
+  // Phase G blue-dot ownership API. Only this runtime mutates the dot; app_v2.js
+  // calls these methods, it does not touch the dot layers directly.
+  function setBlueDotLayerVisibility(visible) {
+    const map = getMap?.();
+    if (!map || typeof map.getLayer !== "function") {
+      return;
+    }
+    const visibility = visible ? "visible" : "none";
+
+    function setLayerVisibility(layerId) {
+      try {
+        if (map.getLayer(layerId)) {
+          map.setLayoutProperty(layerId, "visibility", visibility);
+        }
+      } catch {
+        // Styles can replace a layer between getLayer() and setLayoutProperty().
+      }
+    }
+
+    setLayerVisibility(currentLocationDotLayerId);
+    setLayerVisibility(currentLocationHaloLayerId);
+  }
+
+  function hideDot() {
+    isBlueDotHidden = true;
+    stopBlueDotBreathingAnimation();
+    setBlueDotLayerVisibility(false);
+    return true;
+  }
+
+  function showDot() {
+    isBlueDotHidden = false;
+    setBlueDotLayerVisibility(true);
+    startBlueDotBreathingAnimation();
+    return true;
+  }
+
+  // Replace the blue dot with a vehicle marker. The marker must expose update();
+  // passing null restores the blue dot. Live position is forwarded from
+  // setCurrentLocationState and heading/speed from the continuous watch.
+  function replaceDotWithVehicle(vehicleMarker = null) {
+    if (!vehicleMarker) {
+      activeVehicleMarker = null;
+      showDot();
+      return false;
+    }
+    activeVehicleMarker = vehicleMarker;
+    hideDot();
+    vehicleMarker.show?.();
+    const currentLocation = getCurrentLocation?.();
+    if (currentLocation) {
+      const resolved = lngLatToObject(currentLocation);
+      vehicleMarker.update?.({ lng: resolved.lng, lat: resolved.lat });
+    }
+    return true;
+  }
+
+  function getActiveVehicleMarker() {
+    return activeVehicleMarker;
   }
 
   function startBlueDotBreathingAnimation() {
     const windowLike = getWindowLike();
-    if (hasStartedBlueDotBreathingAnimation || !windowLike) return;
+    if (
+      hasStartedBlueDotBreathingAnimation
+      || !windowLike
+      || typeof windowLike.requestAnimationFrame !== "function"
+    ) {
+      return;
+    }
 
     hasStartedBlueDotBreathingAnimation = true;
     const tick = (timestampMs) => {
       const map = getMap?.();
       const nextRadius = getBlueDotBreathingRadius(timestampMs);
-      if (
-        map.getLayer(currentLocationDotLayerId)
-        && (
-          lastBlueDotBreathingRadius === null
-          || Math.abs(nextRadius - lastBlueDotBreathingRadius) >= blueDotRadiusEpsilonPx
-        )
-      ) {
-        lastBlueDotBreathingRadius = nextRadius;
-        if (map.getLayer(currentLocationHaloLayerId)) {
-          map.setPaintProperty(
-            currentLocationHaloLayerId,
-            "circle-radius",
-            getBlueDotHaloRadius(nextRadius)
-          );
+      try {
+        if (
+          !isBlueDotHidden
+          && map?.getLayer?.(currentLocationDotLayerId)
+          && (
+            lastBlueDotBreathingRadius === null
+            || Math.abs(nextRadius - lastBlueDotBreathingRadius) >= blueDotRadiusEpsilonPx
+          )
+        ) {
+          if (map.getLayer(currentLocationHaloLayerId)) {
+            map.setPaintProperty(
+              currentLocationHaloLayerId,
+              "circle-radius",
+              getBlueDotHaloRadius(nextRadius)
+            );
+          }
+          map.setPaintProperty(currentLocationDotLayerId, "circle-radius", nextRadius);
+          lastBlueDotBreathingRadius = nextRadius;
         }
-        map.setPaintProperty(currentLocationDotLayerId, "circle-radius", nextRadius);
+      } catch {
+        // Style reloads can invalidate a layer while a frame is pending.
       }
+
+      if (!hasStartedBlueDotBreathingAnimation) {
+        blueDotBreathingAnimationFrame = null;
+        return;
+      }
+
       blueDotBreathingAnimationFrame = windowLike.requestAnimationFrame(tick);
     };
 
     blueDotBreathingAnimationFrame = windowLike.requestAnimationFrame(tick);
-    windowLike.addEventListener("beforeunload", stopBlueDotBreathingAnimation, { once: true });
+    if (typeof windowLike.addEventListener === "function") {
+      windowLike.addEventListener("beforeunload", stopBlueDotBreathingAnimation, { once: true });
+    }
   }
 
   function startContinuousLocationWatch() {
@@ -360,6 +471,23 @@ function createLocationRuntime({
         const latlng = { lat: position.coords.latitude, lng: position.coords.longitude };
         setCurrentLocationState(latlng, position.coords.accuracy, { openPopup: false });
         syncHeadingFromLocation?.(latlng, position.coords.heading, position.coords.speed, { previousLocation });
+        // Phase G: feed live heading/speed to the vehicle marker + follow camera.
+        if (activeVehicleMarker) {
+          activeVehicleMarker.update?.({
+            lng: latlng.lng,
+            lat: latlng.lat,
+            heading: position.coords.heading,
+            speed: position.coords.speed,
+          });
+          if (!hasActiveRoute?.()) {
+            syncVehicleFollowCamera?.({
+              lng: latlng.lng,
+              lat: latlng.lat,
+              heading: position.coords.heading,
+              speed: position.coords.speed,
+            });
+          }
+        }
       },
       (error) => {
         notifyLocationError?.(describeGeolocationError(error));
@@ -387,6 +515,10 @@ function createLocationRuntime({
     startBlueDotBreathingAnimation,
     startContinuousLocationWatch,
     syncMapToCurrentLocation,
+    hideDot,
+    showDot,
+    replaceDotWithVehicle,
+    getActiveVehicleMarker,
   };
 }
 

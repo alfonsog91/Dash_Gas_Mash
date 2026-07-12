@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DGM Browser Smoke Checks</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 24px;
+        line-height: 1.5;
+      }
+
+      #log {
+        white-space: pre-wrap;
+        font-family: ui-monospace, monospace;
+      }
+
+      #appSmokeFrame {
+        width: 390px;
+        height: 700px;
+        border: 1px solid #c7d0da;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>DGM Browser Smoke Checks</h1>
+    <pre id="log">Running...</pre>
+    <script type="module" src="./browser-smoke.js"></script>
+  </body>
+</html>

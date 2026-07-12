@@ -136,8 +136,10 @@ function createHeadingRuntime({
   compassDebugModeEnabled = false,
   runtimeDiagnosticsEnabled = false,
   allowRelativeCompassAlphaFallback = false,
+  compassKeyboardShortcutEnabled = true,
   compassPermissionRequestTimeoutMs = 5000,
   compassPermissionStorageKey = "dgm:compass-permission-state",
+  experimentalCompassPermissionStorageKey = "dgm:phase-d-compass-banner-seen",
   headingSensorMaxWebkitCompassAccuracyDegrees,
   headingSensorStaleAfterMs,
   headingSensorSmoothingTimeMs,
@@ -171,12 +173,24 @@ function createHeadingRuntime({
   searchToggleElement = null,
   locateMeElement = null,
   compassPermissionStates = {},
+  logTelemetry = null,
 } = {}) {
   const requiredState = compassPermissionStates.required ?? "required";
   const grantedState = compassPermissionStates.granted ?? "granted";
   const deniedState = compassPermissionStates.denied ?? "denied";
   const notRequiredState = compassPermissionStates.notRequired ?? "not-required";
   const unavailableState = compassPermissionStates.unavailable ?? "unavailable";
+
+  function logHeadingPermissionFlow(stage, payload = {}) {
+    if (typeof logTelemetry !== "function") {
+      return;
+    }
+
+    logTelemetry("map.heading_permission_flow", {
+      stage,
+      ...payload,
+    });
+  }
 
   let storedHeading = null;
   let storedHeadingSource = null;
@@ -208,6 +222,9 @@ function createHeadingRuntime({
   let compassDebugToggleButton = null;
   let compassDebugOverlay = null;
   let compassDebugOverlayBody = null;
+  let experimentalPermissionBanner = null;
+  let experimentalPermissionStatus = null;
+  let hasSeenExperimentalPermissionBanner = readStoredExperimentalPermissionBannerSeen();
   let isCompassDebugOverlayVisible = compassDebugModeEnabled;
   let lastCompassPermissionErrorMessage = null;
   let lastLocationErrorMessage = null;
@@ -245,6 +262,33 @@ function createHeadingRuntime({
       return canPersistCompassPermissionState(nextState) ? nextState : null;
     } catch {
       return null;
+    }
+  }
+
+  function readStoredExperimentalPermissionBannerSeen() {
+    const windowLike = getWindowLike();
+    if (!windowLike?.localStorage) {
+      return false;
+    }
+
+    try {
+      return windowLike.localStorage.getItem(experimentalCompassPermissionStorageKey) === "true";
+    } catch {
+      return false;
+    }
+  }
+
+  function writeStoredExperimentalPermissionBannerSeen() {
+    hasSeenExperimentalPermissionBanner = true;
+    const windowLike = getWindowLike();
+    if (!windowLike?.localStorage) {
+      return;
+    }
+
+    try {
+      windowLike.localStorage.setItem(experimentalCompassPermissionStorageKey, "true");
+    } catch {
+      // A one-time banner should still work when storage is unavailable.
     }
   }
 
@@ -465,7 +509,9 @@ function createHeadingRuntime({
     }
 
     const documentLike = getDocumentLike();
-    installCompassKeyboardShortcut();
+    if (compassKeyboardShortcutEnabled) {
+      installCompassKeyboardShortcut();
+    }
     compassUiRoot = documentLike.createElement("div");
     Object.assign(compassUiRoot.style, {
       position: "fixed",
@@ -565,6 +611,120 @@ function createHeadingRuntime({
     syncCompassUi();
   }
 
+  function removeExperimentalPermissionBanner() {
+    if (experimentalPermissionBanner) {
+      experimentalPermissionBanner.remove();
+    }
+    experimentalPermissionBanner = null;
+    experimentalPermissionStatus = null;
+  }
+
+  function shouldShowExperimentalPermissionBanner() {
+    if (hasSeenExperimentalPermissionBanner || !getDocumentLike()?.body || !getCompassPermissionRequestTarget()) {
+      return false;
+    }
+
+    const resolvedPermissionState = getResolvedCompassPermissionState();
+    return resolvedPermissionState === requiredState || resolvedPermissionState === deniedState;
+  }
+
+  function ensureExperimentalPermissionBanner() {
+    if (!shouldShowExperimentalPermissionBanner()) {
+      removeExperimentalPermissionBanner();
+      return false;
+    }
+
+    if (experimentalPermissionBanner) {
+      return true;
+    }
+
+    const documentLike = getDocumentLike();
+    experimentalPermissionBanner = documentLike.createElement("div");
+    Object.assign(experimentalPermissionBanner.style, {
+      position: "fixed",
+      right: "calc(env(safe-area-inset-right, 0px) + 14px)",
+      bottom: "calc(env(safe-area-inset-bottom, 0px) + 18px)",
+      zIndex: "1201",
+      display: "grid",
+      gridTemplateColumns: "1fr auto",
+      gap: "10px",
+      alignItems: "center",
+      width: "min(420px, calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 28px))",
+      padding: "12px",
+      borderRadius: "14px",
+      border: "1px solid rgba(127, 212, 248, 0.28)",
+      background: "rgba(8, 17, 29, 0.9)",
+      color: "#eef6ff",
+      boxShadow: "0 16px 34px rgba(8, 17, 29, 0.34)",
+      backdropFilter: "blur(12px)",
+    });
+
+    const copy = documentLike.createElement("div");
+    const title = documentLike.createElement("div");
+    title.textContent = "High precision heading";
+    Object.assign(title.style, {
+      fontSize: "12px",
+      fontWeight: "800",
+      letterSpacing: "0.06em",
+      textTransform: "uppercase",
+      color: "#9ad3ff",
+    });
+
+    experimentalPermissionStatus = documentLike.createElement("div");
+    experimentalPermissionStatus.textContent = "Enable motion access for a steadier cone in tuning mode.";
+    Object.assign(experimentalPermissionStatus.style, {
+      marginTop: "3px",
+      fontSize: "12px",
+      lineHeight: "1.35",
+      color: "#dbe7f5",
+    });
+    copy.append(title, experimentalPermissionStatus);
+
+    const button = documentLike.createElement("button");
+    button.type = "button";
+    button.textContent = "Enable";
+    Object.assign(button.style, {
+      minHeight: "36px",
+      padding: "8px 12px",
+      borderRadius: "999px",
+      border: "1px solid rgba(127, 212, 248, 0.32)",
+      background: "rgba(74, 233, 255, 0.18)",
+      color: "#f5fbff",
+      fontSize: "12px",
+      fontWeight: "800",
+      cursor: "pointer",
+    });
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      experimentalPermissionStatus.textContent = "Waiting for the browser permission sheet.";
+      writeStoredExperimentalPermissionBannerSeen();
+
+      try {
+        const result = await requestCompassPermissionFromUserGesture();
+        if (result === grantedState || result === notRequiredState) {
+          removeExperimentalPermissionBanner();
+          return;
+        }
+        experimentalPermissionStatus.textContent = "Using fallback heading smoothing.";
+      } catch {
+        experimentalPermissionStatus.textContent = "Using fallback heading smoothing.";
+      } finally {
+        syncHeadingConeRenderLoop();
+        const windowLike = getWindowLike();
+        if (typeof windowLike?.setTimeout === "function") {
+          windowLike.setTimeout(removeExperimentalPermissionBanner, 1800);
+        } else {
+          removeExperimentalPermissionBanner();
+        }
+      }
+    });
+
+    experimentalPermissionBanner.append(copy, button);
+    documentLike.body.append(experimentalPermissionBanner);
+    logHeadingPermissionFlow("experimental_banner_shown", { state: getResolvedCompassPermissionState() });
+    return true;
+  }
+
   async function requestCompassPermissionFromUserGesture() {
     ensureCompassUi();
 
@@ -572,17 +732,20 @@ function createHeadingRuntime({
     if (!requestTarget) {
       const nextState = getWindowLike()?.DeviceOrientationEvent ? notRequiredState : unavailableState;
       setCompassPermissionState(nextState);
+      logHeadingPermissionFlow("request_unavailable", { state: nextState });
       startDeviceOrientationWatch();
       return nextState;
     }
 
     if (isCompassPermissionRequestPending) {
+      logHeadingPermissionFlow("request_pending", { state: compassPermissionState });
       return compassPermissionState;
     }
 
     isCompassPermissionRequestPending = true;
     lastCompassPermissionErrorMessage = null;
     syncCompassUi();
+    logHeadingPermissionFlow("request_started", { state: compassPermissionState });
 
     try {
       const permissionResult = await Promise.race([
@@ -593,20 +756,26 @@ function createHeadingRuntime({
       ]);
       if (permissionResult === grantedState) {
         setCompassPermissionState(grantedState);
+        logHeadingPermissionFlow("request_resolved", { state: grantedState });
         startDeviceOrientationWatch();
         syncHeadingConeRenderLoop();
         return grantedState;
       }
 
       setCompassPermissionState(deniedState);
+      logHeadingPermissionFlow("request_resolved", { state: deniedState });
       return deniedState;
     } catch (error) {
       lastCompassPermissionErrorMessage = error instanceof Error ? error.message : String(error);
-      setCompassPermissionState(
+      const nextState =
         error instanceof Error && error.message === "Compass permission request timed out."
           ? requiredState
-          : deniedState
-      );
+          : deniedState;
+      setCompassPermissionState(nextState);
+      logHeadingPermissionFlow("request_failed", {
+        state: nextState,
+        message: lastCompassPermissionErrorMessage,
+      });
       throw error;
     } finally {
       isCompassPermissionRequestPending = false;
@@ -624,6 +793,7 @@ function createHeadingRuntime({
     }
 
     hasTriggeredCompassPermissionAutoRequest = true;
+    logHeadingPermissionFlow("auto_request_triggered", { state: getResolvedCompassPermissionState() });
     requestCompassPermissionFromUserGesture().catch((error) => {
       console.warn("[DGM] Compass permission request failed:", error);
     });
@@ -1158,6 +1328,7 @@ function createHeadingRuntime({
   return {
     clearLocationError,
     ensureCompassUi,
+    ensureExperimentalPermissionBanner,
     getHeadingState,
     getResolvedCompassPermissionState,
     getRuntimeDebugState,
@@ -1167,6 +1338,7 @@ function createHeadingRuntime({
     installRuntimeDebugSurface,
     notifyLocationError,
     refreshHeadingConeFromState,
+    removeExperimentalPermissionBanner,
     requestCompassPermissionFromUserGesture,
     startDeviceOrientationWatch,
     startHeadingConeRenderLoop,

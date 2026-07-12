@@ -50,21 +50,281 @@ import {
   normalizeHeadingDegrees,
 } from "./heading_cone.js?v=20260410-heading-damping";
 import { createHeadingRuntime } from "./heading_runtime.js?v=20260412-heading-runtime-extract";
-import { createLocationRuntime } from "./location_runtime.js?v=20260412-location-runtime-extract";
+import { createLocationRuntime } from "./location_runtime.js?v=20260711-premerge-location-runtime";
 import {
   fetchCurrentWeatherSignal,
   formatWeatherSourceSummary,
-} from "./weather.js?v=20260410-live-weather";
+} from "./weather.js?v=20260427-weather-coordinate-guard";
 import {
   fetchCensusResidentialAnchors,
   formatCensusSourceSummary,
 } from "./census.js?v=20260410-census-data";
 import { createMapInteractionRuntime } from "./map_interaction_runtime.js?v=20260413-map-interaction-runtime-extract";
-import { createDataScoringRuntime } from "./data_scoring_runtime.js?v=20260413-data-scoring-runtime-extract";
-import { createRoutingRuntime } from "./routing_runtime.js?v=20260413-routing-runtime-extract";
+import { createDataScoringRuntime } from "./data_scoring_runtime.js?v=20260427-weather-guard";
+import { createRoutingRuntime } from "./routing_runtime.js?v=20260711-premerge-routing-runtime";
+import {
+  getMapRuntimeConfigSnapshot,
+  installMapConfigRuntimeSurface,
+  isMapFeatureEnabled,
+  isMapKillSwitchEnabled,
+  logDgmTelemetry,
+  logMapFeatureFlagState,
+} from "./map_config.js?v=20260711-premerge-map-config";
+import {
+  discoverTrafficLayerSource as discoverTrafficLayerSourceForMap,
+  findTrafficLayerIds as findTrafficLayerIdsForMap,
+  setTrafficVisibility as applyTrafficVisibility,
+} from "./traffic_visibility.js?v=20260502-phase-d-traffic";
+import { createMapRuntimeReadyGate } from "./runtime_ready.js?v=20260501-runtime-ready";
+import { normalizeCoord } from "./coordinates.js?v=20260501-coordinates";
+import { restoreStyleState } from "./style_state.js?v=20260501-style-state";
+import { evaluateVisualPerformanceHeuristics } from "./performance_heuristics.js?v=20260501-performance-heuristics";
+import {
+  PHASE_E_PERFORMANCE_GUARD_EFFECTS,
+  createPhaseEPerformanceMonitor,
+} from "./performance/monitor.js?v=20260530-phase-f-opportunity-guard";
+import {
+  DEFAULT_WEIGHTS as SUPERPOSITION_DEFAULT_WEIGHTS,
+  evaluateSuperpositionEngine,
+} from "./intelligence/superposition_engine.js?v=20260502-phase-e-superposition";
+import { generateOpportunityField } from "./intelligence/opportunity_field.js?v=20260530-phase-f-opportunity-field";
+import {
+  generateVegetationInstances,
+  resolveLodMode,
+} from "./intelligence/vegetation_core.js?v=20260610-phaseg-vegetation-core";
+import { createProviderRegistry } from "./intelligence/place_provider_adapter.js?v=20260610-phaseg-place-provider";
+import {
+  createPlacePhotosHandler,
+  createBrowserImageLoader,
+  createBrowserCanvasFactory,
+} from "./intelligence/place_photos.js?v=20260610-phaseg-place-photos";
+import { createPlaceCard } from "./ui/place_card.js?v=20260610-phaseg-place-card";
+import { createPlaceSearch, boundingBoxAround } from "./intelligence/place_search.js?v=20260610-phaseg-place-search";
+import { createVegetationLayer } from "./ui/vegetation_layer.js?v=20260610-phaseg-vegetation-layer";
+import {
+  createVehicleMarker,
+  animateCameraAlongPath as animatePhaseGCameraAlongPath,
+  buildFollowCamera as buildPhaseGFollowCamera,
+} from "./ui/vehicle_marker.js?v=20260610-phaseg-vehicle-marker";
+import { getPhaseCManifest } from "./phase_c_manifest.js?v=20260711-premerge-manifest";
+import {
+  applyPhaseCActivation,
+  applyPhaseDProgrammaticCameraSmoothing,
+  getPhaseDCameraTuningParameters as getPhaseDCameraTuningParametersForState,
+  isPhaseDTuningEnabled as isPhaseDTuningEnabledForState,
+  rollbackPhaseCActivation,
+  shouldExposePhaseDDebug,
+} from "./phase_c_activation.js?v=20260502-phase-d-tuning";
 
 const APP_BUILD_ID = "20260410-nav-hotfix";
 console.info("[DGM] app build", APP_BUILD_ID);
+logDgmTelemetry("map.app_boot", {
+  buildId: APP_BUILD_ID,
+  config: getMapRuntimeConfigSnapshot(),
+});
+logMapFeatureFlagState({ reason: "app_boot", buildId: APP_BUILD_ID });
+const visualPerformanceHeuristics = evaluateVisualPerformanceHeuristics({
+  enabled: isMapFeatureEnabled("visualPerformanceHeuristics"),
+  environment: typeof navigator !== "undefined" ? navigator : {},
+});
+if (visualPerformanceHeuristics.shouldDisableFutureVisualPolish) {
+  logDgmTelemetry("map.fallback_triggered", {
+    source: "visual_performance_heuristics",
+    reason: visualPerformanceHeuristics.reasons.join(","),
+    disabledScope: visualPerformanceHeuristics.disabledScope,
+    deviceMemoryGb: visualPerformanceHeuristics.deviceMemoryGb,
+    hardwareConcurrency: visualPerformanceHeuristics.hardwareConcurrency,
+  });
+}
+
+// The manifest is side-effect-free on import. Visual activation is reconciled only
+// from the map readiness lifecycle below, using the Phase C feature-flag snapshot.
+const phaseCManifest = getPhaseCManifest();
+logDgmTelemetry("map.phase_c_manifest_loaded", {
+  version: phaseCManifest.version,
+  activated: false,
+});
+
+const PHASE_C_FLAG_NAMES = Object.freeze([
+  "phaseCTerrain",
+  "phaseCGlobe",
+  "phaseC3dBuildings",
+  "phaseCFog",
+  "phaseCAtmosphere",
+]);
+const phaseCActivationState = {};
+let phaseCFlagsWereActive = false;
+
+function isPhaseDTuningEnabled() {
+  return isPhaseDTuningEnabledForState(phaseCActivationState);
+}
+
+function getPhaseDCameraTuningParameters() {
+  return getPhaseDCameraTuningParametersForState(phaseCActivationState);
+}
+
+function getProgrammaticCameraOptions(cameraOptions = {}) {
+  return applyPhaseDProgrammaticCameraSmoothing(cameraOptions, getPhaseDCameraTuningParameters());
+}
+
+function getProgrammaticCameraTuningDebug() {
+  return getPhaseDCameraTuningParameters() || {
+    pitchMin: null,
+    pitchMax: null,
+    programmaticTransitionEasing: null,
+  };
+}
+
+function getStatPingSuperpositionDebug() {
+  return lastStatPingSuperposition;
+}
+
+function getPhaseFOpportunityDebug() {
+  return lastPhaseFOpportunityDebug;
+}
+
+function getPhaseEPerformanceDashboard() {
+  return phaseEPerformanceMonitor?.getDashboard?.() || null;
+}
+
+function getPhaseEPerformanceGuardSnapshot() {
+  return phaseEPerformanceMonitor?.getGuardSnapshot?.() || null;
+}
+
+function isPhaseEPerformanceEffectDisabled(effectName) {
+  return phaseEPerformanceMonitor?.isEffectDisabled?.(effectName) === true;
+}
+
+function debugDumpState() {
+  const style = typeof map?.getStyle === "function" ? map.getStyle() : null;
+  const layers = Array.isArray(style?.layers)
+    ? style.layers.map((layer) => ({
+        id: layer.id,
+        type: layer.type,
+        source: layer.source || null,
+        sourceLayer: layer["source-layer"] || null,
+      }))
+    : [];
+  const trafficDiscovery = typeof getPhaseDTrafficDiscovery === "function"
+    ? getPhaseDTrafficDiscovery()
+    : null;
+
+  return {
+    layers,
+    trafficSources: trafficDiscovery?.ok
+      ? [{ source: trafficDiscovery.source, sourceLayer: trafficDiscovery.sourceLayer }]
+      : trafficDiscovery?.sourceCandidates || [],
+    camera: {
+      pitch: typeof map?.getPitch === "function" ? map.getPitch() : null,
+      zoom: typeof map?.getZoom === "function" ? map.getZoom() : null,
+      bearing: typeof map?.getBearing === "function" ? map.getBearing() : null,
+      tuning: getProgrammaticCameraTuningDebug(),
+    },
+    performance: getPhaseEPerformanceDashboard(),
+    opportunity: getPhaseFOpportunityDebug(),
+  };
+}
+
+function installPhaseDDebugSurface() {
+  if (!shouldExposePhaseDDebug()) {
+    return;
+  }
+
+  const debugSurface = Object.assign(window.__DGM_DEBUG || {}, {
+    isPhaseDTuningEnabled,
+    debugDumpState,
+    getPhaseDCameraTuningParameters: getProgrammaticCameraTuningDebug,
+    getStatPingSuperpositionMetadata: getStatPingSuperpositionDebug,
+    getPhaseFOpportunityMetadata: getPhaseFOpportunityDebug,
+    getPhaseEPerformanceDashboard,
+  });
+  Object.defineProperties(debugSurface, {
+    pitchMin: { configurable: true, get: () => getProgrammaticCameraTuningDebug().pitchMin },
+    pitchMax: { configurable: true, get: () => getProgrammaticCameraTuningDebug().pitchMax },
+    programmaticTransitionEasing: {
+      configurable: true,
+      get: () => getProgrammaticCameraTuningDebug().programmaticTransitionEasing,
+    },
+  });
+  window.__DGM_DEBUG = debugSurface;
+}
+
+installPhaseDDebugSurface();
+
+function getPhaseCFlagsSnapshot() {
+  const featureFlags = getMapRuntimeConfigSnapshot().featureFlags || {};
+  return Object.fromEntries(PHASE_C_FLAG_NAMES.map((flagName) => [flagName, featureFlags[flagName] === true]));
+}
+
+function hasAnyPhaseCFlagEnabled(phaseCFlags) {
+  return PHASE_C_FLAG_NAMES.some((flagName) => phaseCFlags[flagName] === true);
+}
+
+async function reconcilePhaseCActivation() {
+  const phaseCFlags = getPhaseCFlagsSnapshot();
+  const phaseCFlagsAreActive = hasAnyPhaseCFlagEnabled(phaseCFlags);
+
+  if (phaseCFlagsAreActive) {
+    await applyPhaseCActivation(map, phaseCManifest, phaseCFlags, logDgmTelemetry, phaseCActivationState, {
+      buildId: APP_BUILD_ID,
+      skipCameraPreset: isPhaseCCameraPresetUnsafe(),
+      performanceGuard: getPhaseEPerformanceGuardSnapshot(),
+    });
+    phaseCFlagsWereActive = true;
+    syncPhaseDMotionSensorUx();
+    syncOpportunityControl();
+    scheduleOpportunityFieldRecompute({ immediate: true });
+    return;
+  }
+
+  if (phaseCFlagsWereActive) {
+    await rollbackPhaseCActivation(map, phaseCManifest, logDgmTelemetry, phaseCActivationState, {
+      buildId: APP_BUILD_ID,
+    });
+  }
+
+  phaseCFlagsWereActive = false;
+  syncPhaseDMotionSensorUx();
+  syncOpportunityControl();
+  syncOpportunityOverlayVisibility();
+}
+
+function syncPhaseDMotionSensorUx() {
+  if (!headingRuntime) {
+    return false;
+  }
+
+  if (!isPhaseDTuningEnabled()) {
+    headingRuntime.removeExperimentalPermissionBanner?.();
+    return false;
+  }
+
+  return headingRuntime.ensureExperimentalPermissionBanner?.() ?? false;
+}
+
+function reconcilePhaseCAfterFlagChange(flagName) {
+  if (!PHASE_C_FLAG_NAMES.includes(flagName)) {
+    return;
+  }
+
+  if (!map || typeof map.isStyleLoaded !== "function" || !map.isStyleLoaded()) {
+    return;
+  }
+
+  reconcilePhaseCActivation().catch((error) => {
+    console.error(error);
+    logDgmTelemetry("map.phase_c_activation_error", {
+      buildId: APP_BUILD_ID,
+      reason: "flag_reconcile_failed",
+      activated: false,
+    });
+  });
+}
+
+function isPhaseCCameraPresetUnsafe() {
+  const followingCurrentLocation = Boolean(lastCurrentLocation && locationRuntime?.getIsFollowingCurrentLocation?.());
+  return followingCurrentLocation || Boolean(routingRuntime?.isNavigationFollowCameraActive?.());
+}
 
 const PREDICTION_MODEL = String(window.DGM_PREDICTION_MODEL || "legacy").trim().toLowerCase();
 const SHADOW_LEARNED_MODEL = Boolean(window.DGM_SHADOW_PREDICTION_MODEL);
@@ -89,6 +349,8 @@ const HEADING_RENDER_LOOP_MIN_DELTA_DEGREES = 0.12;
 const HEADING_RENDER_LOOP_MIN_LOCATION_DELTA_METERS = 0.25;
 const HEADING_RENDER_LOOP_MIN_SPEED_DELTA_MPS = 0.05;
 const HEADING_CONE_RENDER_SCALE_BIAS = 1.15;
+const HEADING_CONE_MIN_LENGTH_METERS = 10;
+const HEADING_CONE_MAX_LENGTH_METERS = 95;
 const MAP_MODE_DRAWER_OPEN_SWIPE_MIN_PX = 22;
 const MAP_MODE_DRAWER_CLOSE_SWIPE_MIN_PX = 18;
 const MAP_MODE_DRAWER_SWIPE_VERTICAL_TOLERANCE_PX = 42;
@@ -98,7 +360,9 @@ const IOS_APP_SWITCH_GESTURE_EDGE_PX = 32;
 const IOS_APP_SWITCH_GESTURE_MIN_VERTICAL_PX = 18;
 const IOS_APP_SWITCH_GESTURE_HORIZONTAL_LEAD_PX = 10;
 const IOS_APP_SWITCH_GESTURE_MAX_ELAPSED_MS = 240;
-const ALLOW_RELATIVE_COMPASS_ALPHA_FALLBACK = isTouchInteractionDevice();
+const ALLOW_RELATIVE_COMPASS_ALPHA_FALLBACK = isMapFeatureEnabled("headingRelativeAlphaFallback")
+  && !isMapKillSwitchEnabled("heading")
+  && isTouchInteractionDevice();
 const COMPASS_PERMISSION_REQUIRED_STATE = "required";
 const COMPASS_PERMISSION_GRANTED_STATE = "granted";
 const COMPASS_PERMISSION_DENIED_STATE = "denied";
@@ -144,7 +408,8 @@ function isTouchInteractionDevice() {
 }
 
 const COMPASS_DEBUG_MODE_ENABLED = isCompassDebugModeEnabled();
-const RUNTIME_DIAGNOSTICS_ENABLED = COMPASS_DEBUG_MODE_ENABLED || isTouchInteractionDevice();
+const RUNTIME_DIAGNOSTICS_ENABLED = !isMapKillSwitchEnabled("runtimeDiagnostics")
+  && (COMPASS_DEBUG_MODE_ENABLED || isTouchInteractionDevice());
 
 if (window.location.protocol === "file:") {
   alert(
@@ -173,6 +438,12 @@ const STANDARD_MAP_THEME_DARK = "dark";
 const STANDARD_MAP_THEME_AUTO = "auto";
 const MAP_MODE_AUTO_REFRESH_MS = 60 * 1000;
 const STANDARD_TRAFFIC_HOLD_DELAY_MS = 300;
+const PHASE_F_OPPORTUNITY_GRID_RESOLUTION_METERS = 220;
+const PHASE_F_OPPORTUNITY_SMOOTHING_SIGMA_METERS = 420;
+const PHASE_F_OPPORTUNITY_DECAY_WINDOW_MINUTES = 90;
+const PHASE_F_OPPORTUNITY_RECOMPUTE_THROTTLE_MS = 650;
+const PHASE_F_OPPORTUNITY_MAX_RENDERED_CELLS = 320;
+const PHASE_F_OPPORTUNITY_DEFAULT_OPACITY = 0.56;
 const mapboxgl = window.mapboxgl;
 
 function renderFatalMapError(message, kicker = "Map unavailable") {
@@ -229,6 +500,7 @@ if (mapboxgl.accessToken === MAPBOX_PLACEHOLDER_TOKEN || !String(mapboxgl.access
 const SOURCE_RESTAURANTS = "restaurants";
 const SOURCE_PARKING = "parking";
 const SOURCE_HEAT = "heat";
+const SOURCE_OPPORTUNITY_FIELD = "opportunity-field";
 const SOURCE_SPOT = "spot";
 const SOURCE_CURRENT_LOCATION = "current-location";
 const SOURCE_CURRENT_LOCATION_ACCURACY = "current-location-accuracy";
@@ -239,6 +511,7 @@ const SOURCE_CINEMATIC_GRADE = "cinematic-grade";
 const SOURCE_TRAFFIC = "traffic";
 
 const LAYER_HEAT = "heat-layer";
+const LAYER_OPPORTUNITY_FIELD = "opportunity-field-layer";
 const LAYER_RESTAURANTS_GLOW = "restaurants-glow-layer";
 const LAYER_RESTAURANTS = "restaurants-layer";
 const LAYER_PARKING_GLOW = "parking-glow-layer";
@@ -252,6 +525,7 @@ const LAYER_CINEMATIC_LIFT = "cinematic-lift-layer";
 const LAYER_CINEMATIC_TINT = "cinematic-tint-layer";
 const LAYER_TRAFFIC_CASING = "traffic-casing-layer";
 const LAYER_TRAFFIC = "traffic-layer";
+const LAYER_DGM_TRAFFIC = "dgm-traffic";
 const LAYER_HYBRID_BLUE_CASING = "layer-hybrid-blue-casing";
 const LAYER_OVERLAY_HOSPITALS = "overlay-hospitals";
 const LAYER_OVERLAY_GOLF_COURSES = "overlay-golf-courses";
@@ -270,6 +544,7 @@ const LAYER_ROUTE = "route-layer";
 
 const MAP_MODE_OWNED_LAYER_IDS = new Set([
   LAYER_HEAT,
+  LAYER_OPPORTUNITY_FIELD,
   LAYER_RESTAURANTS_GLOW,
   LAYER_RESTAURANTS,
   LAYER_PARKING_GLOW,
@@ -283,6 +558,7 @@ const MAP_MODE_OWNED_LAYER_IDS = new Set([
   LAYER_CINEMATIC_TINT,
   LAYER_TRAFFIC_CASING,
   LAYER_TRAFFIC,
+  LAYER_DGM_TRAFFIC,
   LAYER_HYBRID_BLUE_CASING,
   LAYER_OVERLAY_HOSPITALS,
   LAYER_OVERLAY_GOLF_COURSES,
@@ -315,6 +591,21 @@ map.addControl(new mapboxgl.AttributionControl({ compact: true }), "bottom-left"
 if (isTouchInteractionDevice() && map.doubleClickZoom) {
   map.doubleClickZoom.disable();
 }
+
+const phaseEPerformanceMonitor = createPhaseEPerformanceMonitor({
+  windowLike: window,
+  environment: typeof navigator !== "undefined" ? navigator : {},
+  telemetryEmitter: logDgmTelemetry,
+  shouldExposeDebug: shouldExposePhaseDDebug,
+  onFallback: () => {
+    reconcilePhaseCActivation().catch((error) => console.error(error));
+    syncTrafficLayerVisibility(currentBaseStyle);
+    syncOpportunityOverlayVisibility();
+    syncOpportunityControl();
+    installPhaseDDebugSurface();
+  },
+});
+phaseEPerformanceMonitor.start();
 
 const mapCanvasContainer = typeof map.getCanvasContainer === "function"
   ? map.getCanvasContainer()
@@ -429,6 +720,10 @@ let lastRankedParkingAll = [];
 let currentBaseStyle = readStoredMapMode();
 let currentStandardMapTheme = readStoredStandardMapTheme();
 let currentStandardTrafficEnabled = readStoredStandardTrafficEnabled();
+let phaseDTrafficDefaultsHidden = false;
+let phaseDTrafficDiscoveryWarningShown = false;
+let phaseEPerformanceTrafficFallbackLogged = false;
+let phaseEPerformanceOpportunityFallbackLogged = false;
 let mapModeAutoRefreshTimer = null;
 let mapModeLayerRoleCache = new Map();
 let activeSearchAbort = null;
@@ -463,6 +758,24 @@ let lastCensusDataset = null;
 let lastStats = null;
 let lastLoadedBounds = null; // tracks the bounds used for the last successful load
 let lastWeatherSignal = null;
+let lastStatPingSuperposition = null;
+let lastPhaseFOpportunityDebug = null;
+let lastPhaseFOpportunityField = null;
+let phaseFOpportunityOverlayEnabled = false;
+let phaseFOpportunityOpacity = PHASE_F_OPPORTUNITY_DEFAULT_OPACITY;
+let phaseFOpportunityRecomputeTimer = null;
+let phaseFOpportunityRecomputeRunning = false;
+
+const STAT_PING_WEIGHT_KEYS = Object.freeze([
+  "basePay",
+  "timePenalty",
+  "distancePenalty",
+  "zoneOpportunity",
+  "futureEV",
+]);
+const statPingWeights = Object.fromEntries(
+  STAT_PING_WEIGHT_KEYS.map((weightKey) => [weightKey, SUPERPOSITION_DEFAULT_WEIGHTS[weightKey]])
+);
 
 let lastParams = {
   hour: 0,
@@ -627,6 +940,7 @@ let elMapModeDrawer = null;
 let elMapModeDrawerEdge = null;
 let elMapModeDrawerPanel = null;
 let elMapModeDrawerTab = null;
+let elOpportunityControl = null;
 let activeMapModeDrawerSwipe = null;
 
 function getRoutingState() {
@@ -715,13 +1029,14 @@ function boundsAroundCenter(center, sizeMeters) {
 
 function lngLatToObject(value) {
   if (Array.isArray(value)) {
-    return { lng: Number(value[0]), lat: Number(value[1]) };
+    const coord = normalizeCoord({ lng: value[0], lat: value[1] });
+    return coord ? { lng: coord.lng, lat: coord.lat } : { lng: Number(value[0]), lat: Number(value[1]) };
   }
 
-  return {
-    lng: Number(value.lng ?? value.lon),
-    lat: Number(value.lat),
-  };
+  const coord = normalizeCoord(value);
+  return coord
+    ? { lng: coord.lng, lat: coord.lat }
+    : { lng: Number(value?.lng ?? value?.lon ?? value?.longitude), lat: Number(value?.lat ?? value?.latitude) };
 }
 
 function lngLatToArray(value) {
@@ -1019,6 +1334,7 @@ function getCinematicTheme(standardTheme = getResolvedStandardMapTheme()) {
 function getBasemapOverlayBeforeId() {
   const styleLayers = map.getStyle()?.layers || [];
   const firstAppLayerId = [
+    LAYER_OPPORTUNITY_FIELD,
     LAYER_HEAT,
     LAYER_ROUTE_CASING,
     LAYER_ROUTE,
@@ -1278,33 +1594,217 @@ function syncSatelliteLayerVisibility(mode = currentBaseStyle) {
 
 function getShouldShowTraffic(mode = currentBaseStyle) {
   const normalizedMode = normalizeMapMode(mode);
-  return normalizedMode === BASE_STYLE_HYBRID
-    || normalizedMode === BASE_STYLE_SATELLITE
-    || (normalizedMode === BASE_STYLE_STANDARD && currentStandardTrafficEnabled);
+  return [BASE_STYLE_STANDARD, BASE_STYLE_SATELLITE, BASE_STYLE_HYBRID].includes(normalizedMode)
+    && currentStandardTrafficEnabled;
 }
 
-function setStandardTrafficEnabled(enabled) {
-  currentStandardTrafficEnabled = Boolean(enabled);
-  writeStoredStandardTrafficEnabled(currentStandardTrafficEnabled);
-  syncTrafficLayerVisibility(currentBaseStyle);
+function findTrafficLayerIds() {
+  return findTrafficLayerIdsForMap(map, {
+    explicitLayerIds: [LAYER_TRAFFIC_CASING, LAYER_TRAFFIC],
+  }).filter((layerId) => layerId !== LAYER_DGM_TRAFFIC);
 }
 
-function syncTrafficLayerVisibility(mode = currentBaseStyle) {
-  const normalizedMode = normalizeMapMode(mode);
-  const showTraffic = getShouldShowTraffic(normalizedMode);
-  const showSemanticOverlays = normalizedMode === BASE_STYLE_STANDARD
-    || normalizedMode === BASE_STYLE_HYBRID;
+function getPhaseDTrafficDiscovery() {
+  return discoverTrafficLayerSourceForMap(map, {
+    explicitLayerIds: [LAYER_TRAFFIC_CASING, LAYER_TRAFFIC],
+  });
+}
 
-  setLayerVisibility(LAYER_TRAFFIC_CASING, showTraffic);
-  setLayerVisibility(LAYER_TRAFFIC, showTraffic);
-  setLayerVisibility(LAYER_HYBRID_BLUE_CASING, normalizedMode === BASE_STYLE_HYBRID);
-  [
-    LAYER_OVERLAY_HOSPITALS,
-    LAYER_OVERLAY_GOLF_COURSES,
-    LAYER_OVERLAY_PARKS,
-    LAYER_OVERLAY_SCHOOLS,
-  ].forEach((layerId) => {
-    setLayerVisibility(layerId, showSemanticOverlays);
+function reportPhaseDTrafficDiscoveryStop(discovery) {
+  if (!phaseDTrafficDiscoveryWarningShown) {
+    const layerSummary = discovery.layers
+      .map((layer) => `${layer.id}:${layer.source || "?"}/${layer.sourceLayer || "?"}`)
+      .join(", ") || "none";
+    console.error(
+      `[DGM] Phase D traffic tuning stopped: ${discovery.reason}; expected one discoverable traffic source/source-layer, found ${layerSummary}.`,
+      discovery
+    );
+    phaseDTrafficDiscoveryWarningShown = true;
+  }
+
+  logDgmTelemetry("map.phase_d_traffic_discovery_stopped", {
+    reason: discovery.reason,
+    layerIds: discovery.layerIds,
+    sourceCandidates: discovery.sourceCandidates,
+  });
+}
+
+function setDgmTrafficLayerVisibility(visible) {
+  if (!map.getLayer(LAYER_DGM_TRAFFIC)) {
+    return false;
+  }
+
+  setLayerVisibility(LAYER_DGM_TRAFFIC, Boolean(visible));
+  return true;
+}
+
+function ensureDgmTrafficLayer(discovery) {
+  if (!discovery.ok || !discovery.source || !discovery.sourceLayer) {
+    reportPhaseDTrafficDiscoveryStop(discovery);
+    return false;
+  }
+
+  if (map.getLayer(LAYER_DGM_TRAFFIC)) {
+    return true;
+  }
+
+  const trafficCongestion = ["coalesce", ["get", "congestion"], "low"];
+  const beforeId = getBasemapOverlayBeforeId();
+  const layerSpec = {
+    id: LAYER_DGM_TRAFFIC,
+    type: "line",
+    source: discovery.source,
+    "source-layer": discovery.sourceLayer,
+    minzoom: 7,
+    layout: {
+      visibility: "none",
+      "line-cap": "round",
+      "line-join": "round",
+    },
+    paint: {
+      "line-color": [
+        "match", trafficCongestion,
+        "low", "#22c55e",
+        "moderate", "#facc15",
+        "heavy", "#ef4444",
+        "severe", "#b91c1c",
+        "#22c55e",
+      ],
+      "line-width": 3,
+      "line-opacity": 0.88,
+    },
+  };
+
+  try {
+    if (beforeId) {
+      map.addLayer(layerSpec, beforeId);
+    } else {
+      map.addLayer(layerSpec);
+    }
+  } catch (error) {
+    console.error("[DGM] Phase D traffic tuning stopped: dgm_traffic_layer_add_failed.", {
+      error,
+      source: discovery.source,
+      sourceLayer: discovery.sourceLayer,
+    });
+    logDgmTelemetry("map.phase_d_traffic_discovery_stopped", {
+      reason: "dgm_traffic_layer_add_failed",
+      source: discovery.source,
+      sourceLayer: discovery.sourceLayer,
+    });
+    return false;
+  }
+
+  return true;
+}
+
+function restorePhaseDTrafficDefaults(visible) {
+  setDgmTrafficLayerVisibility(false);
+  if (!phaseDTrafficDefaultsHidden) {
+    return;
+  }
+
+  applyTrafficVisibility(map, visible, {
+    layerIds: findTrafficLayerIds(),
+    paintFallback: isMapFeatureEnabled("trafficPaintVisibilityFallback"),
+    logTelemetry: logDgmTelemetry,
+  });
+  phaseDTrafficDefaultsHidden = false;
+}
+
+function shouldUsePerformanceTrafficFallback() {
+  return isPhaseDTuningEnabled()
+    && isPhaseEPerformanceEffectDisabled(PHASE_E_PERFORMANCE_GUARD_EFFECTS.DGM_TRAFFIC_STYLING);
+}
+
+function setPhaseDTrafficVisibility(visible) {
+  if (shouldUsePerformanceTrafficFallback()) {
+    restorePhaseDTrafficDefaults(Boolean(visible));
+    setDgmTrafficLayerVisibility(false);
+    if (!phaseEPerformanceTrafficFallbackLogged) {
+      const guard = getPhaseEPerformanceGuardSnapshot();
+      logDgmTelemetry("map.phase_e_performance_guard_effect_disabled", {
+        reason: guard?.reason || "performance_guard_active",
+        effect: PHASE_E_PERFORMANCE_GUARD_EFFECTS.DGM_TRAFFIC_STYLING,
+        disabledEffects: guard?.disabledEffects || [],
+      });
+      phaseEPerformanceTrafficFallbackLogged = true;
+    }
+
+    return {
+      visible: Boolean(visible),
+      layerIds: findTrafficLayerIds(),
+      changedLayerIds: [],
+      fallbackLayerIds: [],
+      failedLayerIds: [],
+      controller: "phase-e-performance-guard",
+    };
+  }
+
+  const discovery = getPhaseDTrafficDiscovery();
+  if (!discovery.ok) {
+    reportPhaseDTrafficDiscoveryStop(discovery);
+    restorePhaseDTrafficDefaults(Boolean(visible));
+    setDgmTrafficLayerVisibility(false);
+    return {
+      visible: false,
+      layerIds: discovery.layerIds,
+      changedLayerIds: [],
+      fallbackLayerIds: [],
+      failedLayerIds: discovery.layerIds,
+      controller: "phase-d-discovery-stopped",
+      reason: discovery.reason,
+    };
+  }
+
+  if (!ensureDgmTrafficLayer(discovery)) {
+    restorePhaseDTrafficDefaults(Boolean(visible));
+    return {
+      visible: false,
+      layerIds: discovery.layerIds,
+      changedLayerIds: [],
+      fallbackLayerIds: [],
+      failedLayerIds: discovery.layerIds,
+      controller: "phase-d-discovery-stopped",
+      reason: "dgm_traffic_layer_not_added",
+    };
+  }
+
+  applyTrafficVisibility(map, false, {
+    layerIds: discovery.layerIds.filter((layerId) => layerId !== LAYER_DGM_TRAFFIC),
+    paintFallback: isMapFeatureEnabled("trafficPaintVisibilityFallback"),
+    logTelemetry: logDgmTelemetry,
+  });
+  phaseDTrafficDefaultsHidden = true;
+
+  const dgmVisible = Boolean(visible);
+  setDgmTrafficLayerVisibility(dgmVisible);
+  logDgmTelemetry("map.phase_d_traffic_visibility_changed", {
+    visible: dgmVisible,
+    source: discovery.source,
+    sourceLayer: discovery.sourceLayer,
+    defaultLayerIds: discovery.layerIds,
+  });
+
+  return {
+    visible: dgmVisible,
+    layerIds: [LAYER_DGM_TRAFFIC],
+    changedLayerIds: [LAYER_DGM_TRAFFIC],
+    fallbackLayerIds: [],
+    failedLayerIds: [],
+    controller: "phase-d",
+  };
+}
+
+function setLegacyTrafficVisibility(visible) {
+  const showTraffic = Boolean(visible);
+  const changedLayerIds = [];
+
+  [LAYER_TRAFFIC_CASING, LAYER_TRAFFIC].forEach((layerId) => {
+    setLayerVisibility(layerId, showTraffic);
+    if (map.getLayer(layerId)) {
+      changedLayerIds.push(layerId);
+    }
   });
 
   for (const layer of getBasemapStyleLayers()) {
@@ -1315,8 +1815,87 @@ function syncTrafficLayerVisibility(mode = currentBaseStyle) {
     const signature = getBasemapLayerSignature(layer);
     if (/\btraffic\b|\bcongestion\b/.test(signature)) {
       setLayerVisibility(layer.id, showTraffic);
+      changedLayerIds.push(layer.id);
     }
   }
+
+  return {
+    visible: showTraffic,
+    layerIds: changedLayerIds,
+    changedLayerIds,
+    fallbackLayerIds: [],
+    failedLayerIds: [],
+    controller: "legacy",
+  };
+}
+
+function setTrafficVisibility(visible) {
+  const requestedVisible = Boolean(visible);
+  const effectiveVisible = requestedVisible && !isMapKillSwitchEnabled("traffic");
+
+  if (isPhaseDTuningEnabled()) {
+    return setPhaseDTrafficVisibility(effectiveVisible);
+  }
+
+  restorePhaseDTrafficDefaults(effectiveVisible);
+
+  if (!isMapFeatureEnabled("trafficVisibilityController")) {
+    const legacyResult = setLegacyTrafficVisibility(effectiveVisible);
+    logDgmTelemetry("map.traffic_visibility_legacy_applied", {
+      ...legacyResult,
+      requestedVisible,
+    });
+    return legacyResult;
+  }
+
+  const result = applyTrafficVisibility(map, effectiveVisible, {
+    layerIds: findTrafficLayerIds(),
+    paintFallback: isMapFeatureEnabled("trafficPaintVisibilityFallback"),
+    logTelemetry: logDgmTelemetry,
+  });
+
+  if (requestedVisible !== effectiveVisible) {
+    logDgmTelemetry("map.traffic_visibility_killed", { requestedVisible, effectiveVisible });
+  }
+
+  return result;
+}
+
+function setStandardTrafficEnabled(enabled) {
+  currentStandardTrafficEnabled = Boolean(enabled);
+  writeStoredStandardTrafficEnabled(currentStandardTrafficEnabled);
+  logDgmTelemetry("map.traffic_standard_preference_changed", {
+    enabled: currentStandardTrafficEnabled,
+  });
+  logDgmTelemetry("map.traffic_toggle", {
+    enabled: currentStandardTrafficEnabled,
+    baseStyle: currentBaseStyle,
+    effectiveVisible: getShouldShowTraffic(currentBaseStyle),
+  });
+  syncTrafficLayerVisibility(currentBaseStyle);
+}
+
+function toggleTraffic() {
+  setStandardTrafficEnabled(!currentStandardTrafficEnabled);
+  return currentStandardTrafficEnabled;
+}
+
+function syncTrafficLayerVisibility(mode = currentBaseStyle) {
+  const normalizedMode = normalizeMapMode(mode);
+  const showTraffic = getShouldShowTraffic(normalizedMode);
+  const showSemanticOverlays = normalizedMode === BASE_STYLE_STANDARD
+    || normalizedMode === BASE_STYLE_HYBRID;
+
+  setTrafficVisibility(showTraffic);
+  setLayerVisibility(LAYER_HYBRID_BLUE_CASING, normalizedMode === BASE_STYLE_HYBRID);
+  [
+    LAYER_OVERLAY_HOSPITALS,
+    LAYER_OVERLAY_GOLF_COURSES,
+    LAYER_OVERLAY_PARKS,
+    LAYER_OVERLAY_SCHOOLS,
+  ].forEach((layerId) => {
+    setLayerVisibility(layerId, showSemanticOverlays);
+  });
 }
 
 function syncMapModeAutoRefreshTimer() {
@@ -1433,10 +2012,14 @@ function syncCategoryLayerVisibility() {
   const showRestaurants = elShowRestaurants?.checked !== false;
   const showParking = elShowParking?.checked !== false;
 
-  setLayerVisibility(LAYER_RESTAURANTS_GLOW, showRestaurants);
-  setLayerVisibility(LAYER_RESTAURANTS, showRestaurants);
-  setLayerVisibility(LAYER_PARKING_GLOW, showParking);
-  setLayerVisibility(LAYER_PARKING, showParking);
+  return restoreStyleState(map, {
+    visibility: {
+      [LAYER_RESTAURANTS_GLOW]: showRestaurants,
+      [LAYER_RESTAURANTS]: showRestaurants,
+      [LAYER_PARKING_GLOW]: showParking,
+      [LAYER_PARKING]: showParking,
+    },
+  });
 }
 
 function ensureHybridBaseLayers() {
@@ -1770,16 +2353,10 @@ function ensureHybridBaseLayers() {
           "rgba(28, 78, 54, 0.44)",
         ],
         "line-width": [
-          "+",
-          ["interpolate", ["linear"], ["zoom"], 7, 1.8, 11, 3.9, 16, 8.8],
-          [
-            "match", trafficCongestion,
-            "low", 0,
-            "moderate", 0.35,
-            "heavy", 0.8,
-            "severe", 1.3,
-            0.2,
-          ],
+          "interpolate", ["linear"], ["zoom"],
+          7, ["match", trafficCongestion, "low", 1.8, "moderate", 2.15, "heavy", 2.6, "severe", 3.1, 2.0],
+          11, ["match", trafficCongestion, "low", 3.9, "moderate", 4.25, "heavy", 4.7, "severe", 5.2, 4.1],
+          16, ["match", trafficCongestion, "low", 8.8, "moderate", 9.15, "heavy", 9.6, "severe", 10.1, 9.0],
         ],
         "line-opacity": [
           "match", trafficCongestion,
@@ -1816,16 +2393,10 @@ function ensureHybridBaseLayers() {
           "rgba(67, 191, 122, 0.82)",
         ],
         "line-width": [
-          "+",
-          ["interpolate", ["linear"], ["zoom"], 7, 1.2, 11, 2.6, 16, 6.5],
-          [
-            "match", trafficCongestion,
-            "low", 0,
-            "moderate", 0.25,
-            "heavy", 0.55,
-            "severe", 0.95,
-            0.1,
-          ],
+          "interpolate", ["linear"], ["zoom"],
+          7, ["match", trafficCongestion, "low", 1.2, "moderate", 1.45, "heavy", 1.75, "severe", 2.15, 1.3],
+          11, ["match", trafficCongestion, "low", 2.6, "moderate", 2.85, "heavy", 3.15, "severe", 3.55, 2.7],
+          16, ["match", trafficCongestion, "low", 6.5, "moderate", 6.75, "heavy", 7.05, "severe", 7.45, 6.6],
         ],
         "line-opacity": [
           "match", trafficCongestion,
@@ -1851,7 +2422,17 @@ function restoreLayersAfterStyleChange() {
   mapModeLayerRoleCache = new Map();
   ensureMapSourcesAndLayers();
   restoreMapDataSources();
-  syncCategoryLayerVisibility();
+  renderOpportunityFieldOverlay();
+  syncMapModeAppearance({ updateUi: false });
+  const categoryRestoreResult = syncCategoryLayerVisibility();
+  logDgmTelemetry("map.style_reload_restored", {
+    baseStyle: currentBaseStyle,
+    standardTheme: currentStandardMapTheme,
+    trafficVisible: getShouldShowTraffic(currentBaseStyle),
+    changedCategoryLayoutCount: categoryRestoreResult.changedLayoutProperties.length,
+    missingCategoryLayerIds: categoryRestoreResult.missingLayerIds,
+    failedCategoryUpdates: categoryRestoreResult.failedUpdates,
+  });
   syncHeadingConeRenderLoop();
 }
 
@@ -2557,11 +3138,14 @@ function getCachedHeadingConeLengthMeters(latitude) {
   if (zoom !== lastHeadingConeZoom || latitude !== lastHeadingConeLatitude) {
     lastHeadingConeZoom = zoom;
     lastHeadingConeLatitude = latitude;
-    lastHeadingConeLengthMeters = getHeadingConeLengthMeters(
+    const rawLengthMeters = getHeadingConeLengthMeters(
       latitude,
       zoom,
       HEADING_CONE_LENGTH_PIXELS * HEADING_CONE_RENDER_SCALE_BIAS
     );
+    lastHeadingConeLengthMeters = typeof rawLengthMeters === "number" && Number.isFinite(rawLengthMeters)
+      ? Math.min(Math.max(rawLengthMeters, HEADING_CONE_MIN_LENGTH_METERS), HEADING_CONE_MAX_LENGTH_METERS)
+      : rawLengthMeters;
   }
   return lastHeadingConeLengthMeters;
 }
@@ -3360,7 +3944,13 @@ function ensureMapModeToolbar() {
 
 function bindMapModeControlEvents() {
   ensureMapModeToolbar();
+  ensureOpportunityControl();
+  ensureVegetationControl();
   if (!elMapModeControl || elMapModeControl.dataset.bound === "true") {
+    bindOpportunityControlEvents();
+    syncOpportunityControl();
+    bindVegetationControlEvents();
+    syncVegetationControl();
     return;
   }
 
@@ -3382,7 +3972,208 @@ function bindMapModeControlEvents() {
       setStandardMapTheme(button.dataset.standardMapTheme);
     });
   });
+  bindOpportunityControlEvents();
+  syncOpportunityControl();
+  bindVegetationControlEvents();
+  syncVegetationControl();
 }
+
+function ensureOpportunityControl() {
+  ensureMapModeToolbar();
+  if (elOpportunityControl) {
+    return;
+  }
+
+  const drawerBody = elMapModeDrawer?.querySelector(".map-mode-drawer__body");
+  if (!drawerBody) {
+    return;
+  }
+
+  const control = document.createElement("section");
+  control.className = "map-mode-control";
+  control.hidden = true;
+  control.setAttribute("aria-label", "Opportunity overlay");
+  control.innerHTML = `
+    <details data-opportunity-details>
+      <summary class="map-mode-label">Opportunity</summary>
+      <label class="checkbox">
+        <input type="checkbox" data-opportunity-toggle />
+        <span>Overlay</span>
+      </label>
+      <label class="map-mode-label" for="phaseFOpportunityOpacity">Opacity <span data-opportunity-opacity-value>${Math.round(phaseFOpportunityOpacity * 100)}%</span></label>
+      <input id="phaseFOpportunityOpacity" type="range" min="0" max="1" step="0.05" value="${phaseFOpportunityOpacity}" data-opportunity-opacity />
+      <div class="hint" data-opportunity-status>Waiting for field</div>
+    </details>
+  `;
+  drawerBody.append(control);
+  elOpportunityControl = control;
+}
+
+function syncOpportunityControl() {
+  if (!elOpportunityControl) {
+    return;
+  }
+
+  const tuningEnabled = isPhaseDTuningEnabled();
+  const guarded = isPhaseFOpportunityGuarded();
+  elOpportunityControl.hidden = !tuningEnabled;
+
+  const toggle = elOpportunityControl.querySelector("[data-opportunity-toggle]");
+  const opacity = elOpportunityControl.querySelector("[data-opportunity-opacity]");
+  const opacityValue = elOpportunityControl.querySelector("[data-opportunity-opacity-value]");
+  const status = elOpportunityControl.querySelector("[data-opportunity-status]");
+  if (toggle) {
+    toggle.checked = phaseFOpportunityOverlayEnabled;
+    toggle.disabled = !tuningEnabled || guarded;
+  }
+  if (opacity) {
+    opacity.value = String(phaseFOpportunityOpacity);
+    opacity.disabled = !tuningEnabled || guarded || !phaseFOpportunityOverlayEnabled;
+  }
+  if (opacityValue) {
+    opacityValue.textContent = `${Math.round(phaseFOpportunityOpacity * 100)}%`;
+  }
+  if (status) {
+    const metadata = lastPhaseFOpportunityField?.metadata;
+    status.textContent = guarded
+      ? "Perf guard disabled"
+      : metadata
+        ? `${lastPhaseFOpportunityField.field.length} cells · ${Math.round(metadata.heuristicConfidenceScore * 100)} confidence`
+        : "Waiting for field";
+  }
+}
+
+function bindOpportunityControlEvents() {
+  if (!elOpportunityControl || elOpportunityControl.dataset.bound === "true") {
+    return;
+  }
+
+  elOpportunityControl.dataset.bound = "true";
+  elOpportunityControl.addEventListener("change", (event) => {
+    const toggle = event.target?.closest?.("[data-opportunity-toggle]");
+    if (!toggle) {
+      return;
+    }
+    phaseFOpportunityOverlayEnabled = Boolean(toggle.checked);
+    if (phaseFOpportunityOverlayEnabled) {
+      scheduleOpportunityFieldRecompute({ immediate: !lastPhaseFOpportunityField });
+    } else {
+      syncOpportunityOverlayVisibility();
+    }
+    syncOpportunityControl();
+  });
+
+  elOpportunityControl.addEventListener("input", (event) => {
+    const slider = event.target?.closest?.("[data-opportunity-opacity]");
+    if (!slider) {
+      return;
+    }
+    phaseFOpportunityOpacity = clamp01(slider.value);
+    renderOpportunityFieldOverlay();
+    syncOpportunityControl();
+  });
+}
+
+function ensureVegetationControl() {
+  ensureMapModeToolbar();
+  if (elVegetationControl) {
+    return;
+  }
+
+  const drawerBody = elMapModeDrawer?.querySelector(".map-mode-drawer__body");
+  if (!drawerBody) {
+    return;
+  }
+
+  const layer = getPhaseGVegetationLayer();
+  const control = document.createElement("section");
+  control.className = "map-mode-control";
+  control.hidden = true;
+  control.setAttribute("aria-label", "Vegetation overlay");
+  control.innerHTML = `
+    <details data-vegetation-details>
+      <summary class="map-mode-label">Vegetation</summary>
+      <label class="checkbox">
+        <input type="checkbox" data-vegetation-toggle />
+        <span>Trees &amp; woods</span>
+      </label>
+      <label class="map-mode-label" for="phaseGVegetationDensity">Density <span data-vegetation-density-value>1</span></label>
+      <input id="phaseGVegetationDensity" type="range" min="1" max="6" step="1" value="1" data-vegetation-density />
+      <div class="hint" data-vegetation-status>Disabled</div>
+    </details>
+  `;
+  drawerBody.append(control);
+  elVegetationControl = control;
+  // Keep the layer instance referenced so creation happens with the control.
+  void layer;
+}
+
+function syncVegetationControl() {
+  if (!elVegetationControl) {
+    return;
+  }
+
+  const allowed = isPhaseGVegetationAllowed();
+  const guarded = isPhaseGVegetationGuarded();
+  elVegetationControl.hidden = !allowed;
+
+  const toggle = elVegetationControl.querySelector("[data-vegetation-toggle]");
+  const density = elVegetationControl.querySelector("[data-vegetation-density]");
+  const densityValue = elVegetationControl.querySelector("[data-vegetation-density-value]");
+  const status = elVegetationControl.querySelector("[data-vegetation-status]");
+  if (toggle) {
+    toggle.checked = phaseGVegetationEnabled;
+    toggle.disabled = !allowed || guarded;
+  }
+  if (density) {
+    density.disabled = !allowed || guarded || !phaseGVegetationEnabled;
+  }
+  if (densityValue && density) {
+    densityValue.textContent = String(density.value);
+  }
+  if (status) {
+    const metadata = getPhaseGVegetationLayer().getDebugMetadata();
+    status.textContent = guarded
+      ? "Perf guard disabled"
+      : !phaseGVegetationEnabled
+        ? "Disabled"
+        : metadata
+          ? `${metadata.instanceCount} instances · ${metadata.currentMode}`
+          : "Active";
+  }
+}
+
+function bindVegetationControlEvents() {
+  if (!elVegetationControl || elVegetationControl.dataset.bound === "true") {
+    return;
+  }
+
+  elVegetationControl.dataset.bound = "true";
+  elVegetationControl.addEventListener("change", (event) => {
+    const toggle = event.target?.closest?.("[data-vegetation-toggle]");
+    if (!toggle) {
+      return;
+    }
+    phaseGVegetationEnabled = Boolean(toggle.checked);
+    getPhaseGVegetationLayer().setEnabled(phaseGVegetationEnabled);
+    if (phaseGVegetationEnabled) {
+      refreshPhaseGVegetationSamples();
+    }
+    syncPhaseGVegetationVisibility();
+    syncVegetationControl();
+  });
+
+  elVegetationControl.addEventListener("input", (event) => {
+    const slider = event.target?.closest?.("[data-vegetation-density]");
+    if (!slider) {
+      return;
+    }
+    getPhaseGVegetationLayer().setDensityThreshold(Number(slider.value));
+    syncPhaseGVegetationVisibility();
+    syncVegetationControl();
+  });
+}
+
 
 function renderSearchResults(results) {
   if (!elSearchResults) return;
@@ -3410,10 +4201,11 @@ function normalizeMapboxMatch(rawMatch) {
     : rawMatch?.geometry?.coordinates;
   const displayName = String(rawMatch?.place_name ?? rawMatch?.properties?.label ?? rawMatch?.text ?? "").trim();
   const { title, subtitle } = splitSearchDisplayName(displayName);
+  const coord = normalizeCoord({ lng: coordinates?.[0], lat: coordinates?.[1] });
 
   return {
-    lat: Number(coordinates?.[1]),
-    lng: Number(coordinates?.[0]),
+    lat: coord?.lat ?? Number.NaN,
+    lng: coord?.lng ?? Number.NaN,
     title,
     subtitle,
     label: displayName || title,
@@ -3423,10 +4215,11 @@ function normalizeMapboxMatch(rawMatch) {
 function normalizeNominatimMatch(rawMatch) {
   const displayName = String(rawMatch?.display_name ?? "").trim();
   const { title, subtitle } = splitSearchDisplayName(displayName);
+  const coord = normalizeCoord(rawMatch);
 
   return {
-    lat: Number(rawMatch?.lat),
-    lng: Number(rawMatch?.lon),
+    lat: coord?.lat ?? Number.NaN,
+    lng: coord?.lng ?? Number.NaN,
     title,
     subtitle,
     label: displayName || title,
@@ -3441,8 +4234,8 @@ async function fetchMapboxMatches(query, { limit = 5, signal } = {}) {
   searchUrl.searchParams.set("language", "en");
   searchUrl.searchParams.set("types", "address,poi,place,locality,neighbourhood,street");
 
-  const center = map.getCenter();
-  if (Number.isFinite(center?.lng) && Number.isFinite(center?.lat)) {
+  const center = normalizeCoord(map.getCenter());
+  if (center) {
     searchUrl.searchParams.set("proximity", `${center.lng},${center.lat}`);
   }
 
@@ -3548,12 +4341,12 @@ function focusSearchMatch(match) {
 
   clearActiveSearchMarker();
 
-  map.flyTo({
+  map.flyTo(getProgrammaticCameraOptions({
     center: [lng, lat],
     zoom: Math.max(map.getZoom(), 15),
     duration: 900,
     essential: true,
-  });
+  }));
 
   const marker = new mapboxgl.Marker({ color: "#ffbf45" })
     .setLngLat([lng, lat])
@@ -3607,6 +4400,193 @@ function setLayerVisibility(layerId, visible) {
   map.setLayoutProperty(layerId, "visibility", visible ? "visible" : "none");
 }
 
+function isPhaseFOpportunityGuarded() {
+  return isPhaseDTuningEnabled()
+    && isPhaseEPerformanceEffectDisabled(PHASE_E_PERFORMANCE_GUARD_EFFECTS.OPPORTUNITY_OVERLAY);
+}
+
+function getPhaseFOpportunitySamples() {
+  const timestamp = Date.now();
+  return lastRankedParkingAll
+    .filter((candidate) => Number.isFinite(Number(candidate?.lat)) && Number.isFinite(Number(candidate?.lon ?? candidate?.lng)))
+    .slice(0, 80)
+    .map((candidate) => ({
+      lat: Number(candidate.lat),
+      lng: Number(candidate.lon ?? candidate.lng),
+      count: Math.max(1, Math.round(Number(candidate.effectiveMerchants ?? candidate.merchantCount ?? 1) || 1)),
+      aggregateEV: getProbabilityMid(candidate),
+      timestamp,
+    }));
+}
+
+function createOpportunityFieldFeature(cell) {
+  const feature = createCirclePolygonFeature(
+    { lat: cell.lat, lng: cell.lng },
+    PHASE_F_OPPORTUNITY_GRID_RESOLUTION_METERS * 0.58,
+    20
+  );
+  feature.properties = {
+    opportunity: cell.opportunity,
+    opacity: Math.max(0.04, cell.opportunity * phaseFOpportunityOpacity),
+    recentDensity: cell.recentDensity,
+    historicalDensity: cell.historicalDensity,
+    zoneBoost: cell.zoneBoost,
+    travelCost: cell.travelCost,
+  };
+  return feature;
+}
+
+function getRenderedOpportunityCells(field) {
+  return [...field]
+    .filter((cell) => cell.opportunity > 0.025)
+    .sort((left, right) => right.opportunity - left.opportunity || left.id.localeCompare(right.id))
+    .slice(0, PHASE_F_OPPORTUNITY_MAX_RENDERED_CELLS)
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function clearOpportunityFieldOverlay() {
+  setSourceData(SOURCE_OPPORTUNITY_FIELD, featureCollection());
+  setLayerVisibility(LAYER_OPPORTUNITY_FIELD, false);
+}
+
+function exposePhaseFOpportunityDebug(fieldResult, renderedCellCount) {
+  lastPhaseFOpportunityDebug = fieldResult
+    ? {
+        updatedAt: Date.now(),
+        enabled: phaseFOpportunityOverlayEnabled,
+        opacity: phaseFOpportunityOpacity,
+        renderedCellCount,
+        metadata: fieldResult.metadata,
+        components: fieldResult.components,
+      }
+    : null;
+
+  if (!shouldExposePhaseDDebug()) {
+    return;
+  }
+
+  window.__DGM_DEBUG = Object.assign(window.__DGM_DEBUG || {}, {
+    phaseFOpportunity: lastPhaseFOpportunityDebug,
+    getPhaseFOpportunityMetadata: getPhaseFOpportunityDebug,
+  });
+}
+
+function renderOpportunityFieldOverlay() {
+  if (!isPhaseDTuningEnabled() || !phaseFOpportunityOverlayEnabled || isPhaseFOpportunityGuarded()) {
+    clearOpportunityFieldOverlay();
+    exposePhaseFOpportunityDebug(lastPhaseFOpportunityField, 0);
+    return false;
+  }
+
+  if (!lastPhaseFOpportunityField?.field?.length) {
+    clearOpportunityFieldOverlay();
+    exposePhaseFOpportunityDebug(lastPhaseFOpportunityField, 0);
+    return false;
+  }
+
+  const renderedCells = getRenderedOpportunityCells(lastPhaseFOpportunityField.field);
+  setSourceData(SOURCE_OPPORTUNITY_FIELD, featureCollection(renderedCells.map(createOpportunityFieldFeature)));
+  setLayerVisibility(LAYER_OPPORTUNITY_FIELD, true);
+  exposePhaseFOpportunityDebug(lastPhaseFOpportunityField, renderedCells.length);
+  return true;
+}
+
+function syncOpportunityOverlayVisibility() {
+  if (!isPhaseDTuningEnabled()) {
+    clearOpportunityFieldOverlay();
+    return false;
+  }
+
+  if (isPhaseFOpportunityGuarded()) {
+    clearOpportunityFieldOverlay();
+    if (!phaseEPerformanceOpportunityFallbackLogged) {
+      const guard = getPhaseEPerformanceGuardSnapshot();
+      logDgmTelemetry("map.phase_e_performance_guard_effect_disabled", {
+        reason: guard?.reason || "performance_guard_active",
+        effect: PHASE_E_PERFORMANCE_GUARD_EFFECTS.OPPORTUNITY_OVERLAY,
+        disabledEffects: guard?.disabledEffects || [],
+      });
+      phaseEPerformanceOpportunityFallbackLogged = true;
+    }
+    return false;
+  }
+
+  return renderOpportunityFieldOverlay();
+}
+
+function recomputeOpportunityField() {
+  if (!isPhaseDTuningEnabled() || !phaseFOpportunityOverlayEnabled || isPhaseFOpportunityGuarded()) {
+    syncOpportunityOverlayVisibility();
+    syncOpportunityControl();
+    return null;
+  }
+
+  const samples = getPhaseFOpportunitySamples();
+  if (!samples.length) {
+    lastPhaseFOpportunityField = null;
+    clearOpportunityFieldOverlay();
+    exposePhaseFOpportunityDebug(null, 0);
+    syncOpportunityControl();
+    return null;
+  }
+
+  try {
+    lastPhaseFOpportunityField = generateOpportunityField(samples, {
+      gridResolution: PHASE_F_OPPORTUNITY_GRID_RESOLUTION_METERS,
+      smoothingSigma: PHASE_F_OPPORTUNITY_SMOOTHING_SIGMA_METERS,
+      decayWindow: PHASE_F_OPPORTUNITY_DECAY_WINDOW_MINUTES,
+      timestamp: Date.now(),
+      clusterMinSamples: 4,
+      weights: { recentDensity: 0.52, historicalDensity: 0.14, zoneBoost: 0.24, travelCost: 0.1 },
+    });
+  } catch (error) {
+    lastPhaseFOpportunityField = null;
+    clearOpportunityFieldOverlay();
+    exposePhaseFOpportunityDebug(null, 0);
+    logDgmTelemetry("map.phase_f_opportunity_recompute_failed", {
+      reason: error?.message || String(error),
+    });
+    syncOpportunityControl();
+    return null;
+  }
+  renderOpportunityFieldOverlay();
+  syncOpportunityControl();
+  return lastPhaseFOpportunityField;
+}
+
+function scheduleOpportunityFieldRecompute({ immediate = false } = {}) {
+  if (phaseFOpportunityRecomputeTimer !== null) {
+    window.clearTimeout(phaseFOpportunityRecomputeTimer);
+    phaseFOpportunityRecomputeTimer = null;
+  }
+
+  if (!isPhaseDTuningEnabled() || !phaseFOpportunityOverlayEnabled) {
+    syncOpportunityOverlayVisibility();
+    syncOpportunityControl();
+    return;
+  }
+
+  const run = () => {
+    phaseFOpportunityRecomputeTimer = null;
+    if (phaseFOpportunityRecomputeRunning) {
+      return;
+    }
+    phaseFOpportunityRecomputeRunning = true;
+    try {
+      recomputeOpportunityField();
+    } finally {
+      phaseFOpportunityRecomputeRunning = false;
+    }
+  };
+
+  if (immediate) {
+    run();
+    return;
+  }
+
+  phaseFOpportunityRecomputeTimer = window.setTimeout(run, PHASE_F_OPPORTUNITY_RECOMPUTE_THROTTLE_MS);
+}
+
 function createCirclePolygonFeature(latlng, radiusMeters, steps = 48) {
   const center = lngLatToObject(latlng);
   const coordinates = [];
@@ -3637,17 +4617,39 @@ function ensureMapSourcesAndLayers() {
   if (map.getSource(SOURCE_RESTAURANTS)) {
     syncCategoryLayerVisibility();
     syncMapModeAppearance();
+    syncOpportunityOverlayVisibility();
     return;
   }
 
   map.addSource(SOURCE_RESTAURANTS, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_PARKING, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_HEAT, { type: "geojson", data: featureCollection() });
+  map.addSource(SOURCE_OPPORTUNITY_FIELD, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_SPOT, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_CURRENT_LOCATION, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_CURRENT_LOCATION_ACCURACY, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_HEADING, { type: "geojson", data: featureCollection() });
   map.addSource(SOURCE_ROUTE, { type: "geojson", data: featureCollection() });
+
+  map.addLayer({
+    id: LAYER_OPPORTUNITY_FIELD,
+    type: "fill",
+    source: SOURCE_OPPORTUNITY_FIELD,
+    layout: {
+      visibility: "none",
+    },
+    paint: {
+      "fill-color": [
+        "interpolate", ["linear"], ["coalesce", ["get", "opportunity"], 0],
+        0, "rgba(18, 64, 120, 0)",
+        0.28, "#1fb6a6",
+        0.58, "#f4c542",
+        0.82, "#f97316",
+        1, "#f8fbff",
+      ],
+      "fill-opacity": ["coalesce", ["get", "opacity"], 0],
+    },
+  });
 
   map.addLayer({
     id: LAYER_HEAT,
@@ -3896,6 +4898,7 @@ function ensureMapSourcesAndLayers() {
   bindMapInteractionLayerEvents();
   syncCategoryLayerVisibility();
   syncMapModeAppearance();
+  syncOpportunityOverlayVisibility();
 }
 
 function setHourDefaults() {
@@ -4060,6 +5063,7 @@ routingRuntime = createRoutingRuntime({
   stagingSpotMaxDistanceMeters: STAGING_SPOT_MAX_DISTANCE_METERS,
   microCorridorMinDistanceMeters: MICRO_CORRIDOR_MIN_DISTANCE_METERS,
   microCorridorMaxDistanceMeters: MICRO_CORRIDOR_MAX_DISTANCE_METERS,
+  getProgrammaticCameraOptions,
 });
 
 function updateCensusUi() {
@@ -4230,6 +5234,8 @@ locationRuntime = createLocationRuntime({
   locationZoomStep: LOCATION_ZOOM_STEP,
   autoFollowLocationMinCenterOffsetMeters: AUTO_FOLLOW_LOCATION_MIN_CENTER_OFFSET_METERS,
   autoFollowLocationPanDurationMs: AUTO_FOLLOW_LOCATION_PAN_DURATION_MS,
+  getProgrammaticCameraOptions,
+  syncVehicleFollowCamera: syncPhaseGVehicleFollowCamera,
 });
 
 function setCurrentLocationFollowEnabled(isEnabled) {
@@ -4253,12 +5259,15 @@ headingRuntime = createHeadingRuntime({
   compassDebugModeEnabled: COMPASS_DEBUG_MODE_ENABLED,
   runtimeDiagnosticsEnabled: RUNTIME_DIAGNOSTICS_ENABLED,
   allowRelativeCompassAlphaFallback: ALLOW_RELATIVE_COMPASS_ALPHA_FALLBACK,
+  compassKeyboardShortcutEnabled: isMapFeatureEnabled("headingKeyboardShortcut")
+    && !isMapKillSwitchEnabled("heading")
+    && !isMapKillSwitchEnabled("compassPermission"),
   compassPermissionRequestTimeoutMs: COMPASS_PERMISSION_REQUEST_TIMEOUT_MS,
   compassPermissionStorageKey: COMPASS_PERMISSION_STORAGE_KEY,
   headingSensorMaxWebkitCompassAccuracyDegrees: HEADING_SENSOR_MAX_WEBKIT_COMPASS_ACCURACY_DEGREES,
   headingSensorStaleAfterMs: HEADING_SENSOR_STALE_AFTER_MS,
   headingSensorSmoothingTimeMs: HEADING_SENSOR_SMOOTHING_TIME_MS,
-  headingSensorSmoothingMinBlend: HEADING_SENSOR_SMOOTHING_MIN_BLEND,
+  headingSensorSmoothingMinBlend: Math.max(HEADING_SENSOR_SMOOTHING_MIN_BLEND, 0.56),
   headingGpsFallbackSmoothingTimeMs: HEADING_GPS_FALLBACK_SMOOTHING_TIME_MS,
   headingFilterSmoothingFactor: HEADING_FILTER_SMOOTHING_FACTOR,
   headingFilterDeadZoneDegrees: HEADING_FILTER_DEAD_ZONE_DEGREES,
@@ -4296,6 +5305,7 @@ headingRuntime = createHeadingRuntime({
   haversineMeters,
   renderHeadingCone: updateHeadingCone,
   clearHeadingCone: clearHeadingConeVisual,
+  logTelemetry: logDgmTelemetry,
   syncMapBearingToHeading,
   searchToggleElement: elSearchToggle,
   locateMeElement: elLocateMe,
@@ -4309,35 +5319,448 @@ headingRuntime = createHeadingRuntime({
 });
 
 function ensureCompassUi() {
+  if (isMapKillSwitchEnabled("heading") || isMapKillSwitchEnabled("compassPermission")) {
+    logDgmTelemetry("map.heading_compass_ui_skipped", { reason: "kill_switch" });
+    logDgmTelemetry("map.heading_permission_flow", { stage: "ui_skipped", reason: "kill_switch" });
+    return;
+  }
+
+  logDgmTelemetry("map.heading_permission_flow", { stage: "ui_requested" });
   return headingRuntime.ensureCompassUi();
 }
 
 function installCompassPermissionAutoRequest() {
+  if (
+    !isMapFeatureEnabled("headingCompassAutoRequest")
+    || isMapKillSwitchEnabled("heading")
+    || isMapKillSwitchEnabled("compassPermission")
+  ) {
+    logDgmTelemetry("map.heading_compass_auto_request_skipped", {
+      reason: isMapFeatureEnabled("headingCompassAutoRequest") ? "kill_switch" : "feature_flag",
+    });
+    logDgmTelemetry("map.heading_permission_flow", {
+      stage: "auto_request_skipped",
+      reason: isMapFeatureEnabled("headingCompassAutoRequest") ? "kill_switch" : "feature_flag",
+    });
+    return;
+  }
+
+  logDgmTelemetry("map.heading_permission_flow", { stage: "auto_request_installed" });
   return headingRuntime.installCompassPermissionAutoRequest();
 }
 
 function refreshHeadingConeFromState(nowMs) {
+  if (isMapKillSwitchEnabled("heading")) {
+    clearHeadingConeVisual();
+    return null;
+  }
+
   return headingRuntime.refreshHeadingConeFromState(nowMs);
 }
 
-function syncHeadingFromLocation(latlng, gpsHeading, speed, options) {
+function syncHeadingFromLocation(latlng, gpsHeading, speed, options = {}) {
+  if (isMapKillSwitchEnabled("heading")) {
+    clearHeadingConeVisual();
+    return null;
+  }
+
   return headingRuntime.syncHeadingFromLocation(latlng, gpsHeading, speed, options);
 }
 
 function startHeadingConeRenderLoop() {
+  if (isMapKillSwitchEnabled("heading")) {
+    clearHeadingConeVisual();
+    logDgmTelemetry("map.heading_render_loop_skipped", { reason: "kill_switch" });
+    return;
+  }
+
   return headingRuntime.startHeadingConeRenderLoop();
 }
 
 function syncHeadingConeRenderLoop() {
+  if (isMapKillSwitchEnabled("heading")) {
+    clearHeadingConeVisual();
+    return;
+  }
+
   return headingRuntime.syncHeadingConeRenderLoop();
 }
 
 function startDeviceOrientationWatch() {
+  if (isMapKillSwitchEnabled("heading") || isMapKillSwitchEnabled("compassPermission")) {
+    logDgmTelemetry("map.heading_orientation_watch_skipped", { reason: "kill_switch" });
+    return;
+  }
+
   return headingRuntime.startDeviceOrientationWatch();
 }
 
+// Phase G place card (Place Pages). Enabled by default; provider and photos are
+// loaded lazily on first use so startup stays light. The perf guard gates only
+// heavy photo work (phaseGPlacePhotos); the card itself remains available.
+let phaseGPlaceProviderRegistry = null;
+let phaseGPlacePhotosHandler = null;
+let phaseGPlaceCardController = null;
+
+function isPhaseGPlacePhotosGuardDisabled() {
+  return isPhaseEPerformanceEffectDisabled(PHASE_E_PERFORMANCE_GUARD_EFFECTS.PLACE_PHOTOS);
+}
+
+function getPhaseGPlaceProviderRegistry() {
+  if (!phaseGPlaceProviderRegistry) {
+    phaseGPlaceProviderRegistry = createProviderRegistry();
+  }
+  return phaseGPlaceProviderRegistry;
+}
+
+function getPhaseGPlacePhotosHandler() {
+  if (!phaseGPlacePhotosHandler) {
+    phaseGPlacePhotosHandler = createPlacePhotosHandler({
+      loadImage: createBrowserImageLoader(),
+      createCanvas: createBrowserCanvasFactory(),
+      isGuardDisabled: isPhaseGPlacePhotosGuardDisabled,
+      shouldExposeDebug: shouldExposePhaseDDebug,
+    });
+  }
+  return phaseGPlacePhotosHandler;
+}
+
+function getPhaseGPlaceCardController() {
+  if (!phaseGPlaceCardController) {
+    phaseGPlaceCardController = createPlaceCard({
+      onNavigate: (place) => {
+        if (!place || !Number.isFinite(place.lat) || !Number.isFinite(place.lon)) {
+          return;
+        }
+        startInAppNavigation({ lat: place.lat, lng: place.lon, title: place.name }).catch((error) => {
+          console.error(error);
+          setNavigationStatus(error?.message ?? String(error), "error");
+        });
+      },
+      getPhotosHandler: getPhaseGPlacePhotosHandler,
+      isPhotoGuardDisabled: isPhaseGPlacePhotosGuardDisabled,
+      shouldExposeDebug: shouldExposePhaseDDebug,
+    });
+
+    if (shouldExposePhaseDDebug() && typeof window !== "undefined") {
+      window.__DGM_DEBUG = Object.assign(window.__DGM_DEBUG || {}, {
+        getPhaseGPlaceCardMetadata: () => phaseGPlaceCardController?.getDebugMetadata() ?? null,
+      });
+    }
+  }
+  return phaseGPlaceCardController;
+}
+
+// Lazily fetch a place by id (or coordinates) through the active provider and
+// open the place card. The map-click integration in the next commit calls this;
+// it is exposed on the debug runtime now so the smoke harness can drive it.
+async function openPhaseGPlaceCardById(placeId, { lat, lon } = {}) {
+  const provider = getPhaseGPlaceProviderRegistry().getActiveProvider();
+  if (!provider) {
+    return null;
+  }
+  const place = await provider.fetchPlaceById(placeId, { lat, lon });
+  if (!place) {
+    return null;
+  }
+  return getPhaseGPlaceCardController().open(place);
+}
+
+let phaseGPlaceSearch = null;
+
+function getPhaseGPlaceSearch() {
+  if (!phaseGPlaceSearch) {
+    phaseGPlaceSearch = createPlaceSearch({
+      getProvider: () => getPhaseGPlaceProviderRegistry().getActiveProvider(),
+      onPlace: (place) => getPhaseGPlaceCardController().open(place),
+    });
+  }
+  return phaseGPlaceSearch;
+}
+
+// Phase G POI tap: when a base-map POI label (with a name) is under the click and
+// no app marker is there, kick off a debounced provider lookup that opens the
+// place card. Returns true when a POI was claimed so the caller can skip the
+// default background stats popup. Failures degrade silently to the normal flow.
+function tryOpenPhaseGPlaceCardFromClick(event) {
+  if (!map || typeof map.queryRenderedFeatures !== "function" || !event?.point) {
+    return false;
+  }
+
+  // Defer to existing app markers (restaurant/parking/location) when present.
+  const appLayerIds = [LAYER_RESTAURANTS, LAYER_PARKING, LAYER_CURRENT_LOCATION_DOT, LAYER_CURRENT_LOCATION_HALO]
+    .filter((layerId) => map.getLayer(layerId));
+  if (appLayerIds.length > 0 && map.queryRenderedFeatures(event.point, { layers: appLayerIds }).length > 0) {
+    return false;
+  }
+
+  let features = [];
+  try {
+    features = map.queryRenderedFeatures(event.point) || [];
+  } catch {
+    return false;
+  }
+
+  const poiFeature = features.find(
+    (feature) => /poi/i.test(String(feature?.layer?.id || "")) && feature?.properties?.name
+  );
+  if (!poiFeature) {
+    return false;
+  }
+
+  const lngLat = lngLatToObject(event.lngLat);
+  const poiId = poiFeature.properties?.id ?? poiFeature.id;
+  const request = {
+    id: poiId !== undefined && poiId !== null ? `poi:${String(poiId)}` : null,
+    lat: lngLat.lat,
+    lon: lngLat.lng,
+  };
+  if (!request.id) {
+    request.bbox = boundingBoxAround(lngLat.lat, lngLat.lng);
+  }
+
+  getPhaseGPlaceSearch().requestByClick(request).catch(() => {});
+  return true;
+}
+
+// Map click owner: try the Phase G POI place card first, then fall back to the
+// existing background interaction (stats popup / tap handling).
+function handleMapClick(event) {
+  if (tryOpenPhaseGPlaceCardFromClick(event)) {
+    return;
+  }
+  handleMapBackgroundClick(event);
+}
+
+// Phase G vegetation layer (owner-gated heavy effect). Visible only when
+// (isPhaseDTuningEnabled() OR an owner-local toggle) AND the user toggle is on
+// AND the phaseGVegetationLayer perf-guard effect has not tripped.
+let phaseGVegetationLayer = null;
+let phaseGVegetationEnabled = false;
+let elVegetationControl = null;
+
+function isPhaseGVegetationOwnerToggleEnabled() {
+  // Owner-local enable independent of full Phase D tuning.
+  try {
+    if (new URLSearchParams(window.location.search).get("vegetation") === "true") {
+      return true;
+    }
+  } catch {
+    // URL parsing is advisory only.
+  }
+  if (window.DGM_VEGETATION === true) {
+    return true;
+  }
+  try {
+    return window.localStorage?.getItem("dgm:phaseg:vegetation") === "true";
+  } catch {
+    return false;
+  }
+}
+
+function isPhaseGVegetationAllowed() {
+  return isPhaseDTuningEnabled() || isPhaseGVegetationOwnerToggleEnabled();
+}
+
+function isPhaseGVegetationGuarded() {
+  return isPhaseEPerformanceEffectDisabled(PHASE_E_PERFORMANCE_GUARD_EFFECTS.VEGETATION_LAYER);
+}
+
+function getPhaseGVegetationLayer() {
+  if (!phaseGVegetationLayer) {
+    phaseGVegetationLayer = createVegetationLayer({
+      getMap: () => map,
+      generateInstances: generateVegetationInstances,
+      resolveLod: resolveLodMode,
+      shouldExposeDebug: shouldExposePhaseDDebug,
+    });
+  }
+  return phaseGVegetationLayer;
+}
+
+// Deterministic synthetic vegetation around the current view center. This stands
+// in for a real vegetation provider (OSM natural=wood / landcover tiles) until
+// one is wired; the generation/LOD math itself lives in vegetation_core.js.
+function buildPhaseGVegetationSamples() {
+  if (typeof map?.getCenter !== "function") {
+    return [];
+  }
+  const center = map.getCenter();
+  const lat = Number(center.lat);
+  const lng = Number(center.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return [];
+  }
+  const samples = [];
+  for (let i = -3; i <= 3; i += 1) {
+    for (let j = -3; j <= 3; j += 1) {
+      samples.push({ type: "tree", lat: lat + i * 0.0008, lng: lng + j * 0.0008 });
+    }
+  }
+  samples.push({
+    type: "wood",
+    density: 2,
+    polygon: [
+      [lng + 0.004, lat + 0.003],
+      [lng + 0.008, lat + 0.003],
+      [lng + 0.008, lat + 0.006],
+      [lng + 0.004, lat + 0.006],
+      [lng + 0.004, lat + 0.003],
+    ],
+  });
+  return samples;
+}
+
+function refreshPhaseGVegetationSamples() {
+  if (!phaseGVegetationEnabled || !isPhaseGVegetationAllowed() || isPhaseGVegetationGuarded()) {
+    return;
+  }
+  getPhaseGVegetationLayer().setSamples(buildPhaseGVegetationSamples());
+}
+
+function syncPhaseGVegetationVisibility() {
+  const layer = getPhaseGVegetationLayer();
+  const allowed = isPhaseGVegetationAllowed() && phaseGVegetationEnabled;
+  return layer.syncVisibility({
+    zoom: typeof map?.getZoom === "function" ? map.getZoom() : 0,
+    guardDisabled: isPhaseGVegetationGuarded(),
+    allowed,
+  });
+}
+
+// Phase G vehicle marker (owner-gated heavy effect). Replaces the blue dot with a
+// heading-rotated symbol sprite + speed-adaptive camera follow. Default UX (blue
+// dot) is preserved unless the owner opts in, and the marker is suppressed when
+// the phaseGVehicleModel perf-guard effect trips.
+let phaseGVehicleMarker = null;
+let phaseGVehicleEnabled = false;
+
+function isPhaseGVehicleOwnerToggleEnabled() {
+  try {
+    if (new URLSearchParams(window.location.search).get("vehicle") === "true") {
+      return true;
+    }
+  } catch {
+    // URL parsing is advisory only.
+  }
+  if (window.DGM_VEHICLE === true) {
+    return true;
+  }
+  try {
+    return window.localStorage?.getItem("dgm:phaseg:vehicle") === "true";
+  } catch {
+    return false;
+  }
+}
+
+function isPhaseGVehicleAllowed() {
+  return isPhaseDTuningEnabled() || isPhaseGVehicleOwnerToggleEnabled();
+}
+
+function isPhaseGVehicleGuarded() {
+  return isPhaseEPerformanceEffectDisabled(PHASE_E_PERFORMANCE_GUARD_EFFECTS.VEHICLE_MODEL);
+}
+
+function getPhaseGVehicleMarker() {
+  if (!phaseGVehicleMarker) {
+    phaseGVehicleMarker = createVehicleMarker({
+      getMap: () => map,
+      isGuardDisabled: isPhaseGVehicleGuarded,
+      shouldExposeDebug: shouldExposePhaseDDebug,
+    });
+  }
+  return phaseGVehicleMarker;
+}
+
+// Heading-locked, speed-adaptive camera follow for the vehicle. Skipped while a
+// route is active (routing_runtime owns the navigation camera then) or guarded.
+function syncPhaseGVehicleFollowCamera({ lng, lat, heading, speed } = {}) {
+  if (!phaseGVehicleEnabled || isPhaseGVehicleGuarded() || activeRoute) {
+    return;
+  }
+  if (!Number.isFinite(Number(lng)) || !Number.isFinite(Number(lat)) || typeof map?.easeTo !== "function") {
+    return;
+  }
+  const camera = buildPhaseGFollowCamera({
+    lng,
+    lat,
+    heading: Number.isFinite(Number(heading)) ? Number(heading) : map.getBearing?.() || 0,
+    speed: Number(speed) || 0,
+  });
+  if (camera) {
+    map.easeTo(getProgrammaticCameraOptions({ ...camera, duration: 600 }));
+  }
+}
+
+function setPhaseGVehicleEnabled(enabled) {
+  phaseGVehicleEnabled = Boolean(enabled) && isPhaseGVehicleAllowed();
+  if (!locationRuntime) {
+    return phaseGVehicleEnabled;
+  }
+  if (phaseGVehicleEnabled && !isPhaseGVehicleGuarded()) {
+    locationRuntime.replaceDotWithVehicle(getPhaseGVehicleMarker());
+  } else {
+    locationRuntime.replaceDotWithVehicle(null);
+  }
+  return phaseGVehicleEnabled;
+}
+
 function installRuntimeDebugSurface() {
-  return headingRuntime.installRuntimeDebugSurface({ loadForView, locateUser });
+  const result = headingRuntime.installRuntimeDebugSurface({ loadForView, locateUser });
+  const configRuntime = installMapConfigRuntimeSurface({ buildId: APP_BUILD_ID });
+  if (configRuntime && typeof configRuntime.setFeatureFlag === "function") {
+    const setFeatureFlag = configRuntime.setFeatureFlag;
+    configRuntime.setFeatureFlag = (name, enabled, options) => {
+      const nextValue = setFeatureFlag(name, enabled, options);
+      reconcilePhaseCAfterFlagChange(name);
+      return nextValue;
+    };
+  }
+  if (window.DGM_RUNTIME && typeof window.DGM_RUNTIME === "object") {
+    window.DGM_RUNTIME.traffic = {
+      findTrafficLayerIds,
+      setTrafficVisibility,
+      toggleTraffic,
+      getVisible: () => getShouldShowTraffic(currentBaseStyle) && !isMapKillSwitchEnabled("traffic"),
+    };
+    window.DGM_RUNTIME.placeCard = {
+      open: (place) => getPhaseGPlaceCardController().open(place),
+      openById: openPhaseGPlaceCardById,
+      close: () => getPhaseGPlaceCardController().close(),
+      isOpen: () => phaseGPlaceCardController?.isOpen() ?? false,
+      getProviderRegistry: getPhaseGPlaceProviderRegistry,
+      getDebugMetadata: () => getPhaseGPlaceCardController().getDebugMetadata(),
+      search: getPhaseGPlaceSearch(),
+    };
+    window.DGM_RUNTIME.vegetation = {
+      setEnabled: (value) => {
+        phaseGVegetationEnabled = Boolean(value);
+        getPhaseGVegetationLayer().setEnabled(phaseGVegetationEnabled);
+        if (phaseGVegetationEnabled) {
+          refreshPhaseGVegetationSamples();
+        }
+        return phaseGVegetationEnabled;
+      },
+      setSamples: (samples) => getPhaseGVegetationLayer().setSamples(samples),
+      setDensityThreshold: (value) => getPhaseGVegetationLayer().setDensityThreshold(value),
+      getInstanceCount: () => getPhaseGVegetationLayer().getInstanceCount(),
+      syncVisibility: ({ zoom, guardDisabled, allowed } = {}) =>
+        getPhaseGVegetationLayer().syncVisibility({ zoom, guardDisabled, allowed }),
+      getActiveMode: () => getPhaseGVegetationLayer().getActiveMode(),
+      getDebugMetadata: () => getPhaseGVegetationLayer().getDebugMetadata(),
+    };
+    window.DGM_RUNTIME.vehicle = {
+      setEnabled: setPhaseGVehicleEnabled,
+      isEnabled: () => phaseGVehicleEnabled,
+      update: (motion) => getPhaseGVehicleMarker().update(motion),
+      getState: () => getPhaseGVehicleMarker().getState(),
+      isVisible: () => getPhaseGVehicleMarker().isVisible(),
+      animateCameraAlongPath: animatePhaseGCameraAlongPath,
+      buildFollowCamera: buildPhaseGFollowCamera,
+      getDebugMetadata: () => getPhaseGVehicleMarker().getDebugMetadata(),
+    };
+  }
+  return result;
 }
 
 function suppressMapTapPopupTemporarily(durationMs = MAP_TOUCH_GESTURE_SUPPRESSION_MS) {
@@ -4529,6 +5952,280 @@ function renderSignalBarsHtml(signals, bucketLabel) {
   return `<div class="sig-bars"><div class="sig-header">What makes this spot score the way it does (${escapeHtml(bucketLabel)})</div>${rows}</div>`;
 }
 
+function getStatPingWeight(key) {
+  return clamp01(statPingWeights[key] ?? SUPERPOSITION_DEFAULT_WEIGHTS[key] ?? 0);
+}
+
+function getStatPingWeights() {
+  return Object.fromEntries(STAT_PING_WEIGHT_KEYS.map((weightKey) => [weightKey, getStatPingWeight(weightKey)]));
+}
+
+function getStatPingOpportunitySignal(result) {
+  if (!result) {
+    return "Neutral Signal";
+  }
+
+  const score = clamp01(
+    0.45 * (result?.assignmentProbabilityEstimate ?? 0)
+    + 0.35 * (result?.zoneOpportunity ?? 0)
+    + 0.2 * (result?.futureEV ?? 0)
+  );
+
+  if (score >= 0.58) {
+    return "Higher Opportunity";
+  }
+
+  if (score <= 0.38) {
+    return "Lower Opportunity";
+  }
+
+  return "Neutral Signal";
+}
+
+function getStatPingArrivalRate(score) {
+  const probability = clamp01(getProbabilityMid(score));
+  if (probability <= 0) {
+    return 0.04;
+  }
+  return Math.max(0.04, Math.min(0.42, -Math.log(1 - probability) / PROBABILITY_HORIZON_MINUTES));
+}
+
+function buildStatPingCandidate(point, score) {
+  const signals = score?.signals || {};
+  const expectedDistanceMeters = Math.max(0, Number(score?.expectedDistMeters) || 0);
+  return {
+    orderId: "stat-ping:selected",
+    basePay: 6 + clamp01(signals.I ?? getProbabilityMid(score)) * 18,
+    pickupMinutes: 4 + expectedDistanceMeters / 320,
+    driveMinutes: 6 + expectedDistanceMeters / 720,
+    distanceKm: expectedDistanceMeters / 1000,
+    zoneOpportunity: getProbabilityMid(score),
+    arrivalRatePerMinute: getStatPingArrivalRate(score),
+    label: "Selected spot",
+    lat: point.lat,
+    lng: point.lng,
+  };
+}
+
+function buildStatPingFutureCandidate(restaurant, index, score) {
+  const distanceMeters = Math.max(0, Number(restaurant?.distMeters) || 0);
+  const scoreMid = getProbabilityMid(score);
+  return {
+    orderId: `future-path:${restaurant?.id ?? index}`,
+    basePay: 5 + clamp01(score?.signals?.I ?? scoreMid) * 16 - index * 0.35,
+    pickupMinutes: 3 + distanceMeters / 260,
+    driveMinutes: 7 + index * 1.5,
+    distanceKm: distanceMeters / 1000,
+    zoneOpportunity: clamp01(scoreMid * (0.88 - index * 0.06) + 0.08),
+    arrivalRatePerMinute: Math.max(0.03, getStatPingArrivalRate(score) * (0.82 - index * 0.08)),
+    label: restaurant?.name || `Future path ${index + 1}`,
+  };
+}
+
+function exposeStatPingSuperpositionDebug(superposition) {
+  lastStatPingSuperposition = superposition
+    ? {
+        updatedAt: Date.now(),
+        result: superposition.result,
+        metadata: superposition.result?.metadata || null,
+      }
+    : null;
+
+  if (!shouldExposePhaseDDebug()) {
+    return;
+  }
+
+  window.__DGM_DEBUG = Object.assign(window.__DGM_DEBUG || {}, {
+    statPingSuperposition: lastStatPingSuperposition,
+    getStatPingSuperpositionMetadata: getStatPingSuperpositionDebug,
+  });
+}
+
+function buildStatPingSuperposition(point, score, likelyRestaurants = []) {
+  if (!point || !score) {
+    exposeStatPingSuperpositionDebug(null);
+    return null;
+  }
+
+  // UI integration displays metadata from a deterministic approximation of combinatorial assignment families; the core exposes transparency and does not claim optimality.
+  const candidates = [
+    buildStatPingCandidate(point, score),
+    ...likelyRestaurants.slice(0, 4).map((restaurant, index) => buildStatPingFutureCandidate(restaurant, index, score)),
+  ];
+  const [result] = evaluateSuperpositionEngine({
+    candidates,
+    searchDepth: 3,
+    weights: getStatPingWeights(),
+  });
+  const superposition = {
+    result,
+    futurePaths: candidates.slice(1, 4),
+    weights: getStatPingWeights(),
+  };
+
+  exposeStatPingSuperpositionDebug(superposition);
+  return superposition;
+}
+
+function formatStatPingScore(value) {
+  return `${Math.round(clamp01(value) * 100)}/100`;
+}
+
+function renderStatPingWeightSliders(superposition) {
+  const labels = {
+    basePay: "Base pay",
+    timePenalty: "Time penalty",
+    distancePenalty: "Distance penalty",
+    zoneOpportunity: "Zone opportunity",
+    futureEV: "Future EV",
+  };
+
+  return STAT_PING_WEIGHT_KEYS.map((weightKey) => `
+    <label class="sig-row" for="statPingWeight-${weightKey}">
+      <span class="sig-label">${escapeHtml(labels[weightKey])}</span>
+      <input id="statPingWeight-${weightKey}" type="range" min="0" max="1" step="0.01" value="${superposition.weights[weightKey].toFixed(2)}" data-stat-ping-weight="${weightKey}" />
+      <span class="sig-val" data-stat-ping-weight-value="${weightKey}">${Math.round(superposition.weights[weightKey] * 100)}%</span>
+    </label>`).join("");
+}
+
+function renderStatPingPathVisual(superposition) {
+  if (!shouldExposePhaseDDebug() || !superposition.futurePaths.length) {
+    return "";
+  }
+
+  const pathRows = superposition.futurePaths.map((path, index) => {
+    const width = Math.max(8, Math.round(clamp01(path.zoneOpportunity) * 100));
+    return `
+      <div class="sig-row">
+        <span class="sig-label">Path ${index + 1}</span>
+        <span class="sig-track"><span class="sig-fill" style="width:${width}%;background:#9ad3ff"></span></span>
+        <span class="sig-val">${Math.round(path.zoneOpportunity * 100)}%</span>
+      </div>`;
+  }).join("");
+
+  return `
+    <details class="stat-ping-paths">
+      <summary>Future paths considered</summary>
+      <div class="sig-bars">${pathRows}</div>
+    </details>`;
+}
+
+function renderStatPingSuperpositionHtml(point, superposition) {
+  if (!superposition?.result) {
+    return "";
+  }
+
+  const result = superposition.result;
+  const metadata = result.metadata || {};
+  const signal = getStatPingOpportunitySignal(result);
+  return `
+    <section class="popup-section stat-ping-superposition" data-stat-ping-lat="${Number(point.lat).toFixed(6)}" data-stat-ping-lng="${Number(point.lng).toFixed(6)}">
+      <div class="popup-section-head">
+        <div class="popup-section-title">Superposition read</div>
+        <div class="popup-section-meta" data-stat-ping-output="signal">${escapeHtml(signal)}</div>
+      </div>
+      <div class="popup-metric-grid">
+        <article class="popup-metric-card"><div class="popup-metric-label">Base pay</div><div class="popup-metric-value" data-stat-ping-output="basePayScore">${formatStatPingScore(result.basePayScore)}</div><div class="popup-metric-detail">Normalized local pay proxy</div></article>
+        <article class="popup-metric-card"><div class="popup-metric-label">Time drag</div><div class="popup-metric-value" data-stat-ping-output="timePenalty">${formatStatPingScore(result.timePenalty)}</div><div class="popup-metric-detail">Lower is less time pressure</div></article>
+        <article class="popup-metric-card"><div class="popup-metric-label">Distance drag</div><div class="popup-metric-value" data-stat-ping-output="distancePenalty">${formatStatPingScore(result.distancePenalty)}</div><div class="popup-metric-detail">Lower is less travel pressure</div></article>
+        <article class="popup-metric-card"><div class="popup-metric-label">Zone</div><div class="popup-metric-value" data-stat-ping-output="zoneOpportunity">${formatStatPingScore(result.zoneOpportunity)}</div><div class="popup-metric-detail">Local opportunity proxy</div></article>
+        <article class="popup-metric-card"><div class="popup-metric-label">Future EV</div><div class="popup-metric-value" data-stat-ping-output="futureEV">${formatStatPingScore(result.futureEV)}</div><div class="popup-metric-detail">Approximate follow-on value</div></article>
+        <article class="popup-metric-card"><div class="popup-metric-label">Assignment</div><div class="popup-metric-value" data-stat-ping-output="assignmentProbabilityEstimate">${formatStatPingScore(result.assignmentProbabilityEstimate)}</div><div class="popup-metric-detail">Relative assignment estimate</div></article>
+      </div>
+      <details>
+        <summary>Why this score?</summary>
+        <div class="popup-detail" data-stat-ping-output="why-base">Base pay contributes ${formatStatPingScore(result.basePayScore)} from the local ticket proxy.</div>
+        <div class="popup-detail" data-stat-ping-output="why-time">Time penalty is ${formatStatPingScore(result.timePenalty)} from pickup and drive minutes.</div>
+        <div class="popup-detail" data-stat-ping-output="why-distance">Distance penalty is ${formatStatPingScore(result.distancePenalty)} from expected travel.</div>
+        <div class="popup-detail" data-stat-ping-output="why-zone">Zone opportunity contributes ${formatStatPingScore(result.zoneOpportunity)} from the visible field.</div>
+        <div class="popup-detail" data-stat-ping-output="why-future">Future EV contributes ${formatStatPingScore(result.futureEV)} from deterministic successor paths.</div>
+      </details>
+      <details>
+        <summary>Complexity View</summary>
+        <div class="popup-facts">
+          <div class="popup-fact-row"><span class="popup-fact-label">Search depth</span><span class="popup-fact-value" data-stat-ping-output="searchDepth">${metadata.searchDepth}</span></div>
+          <div class="popup-fact-row"><span class="popup-fact-label">Candidates</span><span class="popup-fact-value" data-stat-ping-output="candidateCount">${metadata.candidateCount}</span></div>
+          <div class="popup-fact-row"><span class="popup-fact-label">Algorithm</span><span class="popup-fact-value" data-stat-ping-output="algorithmUsed">${escapeHtml(metadata.algorithmUsed)}</span></div>
+          <div class="popup-fact-row"><span class="popup-fact-label">Heuristic confidence</span><span class="popup-fact-value" data-stat-ping-output="heuristicConfidenceScore">${formatStatPingScore(metadata.heuristicConfidenceScore)}</span></div>
+        </div>
+        <div class="sig-bars">${renderStatPingWeightSliders(superposition)}</div>
+      </details>
+      ${renderStatPingPathVisual(superposition)}
+    </section>`;
+}
+
+function updateStatPingRoot(root, point, score, likelyRestaurants) {
+  const superposition = buildStatPingSuperposition(point, score, likelyRestaurants);
+  if (!superposition?.result || !root) {
+    return;
+  }
+
+  const result = superposition.result;
+  const metadata = result.metadata || {};
+  const output = (name, value) => {
+    root.querySelectorAll(`[data-stat-ping-output="${name}"]`).forEach((element) => {
+      element.textContent = value;
+    });
+  };
+
+  output("signal", getStatPingOpportunitySignal(result));
+  output("basePayScore", formatStatPingScore(result.basePayScore));
+  output("timePenalty", formatStatPingScore(result.timePenalty));
+  output("distancePenalty", formatStatPingScore(result.distancePenalty));
+  output("zoneOpportunity", formatStatPingScore(result.zoneOpportunity));
+  output("futureEV", formatStatPingScore(result.futureEV));
+  output("assignmentProbabilityEstimate", formatStatPingScore(result.assignmentProbabilityEstimate));
+  output("searchDepth", String(metadata.searchDepth));
+  output("candidateCount", String(metadata.candidateCount));
+  output("algorithmUsed", metadata.algorithmUsed || "");
+  output("heuristicConfidenceScore", formatStatPingScore(metadata.heuristicConfidenceScore));
+  output("why-base", `Base pay contributes ${formatStatPingScore(result.basePayScore)} from the local ticket proxy.`);
+  output("why-time", `Time penalty is ${formatStatPingScore(result.timePenalty)} from pickup and drive minutes.`);
+  output("why-distance", `Distance penalty is ${formatStatPingScore(result.distancePenalty)} from expected travel.`);
+  output("why-zone", `Zone opportunity contributes ${formatStatPingScore(result.zoneOpportunity)} from the visible field.`);
+  output("why-future", `Future EV contributes ${formatStatPingScore(result.futureEV)} from deterministic successor paths.`);
+}
+
+function handleStatPingWeightInput(event) {
+  const slider = event.target?.closest?.("[data-stat-ping-weight]");
+  if (!slider) {
+    return;
+  }
+
+  const weightKey = slider.dataset.statPingWeight;
+  if (!STAT_PING_WEIGHT_KEYS.includes(weightKey)) {
+    return;
+  }
+
+  statPingWeights[weightKey] = clamp01(slider.value);
+  document.querySelectorAll(`[data-stat-ping-weight-value="${weightKey}"]`).forEach((element) => {
+    element.textContent = `${Math.round(getStatPingWeight(weightKey) * 100)}%`;
+  });
+
+  const root = slider.closest(".stat-ping-superposition");
+  if (!root) {
+    return;
+  }
+
+  const point = {
+    lat: Number(root.dataset.statPingLat),
+    lng: Number(root.dataset.statPingLng),
+  };
+  if (!Number.isFinite(point.lat) || !Number.isFinite(point.lng)) {
+    return;
+  }
+
+  const score = getPopupPointScore(point, lastRestaurants, lastParams.tauMeters, lastParams.hour);
+  const likelyRestaurants = topLikelyMerchantsForParking(
+    { lat: point.lat, lon: point.lng, tags: { name: "Selected spot" } },
+    lastRestaurants,
+    lastParams.tauMeters,
+    lastParams.hour,
+    POPUP_NEARBY_RESTAURANT_LIMIT
+  );
+  updateStatPingRoot(root, point, score, likelyRestaurants);
+}
+
 function renderParkingPopupHtml(p, name, restaurants, tauMeters, hour) {
   const likely = topLikelyMerchantsForParking(p, restaurants, tauMeters, hour, POPUP_NEARBY_RESTAURANT_LIMIT);
   const bucketLabel = lastStats?.timeBucketLabel ?? timeBucket(hour).label;
@@ -4577,15 +6274,17 @@ function renderParkingPopupHtml(p, name, restaurants, tauMeters, hour) {
 }
 
 function renderSpotPopupHtml(latlng, restaurants, tauMeters, hour) {
-  const r = getPopupPointScore(latlng, restaurants, tauMeters, hour);
+  const point = latlngToObject(latlng);
+  const r = getPopupPointScore(point, restaurants, tauMeters, hour);
 
   const likely = topLikelyMerchantsForParking(
-    { lat: latlng.lat, lon: latlng.lng, tags: { name: "Selected spot" } },
+    { lat: point.lat, lon: point.lng, tags: { name: "Selected spot" } },
     restaurants,
     tauMeters,
     hour,
     POPUP_NEARBY_RESTAURANT_LIMIT
   );
+  const superposition = buildStatPingSuperposition(point, r, likely);
   const bucketLabel = lastStats?.timeBucketLabel ?? timeBucket(hour).label;
   const warning = lastStats === null
     ? '<div class="popup-banner popup-banner--warn">Load or refresh the current view to calibrate this stat ping against the visible field.</div>'
@@ -4601,7 +6300,7 @@ function renderSpotPopupHtml(latlng, restaurants, tauMeters, hour) {
 
   ${warning}
   <div class="popup-score">${formatProbabilityRange(getProbabilityLow(r), getProbabilityHigh(r))}<span class="popup-score-label"> chance of landing a strong order soon</span></div>
-  <div class="popup-explain">${escapeHtml(describeAdvisory(r.advisory))}</div>
+  <div class="popup-explain">${escapeHtml(getStatPingOpportunitySignal(superposition?.result))}</div>
 
   ${renderPopupMetricGrid([
     renderPopupMetricCard("Field rank", formatCompactRank(r), formatRelativeRank(r)),
@@ -4623,6 +6322,8 @@ function renderSpotPopupHtml(latlng, restaurants, tauMeters, hour) {
     ${renderExplainabilityDetails(r)}
     ${renderSignalBarsHtml(r.signals, bucketLabel)}
   </section>
+
+  ${renderStatPingSuperpositionHtml(point, superposition)}
 
   <section class="popup-section">
     <div class="popup-section-head">
@@ -4672,6 +6373,14 @@ function buildRestaurantSheetState(restaurant) {
 function buildSpotSheetState(latlng) {
   const point = latlngToObject(latlng);
   const score = getPopupPointScore(point, lastRestaurants, lastParams.tauMeters, lastParams.hour);
+  const likely = topLikelyMerchantsForParking(
+    { lat: point.lat, lon: point.lng, tags: { name: "Selected spot" } },
+    lastRestaurants,
+    lastParams.tauMeters,
+    lastParams.hour,
+    POPUP_NEARBY_RESTAURANT_LIMIT
+  );
+  const superposition = buildStatPingSuperposition(point, score, likely);
 
   return {
     kind: "spot",
@@ -4684,13 +6393,8 @@ function buildSpotSheetState(latlng) {
     score,
     chips: ["Stat ping", "10-minute read"],
     currentDistance: getDistanceFromCurrentLocation(point.lat, point.lng),
-    likely: topLikelyMerchantsForParking(
-      { lat: point.lat, lon: point.lng, tags: { name: "Selected spot" } },
-      lastRestaurants,
-      lastParams.tauMeters,
-      lastParams.hour,
-      POPUP_NEARBY_RESTAURANT_LIMIT
-    ),
+    likely,
+    superposition,
     warning: lastStats === null
       ? "Load or refresh the current view to calibrate this stat ping against the visible field."
       : "",
@@ -5026,7 +6730,7 @@ function renderPlaceSheetHero(state) {
     <div class="place-sheet-hero">
       <div class="place-sheet-hero-value">${formatProbabilityRange(getProbabilityLow(state.score), getProbabilityHigh(state.score))}</div>
       <div class="place-sheet-hero-label">${escapeHtml(state.kind === "restaurant" ? "Nearby 10-minute field" : "10-minute probability of a good order")}</div>
-      <div class="place-sheet-hero-detail">${escapeHtml(state.kind === "restaurant" ? formatRelativeRank(state.score) : describeAdvisory(state.score.advisory))}</div>
+      <div class="place-sheet-hero-detail">${escapeHtml(state.kind === "restaurant" ? formatRelativeRank(state.score) : getStatPingOpportunitySignal(state.superposition?.result))}</div>
     </div>`;
 }
 
@@ -5094,19 +6798,25 @@ function renderPlaceSheetDgmSection(state) {
   const nearbyHold = findBestNearbyParkingCandidate(state.lat, state.lng);
   const nearbyHoldCard = nearbyHold
     ? renderPopupMetricCard(
-      "Best nearby hold",
-      nearbyHold.candidate.tags?.name || nearbyHold.candidate.tags?.operator || "Visible parking",
-      `${nearbyHold.distanceMeters} m away · ${formatProbabilityRange(getProbabilityLow(nearbyHold.candidate), getProbabilityHigh(nearbyHold.candidate))}`
-    )
-    : renderPopupMetricCard("Best nearby hold", "None visible", "Zoom or refresh to expose visible parking candidates nearby.");
+        state.kind === "spot" ? "Nearby reference" : "Best nearby hold",
+        nearbyHold.candidate.tags?.name || nearbyHold.candidate.tags?.operator || "Visible parking",
+        `${nearbyHold.distanceMeters} m away · ${formatProbabilityRange(getProbabilityLow(nearbyHold.candidate), getProbabilityHigh(nearbyHold.candidate))}`
+      )
+    : renderPopupMetricCard(
+        state.kind === "spot" ? "Nearby reference" : "Best nearby hold",
+        "None visible",
+        "Zoom or refresh to expose visible parking candidates nearby."
+      );
 
   return `
     ${renderPopupMetricGrid([
-      renderPopupMetricCard(
-        "Wait bias",
-        state.score.advisory === "hold" ? "Wait here" : "Rotate soon",
-        state.kind === "restaurant" ? "Restaurant-centered field read" : "Spot-centered field read"
-      ),
+      state.kind === "spot"
+        ? renderPopupMetricCard("Opportunity signal", getStatPingOpportunitySignal(state.superposition?.result), "Descriptive field signal")
+        : renderPopupMetricCard(
+            "Wait bias",
+            state.score.advisory === "hold" ? "Wait here" : "Rotate soon",
+            "Restaurant-centered field read"
+          ),
       renderPopupMetricCard("Support depth", supportDepth.value, supportDepth.detail),
       renderPopupMetricCard("Demand mix", demandMix.value, demandMix.detail),
       renderPopupMetricCard("Crowding", crowding.value, crowding.detail),
@@ -5116,7 +6826,8 @@ function renderPlaceSheetDgmSection(state) {
     <div class="popup-detail">Uncertainty band (λ ±30%): ${formatProbabilityRange(getProbabilityLow(state.score), getProbabilityHigh(state.score))} · ${escapeHtml(describeProbabilityBand(state.score))}</div>
     <div class="popup-detail">${escapeHtml(describePickup(state.score.expectedDistMeters))}</div>
     ${renderExplainabilityDetails(state.score)}
-    ${renderSignalBarsHtml(state.score.signals, lastStats?.timeBucketLabel ?? timeBucket(lastParams.hour).label)}`;
+    ${renderSignalBarsHtml(state.score.signals, lastStats?.timeBucketLabel ?? timeBucket(lastParams.hour).label)}
+    ${state.kind === "spot" ? renderStatPingSuperpositionHtml(state, state.superposition) : ""}`;
 }
 
 function renderPlaceSheetParkingSection(state) {
@@ -5399,7 +7110,9 @@ function escapeHtml(s) {
 }
 
 async function loadForView() {
-  return dataScoringRuntime.loadForView();
+  const result = await dataScoringRuntime.loadForView();
+  scheduleOpportunityFieldRecompute();
+  return result;
 }
 
 installRuntimeDebugSurface();
@@ -5505,14 +7218,20 @@ if (elSearchResults) {
   });
 }
 
+document.addEventListener("input", handleStatPingWeightInput);
+
 map.on("moveend", checkDataFreshness);
+map.on("moveend", () => {
+  refreshPhaseGVegetationSamples();
+  syncPhaseGVegetationVisibility();
+});
 map.on("zoom", refreshHeadingConeFromState);
 map.on("rotate", refreshHeadingConeFromState);
 map.on("dragstart", handleManualMapCameraStart);
 map.on("rotatestart", handleManualMapCameraStart);
 map.on("zoomstart", handleManualMapCameraStart);
 
-map.on("click", handleMapBackgroundClick);
+map.on("click", handleMapClick);
 
 map.on("load", () => {
   ensureMapSourcesAndLayers();
@@ -5544,10 +7263,11 @@ map.on("load", () => {
   }, 250);
 });
 
-map.on("style.load", () => {
+createMapRuntimeReadyGate(map, async ({ eventName }) => {
   restoreLayersAfterStyleChange();
-});
-
-map.on("styledata", () => {
-  restoreLayersAfterStyleChange();
+  await reconcilePhaseCActivation();
+  logDgmTelemetry("map.runtime_ready_restored", { eventName });
+}, {
+  events: ["style.load", "styledata", "idle"],
+  fireImmediately: false,
 });
