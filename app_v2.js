@@ -116,7 +116,7 @@ import {
   shouldExposePhaseDDebug,
 } from "./phase_c_activation.js?v=20260502-phase-d-tuning";
 
-const APP_BUILD_ID = "20260410-nav-hotfix";
+const APP_BUILD_ID = "20260711-phase-g-map-style-fix";
 console.info("[DGM] app build", APP_BUILD_ID);
 logDgmTelemetry("map.app_boot", {
   buildId: APP_BUILD_ID,
@@ -429,13 +429,18 @@ const MAPBOX_TRAFFIC_SOURCE_LAYER = "traffic";
 const CINEMATIC_DAY_NIGHT_TRANSITION_MS = 1250;
 const MAP_MODE_STORAGE_KEY = "dgm:map-mode";
 const STANDARD_MAP_THEME_STORAGE_KEY = "dgm:standard-map-theme";
-const STANDARD_TRAFFIC_STORAGE_KEY = "map.standardTrafficEnabled";
+// The legacy key controlled the pre-Phase-G traffic treatment. Do not replay it
+// after the styling upgrade, or an old preference can unexpectedly enable green
+// traffic lines over the standard gold-road basemap.
+const LEGACY_STANDARD_TRAFFIC_STORAGE_KEY = "map.standardTrafficEnabled";
+const STANDARD_TRAFFIC_STORAGE_KEY = "dgm:standard-traffic-enabled:v2";
 const BASE_STYLE_STANDARD = "standard";
 const BASE_STYLE_SATELLITE = "satellite";
 const BASE_STYLE_HYBRID = "hybrid";
 const STANDARD_MAP_THEME_LIGHT = "light";
 const STANDARD_MAP_THEME_DARK = "dark";
 const STANDARD_MAP_THEME_AUTO = "auto";
+const DEFAULT_STANDARD_MAP_THEME = STANDARD_MAP_THEME_LIGHT;
 const MAP_MODE_AUTO_REFRESH_MS = 60 * 1000;
 const STANDARD_TRAFFIC_HOLD_DELAY_MS = 300;
 const PHASE_F_OPPORTUNITY_GRID_RESOLUTION_METERS = 220;
@@ -1205,7 +1210,7 @@ function normalizeMapMode(value) {
   return BASE_STYLE_STANDARD;
 }
 
-function normalizeStandardMapTheme(value) {
+function normalizeStandardMapTheme(value, fallback = DEFAULT_STANDARD_MAP_THEME) {
   const normalized = String(value || "").trim().toLowerCase();
   if (
     normalized === STANDARD_MAP_THEME_LIGHT
@@ -1215,7 +1220,7 @@ function normalizeStandardMapTheme(value) {
     return normalized;
   }
 
-  return STANDARD_MAP_THEME_AUTO;
+  return fallback;
 }
 
 function readStoredMapMode() {
@@ -1244,13 +1249,16 @@ function writeStoredMapMode(value) {
 
 function readStoredStandardMapTheme() {
   if (!canUseLocalStorage()) {
-    return STANDARD_MAP_THEME_AUTO;
+    return DEFAULT_STANDARD_MAP_THEME;
   }
 
   try {
-    return normalizeStandardMapTheme(window.localStorage.getItem(STANDARD_MAP_THEME_STORAGE_KEY));
+    const storedTheme = window.localStorage.getItem(STANDARD_MAP_THEME_STORAGE_KEY);
+    return storedTheme === null
+      ? DEFAULT_STANDARD_MAP_THEME
+      : normalizeStandardMapTheme(storedTheme);
   } catch {
-    return STANDARD_MAP_THEME_AUTO;
+    return DEFAULT_STANDARD_MAP_THEME;
   }
 }
 
@@ -1285,6 +1293,7 @@ function writeStoredStandardTrafficEnabled(enabled) {
 
   try {
     window.localStorage.setItem(STANDARD_TRAFFIC_STORAGE_KEY, enabled ? "true" : "false");
+    window.localStorage.removeItem(LEGACY_STANDARD_TRAFFIC_STORAGE_KEY);
   } catch {
     // Ignore storage failures and preserve runtime behavior.
   }
@@ -5719,8 +5728,10 @@ function installRuntimeDebugSurface() {
   if (window.DGM_RUNTIME && typeof window.DGM_RUNTIME === "object") {
     window.DGM_RUNTIME.traffic = {
       findTrafficLayerIds,
+      setEnabled: setStandardTrafficEnabled,
       setTrafficVisibility,
       toggleTraffic,
+      getPreference: () => currentStandardTrafficEnabled,
       getVisible: () => getShouldShowTraffic(currentBaseStyle) && !isMapKillSwitchEnabled("traffic"),
     };
     window.DGM_RUNTIME.placeCard = {

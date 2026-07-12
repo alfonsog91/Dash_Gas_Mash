@@ -6,6 +6,8 @@ const SMOKE_POLL_INTERVAL_MS = 100;
 const STORAGE_SNAPSHOT_KEYS = Object.freeze([
   "dgm:map-mode",
   "map.standardTrafficEnabled",
+  "dgm:standard-traffic-enabled:v2",
+  "dgm:standard-map-theme",
   "dgm:map-config:feature:trafficVisibilityController",
   "dgm:map-config:feature:trafficPaintVisibilityFallback",
   "dgm:map-config:feature:headingCompassAutoRequest",
@@ -86,7 +88,9 @@ function restoreSmokeStorage(snapshot) {
 
 function configureSmokeStorage() {
   window.localStorage.setItem("dgm:map-mode", "standard");
-  window.localStorage.setItem("map.standardTrafficEnabled", "false");
+  window.localStorage.setItem("map.standardTrafficEnabled", "true");
+  window.localStorage.removeItem("dgm:standard-traffic-enabled:v2");
+  window.localStorage.removeItem("dgm:standard-map-theme");
   window.localStorage.setItem("dgm:map-config:feature:trafficVisibilityController", "true");
   window.localStorage.setItem("dgm:map-config:feature:trafficPaintVisibilityFallback", "true");
   window.localStorage.setItem("dgm:map-config:feature:headingCompassAutoRequest", "false");
@@ -199,8 +203,26 @@ async function runAppReadinessSmoke(appWindow) {
   const fatalOverlayCount = appWindow.document.querySelectorAll(".map-fatal-overlay").length;
   assert(canvasCount === 1, "exactly one Mapbox canvas is rendered");
   assert(fatalOverlayCount === 0, "fatal map overlay is absent");
+  assert(
+    appWindow.document.body.dataset.standardResolvedTheme === "light",
+    "standard map defaults to the light gold-road palette"
+  );
+  assert(
+    runtime.traffic.getPreference() === false && runtime.traffic.getVisible() === false,
+    "a legacy traffic preference does not enable traffic after the styling upgrade"
+  );
+  const appBuildId = runtime.getState()?.appBuildId || "";
+  assert(appBuildId && appBuildId !== "20260410-nav-hotfix", "runtime reports the current release identifier");
+  assert(runtime.config.buildId === appBuildId, "runtime configuration and app state report the same build identifier");
 
-  return { runtime, canvasCount, fatalOverlayCount };
+  return {
+    runtime,
+    canvasCount,
+    fatalOverlayCount,
+    standardResolvedTheme: appWindow.document.body.dataset.standardResolvedTheme,
+    trafficVisible: runtime.traffic.getVisible(),
+    appBuildId,
+  };
 }
 
 function assertNoCapturedErrors(smokeReport) {
