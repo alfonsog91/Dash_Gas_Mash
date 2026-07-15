@@ -15,7 +15,7 @@
     <script>
       window.DASH_MAPBOX_TOKEN = window.DASH_MAPBOX_TOKEN || "pk.eyJ1IjoiYWxmb25zb2c5MSIsImEiOiJjbW56bHQ5YnowZWs1MnBuODI5NXY1dnQ4In0.r-Sq8ECS8vn8iYIYaIgi7Q";
       window.DGM_PREDICTION_MODEL = window.DGM_PREDICTION_MODEL || "legacy";
-      window.DGM_SHADOW_PREDICTION_MODEL = window.DGM_SHADOW_PREDICTION_MODEL || true;
+      window.DGM_SHADOW_PREDICTION_MODEL = window.DGM_SHADOW_PREDICTION_MODEL ?? false;
       if (new URLSearchParams(window.location.search).has("dgmSmoke")) {
         const smokeReport = {
           consoleErrors: [],

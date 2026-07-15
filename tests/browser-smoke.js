@@ -211,6 +211,10 @@ async function runAppReadinessSmoke(appWindow) {
     runtime.traffic.getPreference() === false && runtime.traffic.getVisible() === false,
     "a legacy traffic preference does not enable traffic after the styling upgrade"
   );
+  assert(
+    appWindow.DGM_SHADOW_PREDICTION_MODEL === false,
+    "the shadow prediction model stays disabled by default"
+  );
   const appBuildId = runtime.getState()?.appBuildId || "";
   assert(appBuildId && appBuildId !== "20260410-nav-hotfix", "runtime reports the current release identifier");
   assert(runtime.config.buildId === appBuildId, "runtime configuration and app state report the same build identifier");
