@@ -157,3 +157,13 @@ security scan, or artifact-policy check.
 `RECOMMENDED` — require deterministic runners first, then browser/accessibility
 and security gates, then deployment. Preserve observed output and tool versions;
 do not represent module loading as assertion coverage.
+
+## Audit-document security validation
+
+- `VERIFIED BY EXECUTION` — changed audit documents and ledgers were scanned for
+  secrets; no secrets were detected.
+- `VERIFIED BY EXECUTION` — CodeQL assessed the committed continuation as
+  documentation-only and skipped analysis under its trivial-change rule.
+
+Neither result scans the deployed site or upgrades the static application
+security findings to resolved.
