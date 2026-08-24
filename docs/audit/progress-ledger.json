@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-08-24T01:40:04Z",
+  "auditStatus": "IN_PROGRESS",
+  "activeBatch": "B-01",
+  "inventoryFiles": 101,
+  "reviewedFiles": 0,
+  "coveragePercent": 0,
+  "completedBatches": [],
+  "currentFiles": [
+    ".gitattributes",
+    ".gitignore",
+    "README.md",
+    "index.html",
+    "app_v2.js",
+    "docs/CLASSIFICATION_REGISTRY.md",
+    "docs/GOVERNANCE.md",
+    "docs/PRESERVATION_REPORT.md"
+  ],
+  "confirmedFindings": [],
+  "unresolvedQuestions": [
+    "Reconcile stale app.js references against the active module entrypoint.",
+    "Confirm runtime dependency order and external-service failure modes."
+  ],
+  "exactContinuationPoint": "B-01: reconcile entrypoint and governance claims.",
+  "nextBatch": {
+    "id": "B-02",
+    "name": "model-optimization-dispatch",
+    "files": [
+      "model.js",
+      "learned_predictor.js",
+      "optimizer.js",
+      "dispatch_assignment.js",
+      "data_scoring_runtime.js"
+    ]
+  },
+  "completeCoverageClaimed": false
+}

@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "auditId": "dgm-2026-08-24",
+  "status": "IN_PROGRESS",
+  "branch": "copilot/branch-safety",
+  "baselineCommit": "4e7ac5f83705e72cc05ebc8fe53924635551913d",
+  "scope": {
+    "inventoryFiles": 101,
+    "reviewedFiles": 0,
+    "coveragePercent": 0,
+    "completeCoverageClaimed": false
+  },
+  "evidenceLabels": [
+    "VERIFIED IN REPOSITORY",
+    "VERIFIED BY EXECUTION",
+    "VERIFIED EXTERNALLY",
+    "INFERRED",
+    "RECOMMENDED",
+    "UNKNOWN",
+    "DEFERRED",
+    "REJECTED",
+    "UNVERIFIED HYPOTHESIS"
+  ],
+  "batches": [
+    {
+      "id": "B-01",
+      "name": "foundation-and-entrypoint",
+      "status": "IN_PROGRESS",
+      "files": [
+        ".gitattributes",
+        ".gitignore",
+        "README.md",
+        "index.html",
+        "app_v2.js",
+        "docs/CLASSIFICATION_REGISTRY.md",
+        "docs/GOVERNANCE.md",
+        "docs/PRESERVATION_REPORT.md"
+      ],
+      "coverageBefore": 0,
+      "coverageAfter": null,
+      "confirmedFindings": [],
+      "unresolvedQuestions": [
+        "Do governance and README references consistently name the active entrypoint?",
+        "Which entrypoint responsibilities can be isolated without behavior drift?"
+      ],
+      "exactContinuationPoint": "Reconcile entrypoint behavior with stated contracts.",
+      "nextBatch": "B-02 model-optimization-dispatch"
+    }
+  ],
+  "findings": [],
+  "exclusions": [
+    {
+      "path": ".git/",
+      "reason": "repository metadata"
+    },
+    {
+      "path": ".github/agents/",
+      "reason": "prohibited path; not accessed or inventoried"
+    }
+  ],
+  "claim": "Complete repository coverage is not claimed."
+}
