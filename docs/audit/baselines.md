@@ -126,3 +126,34 @@ Node runtime in deterministic lexical order. All twenty-five test files exited
 successfully. The browser smoke harness remains a separate browser/WebGL check;
 this Node result does not verify the deployed UI, remote services, permissions,
 or Mapbox rendering.
+
+## Final deterministic execution record
+
+- `VERIFIED BY EXECUTION` — all twenty-five exported test runners were invoked;
+  three hundred eighty-eight assertions passed and none failed.
+- `VERIFIED BY EXECUTION` — the geospatial subset contributed sixty passing
+  assertions across coordinates, heading, location/routing, map configuration,
+  manifest, style restoration, and traffic visibility.
+- `VERIFIED BY EXECUTION` — Node's test command accepted all twenty-five test
+  modules without a process failure. This is weaker than explicit runner
+  invocation because most files are browser-compatible exported runners rather
+  than native Node test registrations.
+- `VERIFIED BY EXECUTION` — both tracked JSON data/style files parsed.
+- `UNKNOWN` — browser smoke was not run because the served application,
+  browser/WebGL, Mapbox token, and remote network prerequisites were not
+  established in the audit environment.
+
+No result above is extended to the deployed site, external services, permission
+flows, accessibility conformance, mobile devices, calibration, or real driver
+outcomes.
+
+## Confirmed CI baseline
+
+`VERIFIED IN REPOSITORY` — the Pages workflow checks out, injects the Mapbox
+token, configures Pages, uploads the repository, and deploys. It runs no tests,
+JSON validation, browser smoke, accessibility check, dependency scan, source
+security scan, or artifact-policy check.
+
+`RECOMMENDED` — require deterministic runners first, then browser/accessibility
+and security gates, then deployment. Preserve observed output and tool versions;
+do not represent module loading as assertion coverage.

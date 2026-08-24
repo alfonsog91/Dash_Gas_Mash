@@ -1,6 +1,6 @@
 # External Research Dossier
 
-**Retrieval date:** August 24, 2026  
+**Retrieval date:** August 24, 2026
 External evidence supports evaluation criteria; it does not prove that DGM
 meets them.
 
@@ -35,7 +35,7 @@ meets them.
   construction with constrained assignment, or learned long-term values with
   combinatorial optimization. Sources:
   [Alonso-Mora et al.](https://doi.org/10.1073/pnas.1611675114),
-  [Xu et al.](https://doi.org/10.1145/3219819.3220094).
+  [Xu et al.](https://doi.org/10.1145/3219819.3219824).
   `RECOMMENDED` — retain constrained OR as the baseline and treat learned value
   functions as inputs, not substitutes for feasibility and safety constraints.
 
@@ -57,7 +57,7 @@ meets them.
 - `VERIFIED EXTERNALLY` — Android's official location-permission guidance
   distinguishes foreground, approximate, precise, and background access and
   directs apps to request only the access needed. Source:
-  [Android location permissions](https://developer.android.com/training/location/permissions).
+  [Android location permissions](https://developer.android.com/develop/sensors-and-location/location/permissions).
 - `VERIFIED EXTERNALLY` — the W3C Geolocation Recommendation directs
   recipients to request location only when necessary, use it for the disclosed
   task, dispose of it afterward absent permission, and disclose retention and
@@ -98,7 +98,7 @@ meets them.
   [EDPB OCR risks and mitigations](https://www.edpb.europa.eu/system/files/2024-06/ai-risks_d2optical-character-recognition_edpb-spe-programme_en_2.pdf).
 - `VERIFIED EXTERNALLY` — Microsoft responsible-AI OCR guidance emphasizes
   intended use, human oversight, limitations, privacy, and security. Source:
-  [Microsoft OCR responsible use](https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/computer-vision/ocr-guidance-integration-responsible-use).
+  [Microsoft OCR responsible use](https://learn.microsoft.com/en-us/azure/ai-services/foundry/responsible-ai/computer-vision/ocr-guidance-integration-responsible-use).
 - `VERIFIED EXTERNALLY` — Android Photo Picker grants access only to
   user-selected media without broad library permission. Source:
   [Android Photo Picker](https://developer.android.com/training/data-storage/shared/photo-picker).
@@ -134,3 +134,49 @@ scenarios, network-fault injection, browser/device matrices, field performance
 measurement, and explicit stop conditions. External standards provide
 evaluation methods, but only repository execution and representative outcome
 data can verify DGM behavior and calibration.
+
+## Citation verification record
+
+**Verification date:** August 24, 2026
+**Method:** `VERIFIED EXTERNALLY` through externally indexed primary-source and
+publisher records. Direct fetches from the sandbox failed because outbound DNS
+was unavailable; no citation is represented as directly fetched from the
+sandbox.
+
+Every linked citation above was checked for title/publisher identity and support
+for the adjacent claim. The following corrections or qualifications were found:
+
+- `VERIFIED EXTERNALLY` — the Xu et al. dispatch paper supports learned
+  long-term value plus combinatorial dispatch, but the draft DOI was wrong. The
+  corrected DOI is `https://doi.org/10.1145/3219819.3219824`.
+- `VERIFIED EXTERNALLY` — Android location-permission content remains accurate;
+  the citation now uses the canonical sensors-and-location path.
+- `VERIFIED EXTERNALLY` — Microsoft OCR responsible-use content remains
+  accurate; the citation now uses the canonical Azure AI Services path.
+- `VERIFIED EXTERNALLY` — the DoorDash article content supports the claim, but
+  the careers-domain URL is at migration risk; publisher identity and indexed
+  article content were confirmed.
+- `VERIFIED EXTERNALLY` — all remaining citations resolve in authoritative
+  publisher or standards indexes and support their adjacent, narrowly stated
+  claims.
+
+## External-evidence limits
+
+The following remain deliberately uncited or incompletely supported and must
+not be promoted beyond their existing labels:
+
+- `UNVERIFIED HYPOTHESIS` — DGM-specific congestion, minority-game,
+  information-cascade, herding, or platform-feedback behavior;
+- `RECOMMENDED`, not verified — robust OR, contextual bandit, offline RL, and
+  multi-agent RL dispositions for this product;
+- `UNKNOWN` — Mapbox commercial/WebView terms for any future wrapper;
+- `UNKNOWN` — Play Store approval under any future background-location design;
+- `UNKNOWN` — the magnitude of distracted-driving risk for this exact
+  interface;
+- `UNKNOWN` — whether any external method produces valid calibration,
+  accessibility conformance, safety, or performance in DGM without repository
+  execution and representative data.
+
+External sources provide methods, constraints, and platform documentation. They
+do not verify DGM's implementation quality, legal compliance, product benefit,
+or suitability for use while driving.

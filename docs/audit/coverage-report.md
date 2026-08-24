@@ -1,11 +1,54 @@
 # Repository Inventory and Coverage
 
-## Baseline
+## Final status
 
-- `VERIFIED IN REPOSITORY` — branch `copilot/branch-safety`.
-- `VERIFIED IN REPOSITORY` — the working tree was clean at audit start.
-- `VERIFIED IN REPOSITORY` — deterministic inventory: 101 files,
-  excluding `.git/` and the prohibited `.github/agents/` path.
+`VERIFIED IN REPOSITORY` — the deterministic static audit is complete on
+`copilot/branch-safety`, with behavioral and environment blind spots retained
+explicitly. Audit completion means every pre-audit target file has a terminal
+classification; it does not mean every runtime path was executed.
+
+## Reconciled inventory
+
+| Measure | Count |
+|---|---:|
+| Current tracked files, including audit artifacts | 111 |
+| Pre-audit target files | 101 |
+| `docs/audit/` artifact files | 10 |
+| Relevant source files | 81 |
+| Fully reviewed relevant source files | 44 |
+| Partially reviewed relevant source files | 37 |
+| Relevant source lines | 32132 |
+| Statically reviewed source lines | 32132 |
+| Terminal file coverage | 100% |
+| Static source-line accounting | 100% |
+| Fully reviewed relevant-file share | 54.32% |
+
+Relevant source is the tracked JavaScript, HTML, CSS, PowerShell, and workflow
+YAML in the pre-audit target. Markdown, exported data/style JSON, and binary
+sprites are separately dispositioned and are not part of the source-line
+denominator.
+
+`PARTIALLY REVIEWED` is terminal here: the source was statically accounted for,
+but browser or environment-dependent execution remains incomplete. Therefore
+the one-hundred-percent static line figure is not a claim of complete
+behavioral, branch, statement, integration, deployed, or empirical coverage.
+
+## Terminal classifications
+
+| Classification | Files | Meaning in this audit |
+|---|---:|---|
+| FULLY REVIEWED | 58 | Static review completed |
+| PARTIALLY REVIEWED | 37 | Static review completed; browser/environment behavior remains |
+| INVENTORIED ONLY | 3 | Prompts and bounded data inventoried |
+| EXCLUDED | 0 | No target file excluded |
+| GENERATED | 1 | Exported Mapbox style |
+| VENDOR | 0 | No vendored source |
+| BINARY | 2 | PNG metadata and consumers reviewed |
+| UNKNOWN | 0 | No target file lacks a disposition |
+| **Pre-audit target** | **101** | |
+
+The prohibited `.github/agents/` path was neither accessed nor counted. It is a
+scope exclusion outside the reconciled target, not a classified target file.
 
 ## Language and asset inventory
 
@@ -20,52 +63,52 @@
 | YAML | 1 |
 | PowerShell | 1 |
 | Git/support | 2 |
-| **Total** | **101** |
+| **Pre-audit target** | **101** |
 
 `VERIFIED IN REPOSITORY` — no package manifest, lockfile, web app manifest, or
-service worker appears in the baseline inventory.
-
-## Areas
-
-| Area | Role |
-|---|---|
-| root | entrypoint, scoring, dispatch, optimization, geospatial, and runtimes |
-| `intelligence/` | opportunity, place, cache, vegetation, and clustering |
-| `ui/` | dynamic map interface components |
-| `performance/` | runtime performance guard |
-| `tests/` | browser harnesses and module tests |
-| `data/` | bounded Census tract slice |
-| `assets/` | binary sprites |
-| `styles/` | component presentation |
-| `docs/` | governance and phase records |
-| `.github/` | prompts and Pages deployment workflow |
+service worker exists.
 
 ## Deterministic batches
 
-Files are assigned once and reviewed lexicographically within each batch.
+| Batch | Scope | Files | Terminal status |
+|---|---|---:|---|
+| B-01 | foundation and entrypoint | 8 | COMPLETE |
+| B-02 | model, predictor, optimizer, dispatch, scoring | 5 | COMPLETE |
+| B-03 | map, location, heading, routing, interaction | 9 | COMPLETE |
+| B-04 | intelligence core and clustering | 5 | COMPLETE |
+| B-05 | places, cache, photos, providers, search | 5 | COMPLETE |
+| B-06 | UI, vegetation, vehicle, and styles | 7 | COMPLETE |
+| B-07 | external adapters, data, generated style, assets | 7 | COMPLETE |
+| B-08 | activation, performance, readiness, diagram | 6 | COMPLETE |
+| B-09 | module and preservation tests | 12 | COMPLETE |
+| B-10 | intelligence tests | 13 | COMPLETE |
+| B-11 | browser harnesses and HTML wrappers | 12 | COMPLETE |
+| B-12 | remaining docs, workflow, prompts, support | 12 | COMPLETE |
 
-| Batch | Scope |
-|---|---|
-| B-01 | foundation and entrypoint |
-| B-02 | model, predictor, optimizer, dispatch, scoring |
-| B-03 | map, location, heading, routing, interaction |
-| B-04 | intelligence core and clustering |
-| B-05 | places, cache, photos, providers, search |
-| B-06 | UI, vegetation, vehicle, and styles |
-| B-07 | external data adapters, data, and assets |
-| B-08 | activation, traffic, performance, readiness |
-| B-09 | module and preservation tests |
-| B-10 | intelligence tests |
-| B-11 | browser harnesses and HTML tests |
-| B-12 | remaining docs, workflow, prompts, support |
+The per-file authority is `audit-ledger.json`; checkpoint history and cumulative
+counts are in `progress-ledger.json`.
 
-## Coverage rule
+## Remaining blind spots
 
-Coverage is reviewed inventory files divided by 101. A file becomes
-reviewed only when its batch records a disposition and evidence-backed
-observation. Execution strengthens evidence but does not replace source review.
-Binary assets may be dispositioned through metadata and consumer review.
+- `UNKNOWN` — browser smoke, WebGL, Mapbox rendering, remote services,
+  permissions, orientation sensors, speech, focus, and responsive behavior were
+  not executed.
+- `UNKNOWN` — deployed headers, provider-side token restrictions, quotas,
+  incident handling, and external-service reliability.
+- `UNKNOWN` — representative low-end mobile, PWA, Capacitor, and Android
+  behavior.
+- `UNKNOWN` — observed platform outcomes, probability calibration, uncertainty
+  coverage, causal benefit, optimizer gaps, and regional generalization.
+- `UNKNOWN` — exported-style regeneration provenance and useful pre-graft
+  per-file history.
 
-The live counters in `progress-ledger.json` are authoritative. Complete
-coverage is not claimed while any batch is open, undocumented, or unreconciled
-against the baseline.
+## Change-scope reconciliation
+
+`VERIFIED IN REPOSITORY` — this continuation changed only files under
+`docs/audit/`. No application source, dependency, workflow, manifest, service
+worker, runtime, or mathematical behavior was changed.
+
+No changed file outside `docs/audit/` was created by this continuation. If an
+outside-scope difference is observed relative to another branch or an older
+baseline, its origin is pre-existing or unknown and is not represented as
+audit-created without independent history evidence.

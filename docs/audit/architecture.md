@@ -99,3 +99,38 @@ version-upgrade ownership are not encoded in the repository.
 - `F-ARCH-004` — `VERIFIED IN REPOSITORY`: multiple public network
   services participate in a refresh/navigation workflow; partial failure is a
   first-class operating mode.
+
+## Completed dependency and lifecycle reconciliation
+
+`VERIFIED IN REPOSITORY` — the static import graph contains no RL, multi-agent
+policy, OCR, screenshot-analysis, chat-model, PWA, Capacitor, or Android module.
+Those concepts are options assessed by the audit, not latent implementation.
+
+The most consequential runtime ownership boundaries are:
+
+```text
+app orchestration
+  -> location runtime watch
+  -> routing runtime watch
+  -> heading sensor listeners and animation
+  -> map readiness/style event lifecycle
+  -> external refresh requests and caches
+  -> UI image, iframe, and timer lifecycle
+```
+
+`VERIFIED IN REPOSITORY` — these owners do not share one general cancellation
+and disposal contract. `INFERRED` — duplicated position streams, stale
+asynchronous image/search results, and style reloads can create state divergence.
+`RECOMMENDED` — define explicit owner, generation, cancellation, teardown,
+freshness, and degraded-mode contracts before decomposing the entrypoint.
+
+## Trust-boundary map
+
+| Boundary | Data or authority crossing it | Final disposition |
+|---|---|---|
+| CDN scripts | executable Mapbox and LP solver code | HIGH risk; integrity/update ownership unresolved |
+| public service requests | view bounds, coordinates, routes, search, weather | privacy, quota, and failure behavior unresolved |
+| browser permissions | precise location and orientation | explicit-purpose and parked-use review required |
+| device persistence | flags, history, aggregates, place cache | retention, migration, clear, and policy enforcement required |
+| third-party place content | URLs, images, previews, provider metadata | sandboxing exists; races and provider policy remain |
+| deployment workflow | token injection and published artifact | escaping and pre-deploy validation absent |

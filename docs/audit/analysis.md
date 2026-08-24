@@ -209,3 +209,46 @@ claim unsupported by source evidence, and no direct OCR-to-navigation action.
   and Android accessibility before choosing a wrapper.
 - `DEFERRED` — background location, telemetry upload, and Play Store deployment
   until purpose, retention, disclosure, and safety reviews are approved.
+
+## Completed-review addendum
+
+The closed deterministic batches added the following confirmed evidence:
+
+- `F-SEARCH-001` — **High**, `VERIFIED BY EXECUTION`: a rejected
+  scheduled place provider can leave the public Promise unsettled and surface
+  an unhandled rejection.
+- `F-ROUTE-001` — **High**, `VERIFIED IN REPOSITORY`: legal-curb,
+  confidence, arrival-lock, and best-staging authority is synthesized from
+  hand-weighted signals rather than legal, observed, or calibrated evidence.
+- `F-CI-001` — **High**, `VERIFIED IN REPOSITORY`: production
+  deployment has no test, JSON, browser-smoke, accessibility, or security gate.
+- `F-DEPLOY-001` — **High**, `VERIFIED IN REPOSITORY`: the client
+  Mapbox token is interpolated through shell and `sed` into HTML without
+  escaping.
+- `F-CACHE-001` — **High**, `VERIFIED IN REPOSITORY`: provider
+  cache policy is advertised but not enforced by the write path.
+- `F-NET-001` — **Medium**, `VERIFIED BY EXECUTION`: malformed
+  successful Overpass JSON is accepted because response validation is
+  unreachable.
+- `F-HIST-001`, `F-TIME-002`, and
+  `F-WEIGHT-001` — **Medium**, `VERIFIED BY EXECUTION`: null
+  aggregate timestamps, invalid HHMM minutes, and non-finite opportunity
+  weights have observable incorrect behavior.
+
+No confirmed Critical vulnerability was found. This statement is limited to
+the static audit and executed deterministic runners; it is not a penetration
+test or deployed-system assurance.
+
+## Final High-Level Functions prioritization
+
+`RECOMMENDED` — the first implementation wave, if separately approved, should
+address evidence and safety rather than add new intelligence:
+
+- probability, uncertainty, and descriptive-language contracts;
+- provider rejection, cancellation, freshness, and degraded-mode contracts;
+- location/privacy, storage, third-party, CDN, and token threat controls;
+- deployment test gates and reproducible browser/performance evidence;
+- accessible non-map equivalents and parked-only interaction.
+
+RL, multi-agent control, OCR, screenshot ingestion, chat, PWA, Capacitor, and
+Android packaging remain later gated investigations, not implementation work.
