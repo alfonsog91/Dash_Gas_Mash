@@ -1,14 +1,34 @@
 {
   "schemaVersion": 1,
   "auditId": "dgm-2026-08-24",
-  "status": "IN_PROGRESS",
+  "status": "COMPLETE_WITH_DOCUMENTED_BLIND_SPOTS",
   "branch": "copilot/branch-safety",
-  "baselineCommit": "4e7ac5f83705e72cc05ebc8fe53924635551913d",
   "scope": {
-    "inventoryFiles": 101,
-    "reviewedFiles": 13,
-    "coveragePercent": 12.87,
-    "completeCoverageClaimed": false
+    "currentTrackedFiles": 111,
+    "preAuditTargetFiles": 101,
+    "auditArtifactFiles": 10,
+    "relevantSourceFiles": 81,
+    "fullyReviewedSourceFiles": 44,
+    "partiallyReviewedSourceFiles": 37,
+    "excludedTargetFiles": 0,
+    "generatedFiles": 1,
+    "binaryFiles": 2,
+    "relevantSourceLines": 32132,
+    "reviewedSourceLines": 32132,
+    "fileCoveragePercent": 100,
+    "lineCoveragePercent": 100,
+    "completeStaticSourceAccounting": true,
+    "completeBehavioralCoverageClaimed": false
+  },
+  "classificationDefinitions": {
+    "FULLY REVIEWED": "Complete static source review; execution evidence is stated separately.",
+    "PARTIALLY REVIEWED": "Complete static source accounting, but environment-dependent behavior or browser execution remains unresolved.",
+    "INVENTORIED ONLY": "Identified without substantive source review.",
+    "EXCLUDED": "Outside the target inventory by an explicit scope rule.",
+    "GENERATED": "Generated or exported artifact reviewed for metadata and consumers, not authored semantics line by line.",
+    "VENDOR": "Third-party vendored source.",
+    "BINARY": "Binary metadata and consumers reviewed; content was not source-reviewed.",
+    "UNKNOWN": "Origin or disposition could not be established."
   },
   "evidenceLabels": [
     "VERIFIED IN REPOSITORY",
@@ -17,113 +37,195 @@
     "INFERRED",
     "RECOMMENDED",
     "UNKNOWN",
-    "DEFERRED",
-    "REJECTED",
     "UNVERIFIED HYPOTHESIS"
   ],
   "batches": [
-    {
-      "id": "B-01",
-      "name": "foundation-and-entrypoint",
-      "status": "COMPLETE",
-      "files": [
-        ".gitattributes",
-        ".gitignore",
-        "README.md",
-        "index.html",
-        "app_v2.js",
-        "docs/CLASSIFICATION_REGISTRY.md",
-        "docs/GOVERNANCE.md",
-        "docs/PRESERVATION_REPORT.md"
-      ],
-      "coverageBefore": 0,
-      "coverageAfter": 7.92,
-      "confirmedFindings": [
-        "F-GOV-001: active opportunity and assignment estimates are not represented in the classification registry.",
-        "F-GOV-002: runtime wording includes prescriptive hold/rotate/best-staging language prohibited by governance.",
-        "F-DOC-001: production loads app_v2.js while preservation documents cite app.js.",
-        "F-DOC-002: registry rows total forty-six while its summary reports forty-two.",
-        "F-OPT-001: README MIP controls diverge from the active UI and submodular wiring."
-      ],
-      "unresolvedQuestions": [
-        "Does any active imported path access the global LP solver?",
-        "Do preservation tests exercise the active entrypoint and later phase paths?",
-        "Which opportunity feature flags are enabled by default?"
-      ],
-      "exactContinuationPoint": "B-02: inspect model.js from its exported probability contract.",
-      "nextBatch": "B-02 model-optimization-dispatch"
-    },
-    {
-      "id": "B-02",
-      "name": "model-optimization-dispatch",
-      "status": "COMPLETE",
-      "files": [
-        "model.js",
-        "learned_predictor.js",
-        "optimizer.js",
-        "dispatch_assignment.js",
-        "data_scoring_runtime.js"
-      ],
-      "coverageBefore": 7.92,
-      "coverageAfter": 12.87,
-      "confirmedFindings": [
-        "F-MATH-001: Assignment is normalized synthetic utility, not calibrated assignment probability.",
-        "F-MATH-002: Opportunity Field recycles ranked score evidence.",
-        "F-TIME-001: selected scoring hour and opening-hours clock diverge.",
-        "F-PROV-001: live-weather provenance can differ from scored input.",
-        "F-DISP-001: final batched dispatch is not globally Hungarian-optimal.",
-        "F-DISP-002: execution assigned a nearly antipodal valid order.",
-        "F-ML-001: a zero-weight row changes learned coefficients."
-      ],
-      "unresolvedQuestions": [
-        "Are calibration claims supported by training and out-of-sample evidence?",
-        "Are MIP, fallback, and experimental dispatch semantics aligned?"
-      ],
-      "exactContinuationPoint": "B-03: coordinates.js normalization boundary.",
-      "nextBatch": "B-03 runtime-and-geospatial"
-    }
+    {"id":"B-01","name":"foundation-and-entrypoint","status":"COMPLETE","fileCount":8,"risk":"HIGH","findingIds":["F-GOV-001","F-GOV-002","F-DOC-001","F-DOC-002","F-OPT-001"]},
+    {"id":"B-02","name":"model-optimization-dispatch","status":"COMPLETE","fileCount":5,"risk":"HIGH","findingIds":["F-MATH-001","F-MATH-002","F-TIME-001","F-PROV-001","F-DISP-001","F-DISP-002","F-ML-001"]},
+    {"id":"B-03","name":"runtime-and-geospatial","status":"COMPLETE","fileCount":9,"risk":"HIGH","findingIds":["F-GEO-001","F-GEO-002","F-RUNTIME-001","F-RUNTIME-002","F-ROUTE-001"]},
+    {"id":"B-04","name":"intelligence-core-and-clustering","status":"COMPLETE","fileCount":5,"risk":"MEDIUM","findingIds":["F-HIST-001","F-WEIGHT-001"]},
+    {"id":"B-05","name":"places-cache-photos-providers-search","status":"COMPLETE","fileCount":5,"risk":"HIGH","findingIds":["F-CACHE-001","F-SEARCH-001","F-TIME-002"]},
+    {"id":"B-06","name":"ui-vegetation-vehicle-styles","status":"COMPLETE","fileCount":7,"risk":"MEDIUM","findingIds":["F-UI-001","F-UI-002"]},
+    {"id":"B-07","name":"external-data-data-assets","status":"COMPLETE","fileCount":7,"risk":"MEDIUM","findingIds":["F-NET-001","F-NET-002"]},
+    {"id":"B-08","name":"activation-performance-readiness","status":"COMPLETE","fileCount":6,"risk":"MEDIUM","findingIds":["F-PERF-001","F-DOC-003"]},
+    {"id":"B-09","name":"module-and-preservation-tests","status":"COMPLETE","fileCount":12,"risk":"MEDIUM","findingIds":["F-TEST-001"]},
+    {"id":"B-10","name":"intelligence-tests","status":"COMPLETE","fileCount":13,"risk":"MEDIUM","findingIds":["F-TEST-001"]},
+    {"id":"B-11","name":"browser-harnesses","status":"COMPLETE","fileCount":12,"risk":"HIGH","findingIds":["F-TEST-002"]},
+    {"id":"B-12","name":"docs-workflow-prompts-support","status":"COMPLETE","fileCount":12,"risk":"HIGH","findingIds":["F-CI-001","F-DEPLOY-001","F-PROV-002"]}
   ],
+  "sourceReviewTupleSchema": [
+    "classification",
+    "sourceLines",
+    "evidence",
+    "findingIds",
+    "unresolvedQuestions",
+    "risk",
+    "recommendedNextAction"
+  ],
+  "sourceFileReviews": {
+    "app_v2.js":["FULLY REVIEWED",7284,"VERIFIED IN REPOSITORY: complete static orchestration review.",["F-GOV-001","F-GOV-002","F-TIME-001","F-PROV-001"],["Browser races and real provider behavior remain unexecuted."],"HIGH","Split contracts only after preservation tests and approval."],
+    "census.js":["FULLY REVIEWED",111,"VERIFIED IN REPOSITORY: static Census fetch, viewport filtering, and module cache reviewed.",[],["Live fetch, cache expiry, and malformed response behavior lack direct tests."],"MEDIUM","Add fetch/cache fault fixtures."],
+    "coordinates.js":["FULLY REVIEWED",27,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: normalization source and five assertions reviewed.",["F-GEO-002"],["Should booleans or empty strings ever be accepted as coordinates?"],"MEDIUM","Restrict coercion and add malformed-input tests."],
+    "data_scoring_runtime.js":["FULLY REVIEWED",674,"VERIFIED IN REPOSITORY: scoring orchestration and provenance paths reviewed.",["F-TIME-001","F-PROV-001"],["Calibration and live-data provenance remain unsupported by outcome evidence."],"HIGH","Define one scored-input snapshot and calibration contract."],
+    "diagram.js":["FULLY REVIEWED",57,"VERIFIED IN REPOSITORY: SVG explanatory diagram reviewed.",["F-DOC-003"],["No automated traceability check exists."],"LOW","Update stale Leaflet and ML-style terminology after approval."],
+    "dispatch_assignment.js":["FULLY REVIEWED",749,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: assignment and batching reviewed.",["F-DISP-001","F-DISP-002"],["No empirical optimality-gap envelope exists."],"HIGH","Specify feasibility, unassignment, batching, and solver-status contracts."],
+    "heading_cone.js":["FULLY REVIEWED",275,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: heading math and sensor parsing reviewed.",[],["Future sensor timestamps can appear fresh; mixed-clock behavior is unknown."],"LOW","Require nonnegative age and add clock-skew tests."],
+    "heading_runtime.js":["FULLY REVIEWED",1356,"VERIFIED IN REPOSITORY: permissions, persistence, rendering, and fallback reviewed.",["F-RUNTIME-002"],["Real sensor permission and teardown behavior remain unexecuted."],"MEDIUM","Guard storage access and add lifecycle disposal tests."],
+    "index.html":["FULLY REVIEWED",293,"VERIFIED IN REPOSITORY: shell, controls, token bootstrap, remote scripts, and entrypoint reviewed.",["F-ARCH-002"],["Deployed headers and provider token restrictions are unknown."],"HIGH","Design CSP, dependency integrity, and token restriction evidence."],
+    "intelligence/historical_aggregates.js":["FULLY REVIEWED",343,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: aggregate retention and persistence reviewed.",["F-HIST-001"],["Persisted null timestamps and peer-week semantics need product contracts."],"MEDIUM","Preserve nulls and define density normalization."],
+    "intelligence/navigation_adapter.js":["FULLY REVIEWED",358,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: smoothing, lanes, matching, and synthetic route fallback reviewed.",[],["Provider failure silently becoming a synthetic route may be misread."],"MEDIUM","Expose route provenance and degraded mode."],
+    "intelligence/opportunity_core.js":["FULLY REVIEWED",269,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: Gaussian field and cell guard reviewed.",["F-MATH-002"],["Main-thread cells-times-samples cost lacks device benchmarks."],"MEDIUM","Benchmark representative fields and preserve heuristic labeling."],
+    "intelligence/opportunity_field.js":["FULLY REVIEWED",202,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: weighted field reviewed.",["F-MATH-002"],["Weights and confidence are not calibrated."],"HIGH","Define provenance, sensitivity, and calibration evaluation."],
+    "intelligence/place_cache.js":["FULLY REVIEWED",381,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: TTL, LRU, IndexedDB, and local storage adapters reviewed.",["F-CACHE-001"],["Quota, concurrent persistence, migration, and provider-specific policy enforcement remain unknown."],"HIGH","Enforce provider cache policy and test lifecycle controls."],
+    "intelligence/place_model.js":["FULLY REVIEWED",411,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: normalization and hours parsing reviewed.",["F-TIME-002"],["Numeric HHMM minute bounds are not enforced."],"MEDIUM","Reject invalid minutes and add boundary fixtures."],
+    "intelligence/place_photos.js":["FULLY REVIEWED",341,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: thumbnails, LRU, guard, and placeholder reviewed.",[],["Canvas memory and provider image policy need mobile execution."],"MEDIUM","Measure memory and retain source-policy metadata."],
+    "intelligence/place_provider_adapter.js":["FULLY REVIEWED",294,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: provider registry and synthetic provider reviewed.",["F-CACHE-001"],["Real provider credentials, terms, quotas, and schemas are unverified."],"HIGH","Require per-provider policy and contract tests."],
+    "intelligence/place_search.js":["FULLY REVIEWED",240,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: search scheduling and provider rejection reproduced.",["F-SEARCH-001"],["Supersession and stale-result behavior is not comprehensively tested."],"HIGH","Fix Promise settlement and add rejection and generation tests."],
+    "intelligence/superposition_engine.js":["FULLY REVIEWED",390,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: deterministic heuristic engine reviewed.",["F-WEIGHT-001"],["No game-theory, learned-policy, or calibrated outcome evidence exists."],"HIGH","Validate finite weights and label outputs heuristic."],
+    "intelligence/vegetation_core.js":["FULLY REVIEWED",392,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: procedural raster and LOD reviewed.",[],["Global cap can silently drop cells; mobile raster cost is unmeasured."],"MEDIUM","Expose truncation and benchmark low-end devices."],
+    "intelligence/zone_clustering.js":["FULLY REVIEWED",488,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: weighted DBSCAN, hull, and index reviewed.",[],["Quadratic neighborhoods are not worker-backed or device-benchmarked."],"MEDIUM","Benchmark density extremes before expansion."],
+    "learned_predictor.js":["FULLY REVIEWED",491,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: default-off dual-head predictor reviewed.",["F-ML-001"],["Training corpus, provenance, and out-of-sample report are absent."],"HIGH","Establish data and calibration evidence before activation."],
+    "location_runtime.js":["FULLY REVIEWED",527,"VERIFIED IN REPOSITORY: geolocation, camera, animation, and watch lifecycle reviewed.",["F-RUNTIME-001"],["Permission, background, teardown, and device behavior remain unexecuted."],"HIGH","Unify location streams and expose explicit stop/dispose."],
+    "map_config.js":["FULLY REVIEWED",279,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: flags, kill switches, persistence, and telemetry reviewed.",["F-RUNTIME-002"],["Restricted storage contexts were not browser-tested."],"MEDIUM","Guard capability access and test security exceptions."],
+    "map_interaction_runtime.js":["FULLY REVIEWED",735,"VERIFIED IN REPOSITORY: popup, request abort, panel, follow, and layer binding reviewed.",[],["No direct module test; popup safety depends on renderer contracts and teardown is absent."],"MEDIUM","Add DOM, stale-request, teardown, and focus tests."],
+    "model.js":["FULLY REVIEWED",941,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: probability, ranking, explanation, and exports reviewed.",["F-MATH-001","F-MATH-003"],["No observed-outcome calibration or uncertainty coverage evidence exists."],"HIGH","Define measurable probability and interval semantics."],
+    "optimizer.js":["FULLY REVIEWED",140,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: facility-location fallback reviewed.",["F-OPT-001"],["MIP activity, status, gap, and fallback equivalence remain unknown."],"HIGH","Instrument solver status and prove constraint-family guarantees."],
+    "overpass.js":["FULLY REVIEWED",217,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: malformed response and abort behavior reproduced.",["F-NET-001","F-NET-002"],["Endpoint quotas and production degradation behavior are unknown."],"MEDIUM","Restore schema validation and propagate cancellation."],
+    "performance/monitor.js":["FULLY REVIEWED",309,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: FPS sampling and fallback effects reviewed.",["F-PERF-001"],["Background tab throttling and recovery are unverified."],"MEDIUM","Add visibility-state handling and recovery policy tests."],
+    "performance_heuristics.js":["FULLY REVIEWED",41,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: device advisory heuristic reviewed.",[],["Missing device values default permissive."],"LOW","Validate against target device measurements."],
+    "phase_c_activation.js":["FULLY REVIEWED",1595,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: visual activation, rollback, and tuning lifecycle reviewed.",[],["Real Mapbox style reload and WebGL behavior remain unexecuted."],"MEDIUM","Run browser style-reload and rollback matrix."],
+    "phase_c_manifest.js":["FULLY REVIEWED",118,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: frozen visual configuration reviewed.",["F-DOC-003"],["The v-zero-inert label conflicts with enabled defaults."],"LOW","Reconcile naming with current activation semantics."],
+    "routing_runtime.js":["FULLY REVIEWED",1326,"VERIFIED IN REPOSITORY: routing, guidance, speech, arrival, and watch lifecycle reviewed.",["F-RUNTIME-001","F-ROUTE-001"],["Real route service, speech, permission, and arrival safety remain unexecuted."],"HIGH","Quarantine unsupported curb/arrival authority and unify location watches."],
+    "runtime_ready.js":["FULLY REVIEWED",109,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: coalesced readiness gate reviewed.",[],["Callback exceptions and rejected promises are not contained."],"MEDIUM","Define error isolation and retry semantics."],
+    "style_state.js":["FULLY REVIEWED",78,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: style property restoration reviewed.",[],["Telemetry callback exceptions may propagate."],"LOW","Isolate callbacks and add malformed-state fixtures."],
+    "traffic_visibility.js":["FULLY REVIEWED",259,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: discovery, visibility, and paint fallback reviewed.",[],["Provider-style drift and missing-source mismatch branches remain browser-unverified."],"MEDIUM","Add imported-style and cache invalidation tests."],
+    "ui/place_card.js":["FULLY REVIEWED",600,"VERIFIED IN REPOSITORY: accessible sheet, sandbox plan, photos, and navigation reviewed.",["F-UI-001"],["Browser focus, framing, timers, and carousel supersession remain unexecuted."],"MEDIUM","Generation-guard image requests and run accessibility browser tests."],
+    "ui/vegetation_layer.js":["FULLY REVIEWED",351,"VERIFIED IN REPOSITORY: sprite, extrusion, and LOD lifecycle reviewed.",["F-UI-002"],["Style destruction can prevent image re-registration."],"MEDIUM","Add style reload and partial-layer tests."],
+    "ui/vehicle_marker.js":["FULLY REVIEWED",463,"VERIFIED IN REPOSITORY and partially VERIFIED BY EXECUTION through pure camera helpers.",["F-UI-002"],["Full marker lifecycle, coordinate ranges, and style reload remain unexecuted."],"MEDIUM","Add full Mapbox lifecycle and malformed-input tests."],
+    "weather.js":["FULLY REVIEWED",148,"VERIFIED IN REPOSITORY and partially VERIFIED BY EXECUTION through pure mappings.",["F-PROV-001"],["Live fetch, cache, timeout, and malformed response behavior lack direct tests."],"MEDIUM","Add live-adapter contract fixtures and scored-input provenance."],
+    ".github/workflows/deploy.yml":["FULLY REVIEWED",43,"VERIFIED IN REPOSITORY: Pages permissions, token injection, and deployment steps reviewed.",["F-CI-001","F-DEPLOY-001"],["Deployed headers, token restrictions, and artifact contents are unknown."],"HIGH","Gate deployment on tests and use safe token substitution."],
+    "start.ps1":["FULLY REVIEWED",34,"VERIFIED IN REPOSITORY: local static-server launcher reviewed.",[],["Windows-only process cleanup is not deterministic."],"LOW","Document cross-platform serving and cleanup."],
+    "styles.css":["FULLY REVIEWED",1690,"VERIFIED IN REPOSITORY: global layout, control, focus, responsive, and animation styles reviewed.",[],["Contrast, reflow, touch targets, and global reduced motion remain browser-unverified."],"MEDIUM","Run WCAG browser matrix and add reduced-motion equivalence."],
+    "styles/place_card.css":["FULLY REVIEWED",229,"VERIFIED IN REPOSITORY: card focus, motion, layout, and responsive styles reviewed.",[],["Rendered contrast, focus order, and zoom behavior remain unexecuted."],"MEDIUM","Run automated and manual accessibility checks."],
+    "tests/browser-smoke.js":["PARTIALLY REVIEWED",492,"VERIFIED IN REPOSITORY: harness source reviewed; browser execution was not available.",["F-TEST-002"],["Mapbox, WebGL, remote services, focus, and rendering remain unexecuted."],"HIGH","Run the served harness in the supported browser/device matrix."],
+    "tests/coordinates.test.js":["PARTIALLY REVIEWED",82,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",[],["Browser wrapper was not executed."],"LOW","Add coercion boundaries and run browser wrapper."],
+    "tests/heading-cone.test.js":["PARTIALLY REVIEWED",365,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",[],["Real sensor permissions and browser wrapper remain unexecuted."],"MEDIUM","Add clock-skew cases and run device tests."],
+    "tests/intelligence/historical_aggregates.test.js":["PARTIALLY REVIEWED",144,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",["F-HIST-001"],["Null timestamp regression is not covered."],"MEDIUM","Add persisted-null fixture."],
+    "tests/intelligence/navigation_adapter.test.js":["PARTIALLY REVIEWED",232,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",[],["Real provider and GPS traces remain unexecuted."],"MEDIUM","Add failure provenance and trace replays."],
+    "tests/intelligence/opportunity_core.test.js":["PARTIALLY REVIEWED",159,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",[],["Device-scale performance is not covered."],"MEDIUM","Add stress budgets."],
+    "tests/intelligence/opportunity_field.test.js":["PARTIALLY REVIEWED",163,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",[],["Calibration and regime sensitivity are not covered."],"MEDIUM","Add finite-weight and sensitivity fixtures."],
+    "tests/intelligence/place_cache.test.js":["PARTIALLY REVIEWED",223,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",["F-CACHE-001"],["Real IndexedDB quota and concurrent writes remain unexecuted."],"HIGH","Add provider-policy and lifecycle integration tests."],
+    "tests/intelligence/place_model.test.js":["PARTIALLY REVIEWED",199,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",["F-TIME-002"],["Invalid numeric minutes are not covered."],"MEDIUM","Add HHMM boundary fixtures."],
+    "tests/intelligence/place_photos.test.js":["PARTIALLY REVIEWED",253,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",[],["Canvas, memory, and remote image policy remain browser-unexecuted."],"MEDIUM","Run mobile canvas and provider-policy tests."],
+    "tests/intelligence/place_provider_adapter.test.js":["PARTIALLY REVIEWED",188,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",[],["Only synthetic provider behavior is covered."],"MEDIUM","Add contract suites for each approved real provider."],
+    "tests/intelligence/place_search.test.js":["PARTIALLY REVIEWED",264,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed; rejection failure separately reproduced.",["F-SEARCH-001"],["Rejected and superseded provider behavior is incomplete."],"HIGH","Add Promise settlement and stale-generation regressions."],
+    "tests/intelligence/superposition_engine.test.js":["PARTIALLY REVIEWED",168,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",["F-WEIGHT-001"],["Infinity and NaN weights are not covered."],"MEDIUM","Add finite-input invariants."],
+    "tests/intelligence/vegetation_core.test.js":["PARTIALLY REVIEWED",227,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",[],["Rendered lifecycle and mobile raster cost remain unexecuted."],"MEDIUM","Add browser style and performance tests."],
+    "tests/intelligence/vehicle_camera.test.js":["PARTIALLY REVIEWED",228,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: pure camera runner passed.",[],["Marker image, style, and Mapbox lifecycle remain unexecuted."],"MEDIUM","Add marker integration tests."],
+    "tests/intelligence/zone_clustering.test.js":["PARTIALLY REVIEWED",146,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",[],["Large-density performance is not covered."],"MEDIUM","Add deterministic stress budgets."],
+    "tests/location-routing-runtime.test.js":["PARTIALLY REVIEWED",188,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",["F-RUNTIME-001","F-ROUTE-001"],["Permission, duplicate watch, speech, and arrival paths remain largely unexecuted."],"HIGH","Add lifecycle, range, and authority tests."],
+    "tests/map-config.test.js":["PARTIALLY REVIEWED",197,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",["F-RUNTIME-002"],["Restricted browser storage getter remains unexecuted."],"MEDIUM","Add throwing-property browser fixture."],
+    "tests/perf-guard.test.js":["PARTIALLY REVIEWED",347,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",["F-PERF-001"],["Background tabs and real frame cadence remain unexecuted."],"MEDIUM","Add visibility-state browser test."],
+    "tests/performance-heuristics.test.js":["PARTIALLY REVIEWED",95,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",[],["Target-device validity remains unknown."],"LOW","Compare advice with measured devices."],
+    "tests/phase-c-activation.test.js":["PARTIALLY REVIEWED",570,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",[],["Real Mapbox/WebGL style lifecycle remains unexecuted."],"MEDIUM","Run served style reload matrix."],
+    "tests/phase-c-manifest.test.js":["PARTIALLY REVIEWED",119,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",["F-DOC-003"],["Browser activation semantics remain unexecuted."],"LOW","Add traceability assertion for naming."],
+    "tests/preservation.test.js":["PARTIALLY REVIEWED",695,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",["F-DOC-001"],["Active entrypoint and later integration paths are not fully represented."],"HIGH","Align preservation authority with app_v-two and current phases."],
+    "tests/runtime-ready.test.js":["PARTIALLY REVIEWED",142,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",[],["Rejected callbacks and real map event ordering remain unexecuted."],"MEDIUM","Add error isolation and event-order tests."],
+    "tests/style-state.test.js":["PARTIALLY REVIEWED",138,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",[],["Real imported styles and telemetry failures remain unexecuted."],"LOW","Add malformed and callback-failure fixtures."],
+    "tests/traffic-visibility.test.js":["PARTIALLY REVIEWED",168,"VERIFIED IN REPOSITORY and VERIFIED BY EXECUTION: exported runner passed.",[],["Provider-style mismatch branches remain browser-unexecuted."],"MEDIUM","Add imported-style fixtures."],
+    "tests/browser-smoke.html":["PARTIALLY REVIEWED",32,"VERIFIED IN REPOSITORY: browser harness wrapper reviewed.",["F-TEST-002"],["Harness was not executed in a browser."],"HIGH","Serve and execute with Mapbox/WebGL/network prerequisites."],
+    "tests/coordinates.html":["PARTIALLY REVIEWED",25,"VERIFIED IN REPOSITORY: browser wrapper reviewed.",[],["Not browser-executed."],"LOW","Run browser matrix."],
+    "tests/heading-cone.html":["PARTIALLY REVIEWED",25,"VERIFIED IN REPOSITORY: browser wrapper reviewed.",[],["Not browser-executed."],"MEDIUM","Run sensor-capable device matrix."],
+    "tests/map-config.html":["PARTIALLY REVIEWED",25,"VERIFIED IN REPOSITORY: browser wrapper reviewed.",[],["Not browser-executed."],"MEDIUM","Run restricted-storage browser cases."],
+    "tests/performance-heuristics.html":["PARTIALLY REVIEWED",25,"VERIFIED IN REPOSITORY: browser wrapper reviewed.",[],["Not browser-executed."],"LOW","Run target-device matrix."],
+    "tests/phase-c-activation.html":["PARTIALLY REVIEWED",25,"VERIFIED IN REPOSITORY: browser wrapper reviewed.",[],["Not browser-executed with Mapbox/WebGL."],"MEDIUM","Run style lifecycle matrix."],
+    "tests/phase-c-manifest.html":["PARTIALLY REVIEWED",25,"VERIFIED IN REPOSITORY: browser wrapper reviewed.",[],["Not browser-executed."],"LOW","Run browser matrix."],
+    "tests/preservation.html":["PARTIALLY REVIEWED",25,"VERIFIED IN REPOSITORY: browser wrapper reviewed.",["F-DOC-001"],["Not browser-executed against the active entrypoint."],"HIGH","Align then run active-entrypoint preservation."],
+    "tests/runtime-ready.html":["PARTIALLY REVIEWED",25,"VERIFIED IN REPOSITORY: browser wrapper reviewed.",[],["Not browser-executed with real map events."],"MEDIUM","Run event-order browser matrix."],
+    "tests/style-state.html":["PARTIALLY REVIEWED",25,"VERIFIED IN REPOSITORY: browser wrapper reviewed.",[],["Not browser-executed with real styles."],"LOW","Run imported-style matrix."],
+    "tests/traffic-visibility.html":["PARTIALLY REVIEWED",25,"VERIFIED IN REPOSITORY: browser wrapper reviewed.",[],["Not browser-executed against provider styles."],"MEDIUM","Run provider-style matrix."]
+  },
+  "nonSourceDispositions": {
+    "FULLY REVIEWED": [
+      ".gitattributes",
+      ".gitignore",
+      "README.md",
+      "docs/CLASSIFICATION_REGISTRY.md",
+      "docs/GOVERNANCE.md",
+      "docs/PRESERVATION_REPORT.md",
+      "docs/phaseD-tuning.md",
+      "docs/phaseE-traffic-verification.md",
+      "docs/phaseE-tuning.md",
+      "docs/phaseF-opportunity.md",
+      "docs/phaseF-tuning.md",
+      "docs/phaseG-places.md",
+      "docs/phaseG-security.md",
+      "docs/phaseG-vegetation.md"
+    ],
+    "GENERATED": [
+      "style.json"
+    ],
+    "BINARY": [
+      "assets/sprites/dodge_dart_sprite.png",
+      "assets/sprites/tree_sample.png"
+    ],
+    "INVENTORIED ONLY": [
+      ".github/prompts/Phase C.prompt.md",
+      ".github/prompts/herculean-polish.prompt.md",
+      "data/census-rancho-ontario-tracts-2023.json"
+    ],
+    "EXCLUDED": []
+  },
   "findings": [
-    {
-      "id": "F-GOV-001",
-      "label": "VERIFIED IN REPOSITORY",
-      "summary": "Active opportunity-field and assignment-estimate outputs lack corresponding executable registry entries.",
-      "evidence": [
-        "app_v2.js opportunity and future-value output paths",
-        "docs/CLASSIFICATION_REGISTRY.md executable entries",
-        "docs/GOVERNANCE.md authorization gate"
-      ]
-    },
-    {
-      "id": "F-GOV-002",
-      "label": "VERIFIED IN REPOSITORY",
-      "summary": "Active wait, rotate, and best-staging wording conflicts with governance non-prescription rules."
-    },
-    {
-      "id": "F-DOC-001",
-      "label": "VERIFIED IN REPOSITORY",
-      "summary": "Runtime and preservation documents disagree on the active entrypoint."
-    },
-    {
-      "id": "F-DOC-002",
-      "label": "VERIFIED IN REPOSITORY",
-      "summary": "Classification registry summary counts do not reconcile with its rows."
-    },
-    {
-      "id": "F-OPT-001",
-      "label": "VERIFIED IN REPOSITORY",
-      "summary": "Documented MIP controls are not exposed in the active UI/wiring reviewed in B-01."
-    }
+    {"id":"F-GOV-001","severity":"HIGH","label":"VERIFIED IN REPOSITORY","summary":"Active opportunity and assignment outputs lack executable registry authority."},
+    {"id":"F-GOV-002","severity":"HIGH","label":"VERIFIED IN REPOSITORY","summary":"Hold, rotate, best-staging, legal-curb, confidence, and arrival-lock wording exceeds repository governance and evidence."},
+    {"id":"F-DOC-001","severity":"MEDIUM","label":"VERIFIED IN REPOSITORY","summary":"Production loads app_v-two while preservation and governance references cite absent app.js."},
+    {"id":"F-DOC-002","severity":"LOW","label":"VERIFIED IN REPOSITORY","summary":"Classification registry summary counts do not reconcile with its rows."},
+    {"id":"F-DOC-003","severity":"LOW","label":"VERIFIED IN REPOSITORY","summary":"Diagram and manifest terminology is stale relative to Mapbox and enabled runtime behavior."},
+    {"id":"F-ARCH-002","severity":"HIGH","label":"VERIFIED IN REPOSITORY","summary":"Executable CDN dependencies lack integrity metadata and repository-owned version verification."},
+    {"id":"F-MATH-001","severity":"HIGH","label":"VERIFIED IN REPOSITORY","summary":"Displayed Assignment is normalized synthetic utility, not calibrated platform assignment probability."},
+    {"id":"F-MATH-002","severity":"HIGH","label":"VERIFIED IN REPOSITORY","summary":"Opportunity Field can recycle ranked score evidence while omitting history and travel cost in the active call."},
+    {"id":"F-MATH-003","severity":"MEDIUM","label":"VERIFIED IN REPOSITORY","summary":"Midpoint and low/high estimates are not one consistently perturbed statistical model family."},
+    {"id":"F-TIME-001","severity":"MEDIUM","label":"VERIFIED IN REPOSITORY","summary":"Selected scoring hour and opening-hours wall clock diverge."},
+    {"id":"F-TIME-002","severity":"MEDIUM","label":"VERIFIED BY EXECUTION","summary":"Numeric HHMM accepts invalid minute values."},
+    {"id":"F-PROV-001","severity":"MEDIUM","label":"VERIFIED IN REPOSITORY","summary":"Stored weather provenance can differ from the value used for scoring."},
+    {"id":"F-PROV-002","severity":"MEDIUM","label":"VERIFIED IN REPOSITORY","summary":"Grafted history prevents useful per-file provenance attribution."},
+    {"id":"F-DISP-001","severity":"HIGH","label":"VERIFIED IN REPOSITORY","summary":"Greedy batching after a one-order Hungarian solve is not globally optimal final assignment."},
+    {"id":"F-DISP-002","severity":"HIGH","label":"VERIFIED BY EXECUTION","summary":"A nearly antipodal valid order can be assigned because unassignment cost dominates."},
+    {"id":"F-ML-001","severity":"HIGH","label":"VERIFIED BY EXECUTION","summary":"A zero-weight training row changes coefficients because falsy weight falls back to one."},
+    {"id":"F-GEO-001","severity":"MEDIUM","label":"VERIFIED IN REPOSITORY","summary":"Local projections, click bounds, and route bounds are not globe-general at the antimeridian."},
+    {"id":"F-GEO-002","severity":"MEDIUM","label":"VERIFIED IN REPOSITORY","summary":"Coordinate normalization coerces booleans and empty strings to zero."},
+    {"id":"F-RUNTIME-001","severity":"MEDIUM","label":"VERIFIED IN REPOSITORY","summary":"Location and routing can own separate continuous geolocation watches without a shared disposal contract."},
+    {"id":"F-RUNTIME-002","severity":"MEDIUM","label":"VERIFIED IN REPOSITORY","summary":"Storage capability getters can throw before guarded reads in restricted contexts."},
+    {"id":"F-ROUTE-001","severity":"HIGH","label":"VERIFIED IN REPOSITORY","summary":"Arrival and curb-flow authority is derived from uncalibrated heuristics rather than legal or observed route evidence."},
+    {"id":"F-HIST-001","severity":"MEDIUM","label":"VERIFIED BY EXECUTION","summary":"Historical normalization can collapse unequal totals and persisted null bucket time becomes epoch zero."},
+    {"id":"F-WEIGHT-001","severity":"MEDIUM","label":"VERIFIED BY EXECUTION","summary":"Non-finite custom opportunity weights can collapse probability estimates."},
+    {"id":"F-CACHE-001","severity":"HIGH","label":"VERIFIED IN REPOSITORY","summary":"Advertised provider cache policy is not enforced by search and cache writes."},
+    {"id":"F-SEARCH-001","severity":"HIGH","label":"VERIFIED BY EXECUTION","summary":"Scheduled provider rejection can leave the returned search Promise unsettled and surface an unhandled rejection."},
+    {"id":"F-UI-001","severity":"MEDIUM","label":"VERIFIED IN REPOSITORY","summary":"An older thumbnail completion can overwrite the current carousel generation."},
+    {"id":"F-UI-002","severity":"MEDIUM","label":"VERIFIED IN REPOSITORY","summary":"Style reload can strand vegetation and vehicle image-registration state."},
+    {"id":"F-NET-001","severity":"MEDIUM","label":"VERIFIED BY EXECUTION","summary":"Overpass accepts malformed successful JSON because element validation is unreachable."},
+    {"id":"F-NET-002","severity":"MEDIUM","label":"VERIFIED IN REPOSITORY","summary":"Abort is retried and backoff does not immediately honor an already-aborted signal."},
+    {"id":"F-PERF-001","severity":"MEDIUM","label":"INFERRED","summary":"Background-tab throttling may permanently trip the all-or-nothing performance guard."},
+    {"id":"F-TEST-001","severity":"MEDIUM","label":"VERIFIED BY EXECUTION","summary":"Most test modules require explicit exported-runner invocation; plain Node execution is not a complete suite."},
+    {"id":"F-TEST-002","severity":"HIGH","label":"UNKNOWN","summary":"Browser, WebGL, Mapbox, permissions, focus, responsive, and remote-service behavior remains unexecuted."},
+    {"id":"F-CI-001","severity":"HIGH","label":"VERIFIED IN REPOSITORY","summary":"Pages deployment has no test, JSON, browser-smoke, accessibility, or security gate."},
+    {"id":"F-DEPLOY-001","severity":"HIGH","label":"VERIFIED IN REPOSITORY","summary":"Mapbox token is interpolated through shell and sed into HTML without escaping."}
   ],
-  "exclusions": [
-    {
-      "path": ".git/",
-      "reason": "repository metadata"
-    },
-    {
-      "path": ".github/agents/",
-      "reason": "prohibited path; not accessed or inventoried"
-    }
+  "executionEvidence": [
+    "VERIFIED BY EXECUTION: all twenty-five exported test runners passed; three hundred eighty-eight assertions passed.",
+    "VERIFIED BY EXECUTION: seven geospatial suites contributed sixty passing assertions.",
+    "VERIFIED BY EXECUTION: both tracked JSON inputs parsed successfully.",
+    "UNKNOWN: browser smoke, WebGL, remote APIs, real permissions, Android, and deployed headers were not executed."
   ],
-  "claim": "Complete repository coverage is not claimed."
+  "remainingBlindSpots": [
+    "Browser, WebGL, Mapbox style, focus, responsive, sensor, speech, and permission execution.",
+    "Live Overpass, weather, Census, OSRM, Mapbox, Nominatim, CDN, quota, and outage behavior.",
+    "Provider token restrictions, deployed response headers, and artifact exposure.",
+    "Observed platform outcomes, model calibration, uncertainty coverage, optimizer gaps, and regional validity.",
+    "Representative low-end mobile, PWA, Capacitor, and Android device behavior.",
+    "Generated style regeneration provenance and useful pre-graft file history.",
+    "The prohibited .github/agents path was not accessed or counted."
+  ],
+  "claim": "The deterministic documentation audit is complete with terminal dispositions. Complete runtime, empirical, browser, mobile, and external-service coverage is not claimed."
 }
