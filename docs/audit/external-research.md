@@ -18,10 +18,26 @@ meets them.
   [Mathematical Programming DOI](https://doi.org/10.1007/BF01588971).
   `RECOMMENDED` — state the guarantee only after non-negativity, monotonicity,
   and the actual constraint family are verified.
+- `VERIFIED EXTERNALLY` — calibration and discrimination are distinct; useful
+  validation includes calibration-in-the-large, slope, and a flexible
+  calibration curve. Source:
+  [Van Calster et al.](https://doi.org/10.1186/s12916-019-1466-7).
+- `VERIFIED EXTERNALLY` — MIP termination can yield a feasible incumbent
+  without proving optimality. Source:
+  [Google OR-Tools MIP introduction](https://developers.google.com/optimization/mip/mip_intro).
+  `RECOMMENDED` — record status, incumbent, bound, gap, runtime, formulation,
+  and seed rather than reporting solver presence as optimality.
 - `VERIFIED EXTERNALLY` — predict-then-optimize separates estimation from a
   constrained decision model; it does not make synthetic labels equivalent to
   observed outcomes. Source:
   [DoorDash public engineering overview](https://careersatdoordash.com/blog/using-ml-and-optimization-to-solve-doordashs-dispatch-problem/).
+- `VERIFIED EXTERNALLY` — published dispatch systems combine feasible-trip
+  construction with constrained assignment, or learned long-term values with
+  combinatorial optimization. Sources:
+  [Alonso-Mora et al.](https://doi.org/10.1073/pnas.1611675114),
+  [Xu et al.](https://doi.org/10.1145/3219819.3220094).
+  `RECOMMENDED` — retain constrained OR as the baseline and treat learned value
+  functions as inputs, not substitutes for feasibility and safety constraints.
 
 ## Accessibility and web platform
 
@@ -42,6 +58,15 @@ meets them.
   distinguishes foreground, approximate, precise, and background access and
   directs apps to request only the access needed. Source:
   [Android location permissions](https://developer.android.com/training/location/permissions).
+- `VERIFIED EXTERNALLY` — the W3C Geolocation Recommendation directs
+  recipients to request location only when necessary, use it for the disclosed
+  task, dispose of it afterward absent permission, and disclose retention and
+  retransmission. Source:
+  [W3C Geolocation privacy](https://www.w3.org/TR/geolocation/#privacy_recipient).
+- `VERIFIED EXTERNALLY` — RFC 7946 warns that precise GeoJSON can have
+  profound privacy implications and that parsers must anticipate oversized
+  input. Source:
+  [IETF RFC 7946](https://www.rfc-editor.org/rfc/rfc7946.html#section-10).
 - `VERIFIED EXTERNALLY` — Capacitor's official Geolocation plugin documents
   Android permissions and platform-specific option behavior. Source:
   [Capacitor Geolocation](https://capacitorjs.com/docs/apis/geolocation).
@@ -74,11 +99,35 @@ meets them.
 - `VERIFIED EXTERNALLY` — Microsoft responsible-AI OCR guidance emphasizes
   intended use, human oversight, limitations, privacy, and security. Source:
   [Microsoft OCR responsible use](https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/computer-vision/ocr-guidance-integration-responsible-use).
+- `VERIFIED EXTERNALLY` — Android Photo Picker grants access only to
+  user-selected media without broad library permission. Source:
+  [Android Photo Picker](https://developer.android.com/training/data-storage/shared/photo-picker).
+- `VERIFIED EXTERNALLY` — ML Kit states that text-recognition image/input
+  processing remains on device while operational API metrics may be sent to
+  Google. Source:
+  [ML Kit terms and privacy](https://developers.google.com/ml-kit/terms).
+- `VERIFIED EXTERNALLY` — Android warns against exposing native bridges to
+  untrusted WebView content and recommends HTTPS and restricted file access.
+  Sources:
+  [WebView bridge risk](https://developer.android.com/privacy-and-security/risks/insecure-webview-native-bridges),
+  [unsafe file inclusion](https://developer.android.com/privacy-and-security/risks/webview-unsafe-file-inclusion).
 - `RECOMMENDED` — require explicit capture/import, on-device redaction,
   source/confidence provenance, schema validation, user confirmation, bounded
   retention, and deletion before any OCR-derived value enters DGM state.
 
 ## Reliability synthesis
+
+`VERIFIED EXTERNALLY` — Google's published "good" field thresholds are
+seventy-fifth-percentile LCP at or below 2.5 seconds, INP at or below
+200 milliseconds, and CLS at or below 0.1. Source:
+[Core Web Vitals thresholds](https://web.dev/articles/defining-core-web-vitals-thresholds).
+Lab diagnostics and field measurement answer different questions; source:
+[lab versus field data](https://web.dev/articles/lab-and-field-data-differences).
+
+`VERIFIED EXTERNALLY` — browser installability is not equivalent to offline
+reliability; Chrome removed the service-worker fetch-handler requirement for
+some menu-install flows. Source:
+[Chrome install-criteria clarification](https://developer.chrome.com/blog/update-install-criteria).
 
 `RECOMMENDED` — combine deterministic unit fixtures, synthetic spatial
 scenarios, network-fault injection, browser/device matrices, field performance
