@@ -24,6 +24,42 @@ not by novelty.
 
 ## Mathematics and optimization audit
 
+### Confirmed implementation findings
+
+- `F-MATH-001` — `VERIFIED IN REPOSITORY`: the displayed Assignment
+  value is a softmax over synthesized pay, duration, distance, and utility
+  proxies, not an observed or calibrated platform-assignment probability.
+  Adding or removing a candidate changes every normalized value.
+- `F-MATH-002` — `VERIFIED IN REPOSITORY`: Opportunity Field runtime
+  samples reuse ranked `pGood` and effective-merchant values while the active
+  call omits historical aggregates and travel cost. The overlay therefore
+  risks presenting recycled score evidence as independent intelligence.
+- `F-TIME-001` — `VERIFIED IN REPOSITORY`: user-selected scenario hour
+  drives scoring while opening-hours eligibility uses wall-clock time.
+- `F-PROV-001` — `VERIFIED IN REPOSITORY`: live weather can replace the
+  rain parameter after the stored parameter snapshot, so provenance can differ
+  from the scored input.
+- `F-MATH-003` — `VERIFIED IN REPOSITORY`: GLM midpoint probability
+  and legacy-derived low/high bounds do not represent one consistently
+  perturbed model family.
+- `F-DISP-001` — `VERIFIED IN REPOSITORY`: dispatch combines a Hungarian
+  one-order solve with greedy batching; the diagnostic solver name does not
+  establish global optimality of the final batches.
+- `F-DISP-002` — `VERIFIED BY EXECUTION`: a valid nearly antipodal order
+  was still assigned because dummy/unassigned cost dominates valid pair cost.
+- `F-HIST-001` — `VERIFIED BY EXECUTION`: unequal retained historical
+  totals both normalized to density one under the current peer-week
+  comparison.
+- `F-ML-001` — `VERIFIED BY EXECUTION`: a nominal zero-weight training
+  row changed learned coefficients because falsy weight falls back to one.
+- `F-CACHE-001` — `VERIFIED IN REPOSITORY`: provider cache policy is
+  advertised but is not enforced by search/cache writes.
+- `F-GEO-001` — `VERIFIED IN REPOSITORY`: several local projections,
+  click bounds, and route bounds do not wrap the antimeridian; the supported
+  behavior is local-region rather than globe-general.
+
+These findings are audit evidence only. No runtime correction is authorized.
+
 ### Probability field
 
 `VERIFIED IN REPOSITORY` — the model applies great-circle distance, exponential

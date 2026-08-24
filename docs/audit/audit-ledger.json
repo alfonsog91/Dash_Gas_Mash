@@ -6,8 +6,8 @@
   "baselineCommit": "4e7ac5f83705e72cc05ebc8fe53924635551913d",
   "scope": {
     "inventoryFiles": 101,
-    "reviewedFiles": 0,
-    "coveragePercent": 0,
+    "reviewedFiles": 13,
+    "coveragePercent": 12.87,
     "completeCoverageClaimed": false
   },
   "evidenceLabels": [
@@ -25,7 +25,7 @@
     {
       "id": "B-01",
       "name": "foundation-and-entrypoint",
-      "status": "IN_PROGRESS",
+      "status": "COMPLETE",
       "files": [
         ".gitattributes",
         ".gitignore",
@@ -37,17 +37,84 @@
         "docs/PRESERVATION_REPORT.md"
       ],
       "coverageBefore": 0,
-      "coverageAfter": null,
-      "confirmedFindings": [],
-      "unresolvedQuestions": [
-        "Do governance and README references consistently name the active entrypoint?",
-        "Which entrypoint responsibilities can be isolated without behavior drift?"
+      "coverageAfter": 7.92,
+      "confirmedFindings": [
+        "F-GOV-001: active opportunity and assignment estimates are not represented in the classification registry.",
+        "F-GOV-002: runtime wording includes prescriptive hold/rotate/best-staging language prohibited by governance.",
+        "F-DOC-001: production loads app_v2.js while preservation documents cite app.js.",
+        "F-DOC-002: registry rows total forty-six while its summary reports forty-two.",
+        "F-OPT-001: README MIP controls diverge from the active UI and submodular wiring."
       ],
-      "exactContinuationPoint": "Reconcile entrypoint behavior with stated contracts.",
+      "unresolvedQuestions": [
+        "Does any active imported path access the global LP solver?",
+        "Do preservation tests exercise the active entrypoint and later phase paths?",
+        "Which opportunity feature flags are enabled by default?"
+      ],
+      "exactContinuationPoint": "B-02: inspect model.js from its exported probability contract.",
       "nextBatch": "B-02 model-optimization-dispatch"
+    },
+    {
+      "id": "B-02",
+      "name": "model-optimization-dispatch",
+      "status": "COMPLETE",
+      "files": [
+        "model.js",
+        "learned_predictor.js",
+        "optimizer.js",
+        "dispatch_assignment.js",
+        "data_scoring_runtime.js"
+      ],
+      "coverageBefore": 7.92,
+      "coverageAfter": 12.87,
+      "confirmedFindings": [
+        "F-MATH-001: Assignment is normalized synthetic utility, not calibrated assignment probability.",
+        "F-MATH-002: Opportunity Field recycles ranked score evidence.",
+        "F-TIME-001: selected scoring hour and opening-hours clock diverge.",
+        "F-PROV-001: live-weather provenance can differ from scored input.",
+        "F-DISP-001: final batched dispatch is not globally Hungarian-optimal.",
+        "F-DISP-002: execution assigned a nearly antipodal valid order.",
+        "F-ML-001: a zero-weight row changes learned coefficients."
+      ],
+      "unresolvedQuestions": [
+        "Are calibration claims supported by training and out-of-sample evidence?",
+        "Are MIP, fallback, and experimental dispatch semantics aligned?"
+      ],
+      "exactContinuationPoint": "B-03: coordinates.js normalization boundary.",
+      "nextBatch": "B-03 runtime-and-geospatial"
     }
   ],
-  "findings": [],
+  "findings": [
+    {
+      "id": "F-GOV-001",
+      "label": "VERIFIED IN REPOSITORY",
+      "summary": "Active opportunity-field and assignment-estimate outputs lack corresponding executable registry entries.",
+      "evidence": [
+        "app_v2.js opportunity and future-value output paths",
+        "docs/CLASSIFICATION_REGISTRY.md executable entries",
+        "docs/GOVERNANCE.md authorization gate"
+      ]
+    },
+    {
+      "id": "F-GOV-002",
+      "label": "VERIFIED IN REPOSITORY",
+      "summary": "Active wait, rotate, and best-staging wording conflicts with governance non-prescription rules."
+    },
+    {
+      "id": "F-DOC-001",
+      "label": "VERIFIED IN REPOSITORY",
+      "summary": "Runtime and preservation documents disagree on the active entrypoint."
+    },
+    {
+      "id": "F-DOC-002",
+      "label": "VERIFIED IN REPOSITORY",
+      "summary": "Classification registry summary counts do not reconcile with its rows."
+    },
+    {
+      "id": "F-OPT-001",
+      "label": "VERIFIED IN REPOSITORY",
+      "summary": "Documented MIP controls are not exposed in the active UI/wiring reviewed in B-01."
+    }
+  ],
   "exclusions": [
     {
       "path": ".git/",

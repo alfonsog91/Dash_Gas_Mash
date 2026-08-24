@@ -117,3 +117,12 @@ appropriate reliance, accessibility completion, interaction while stationary.
 Stop on privacy-policy violation, unsafe moving interaction, unbounded storage,
 material calibration deterioration, unexplained subgroup/regional disparity,
 constraint violation, or a failure mode that presents stale output as current.
+
+## Execution record
+
+`VERIFIED BY EXECUTION` — every inventoried `tests/**/*.test.js` and root
+`tests/*.test.js` module was invoked directly with the repository's existing
+Node runtime in deterministic lexical order. All twenty-five test files exited
+successfully. The browser smoke harness remains a separate browser/WebGL check;
+this Node result does not verify the deployed UI, remote services, permissions,
+or Mapbox rendering.

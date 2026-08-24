@@ -1,37 +1,59 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-08-24T01:40:04Z",
+  "updatedAt": "2026-08-24T02:00:00Z",
   "auditStatus": "IN_PROGRESS",
-  "activeBatch": "B-01",
+  "activeBatch": "B-03",
   "inventoryFiles": 101,
-  "reviewedFiles": 0,
-  "coveragePercent": 0,
-  "completedBatches": [],
+  "reviewedFiles": 13,
+  "coveragePercent": 12.87,
+  "completedBatches": [
+    "B-01",
+    "B-02"
+  ],
   "currentFiles": [
-    ".gitattributes",
-    ".gitignore",
-    "README.md",
-    "index.html",
-    "app_v2.js",
-    "docs/CLASSIFICATION_REGISTRY.md",
-    "docs/GOVERNANCE.md",
-    "docs/PRESERVATION_REPORT.md"
+    "coordinates.js",
+    "heading_cone.js",
+    "heading_runtime.js",
+    "location_runtime.js",
+    "map_config.js",
+    "map_interaction_runtime.js",
+    "routing_runtime.js",
+    "style_state.js",
+    "traffic_visibility.js"
   ],
-  "confirmedFindings": [],
+  "confirmedFindings": [
+    "F-GOV-001",
+    "F-GOV-002",
+    "F-DOC-001",
+    "F-DOC-002",
+    "F-OPT-001",
+    "F-MATH-001",
+    "F-MATH-002",
+    "F-TIME-001",
+    "F-PROV-001",
+    "F-DISP-001",
+    "F-DISP-002",
+    "F-ML-001"
+  ],
   "unresolvedQuestions": [
-    "Reconcile stale app.js references against the active module entrypoint.",
-    "Confirm runtime dependency order and external-service failure modes."
+    "Does any active path use the global LP solver?",
+    "Do preservation tests cover the active entrypoint and newer opportunity paths?",
+    "Are predictor calibration and optimizer guarantees empirically supported?"
   ],
-  "exactContinuationPoint": "B-01: reconcile entrypoint and governance claims.",
+  "exactContinuationPoint": "B-03: coordinates.js normalization boundary.",
   "nextBatch": {
-    "id": "B-02",
-    "name": "model-optimization-dispatch",
+    "id": "B-03",
+    "name": "runtime-and-geospatial",
     "files": [
-      "model.js",
-      "learned_predictor.js",
-      "optimizer.js",
-      "dispatch_assignment.js",
-      "data_scoring_runtime.js"
+      "coordinates.js",
+      "heading_cone.js",
+      "heading_runtime.js",
+      "location_runtime.js",
+      "map_config.js",
+      "map_interaction_runtime.js",
+      "routing_runtime.js",
+      "style_state.js",
+      "traffic_visibility.js"
     ]
   },
   "completeCoverageClaimed": false
