@@ -1,0 +1,338 @@
+{
+  "schemaVersion": 1,
+  "status": "PROPOSED_AUDIT_BACKLOG",
+  "scoring": {
+    "dimensions": [
+      "userOutcomeValue",
+      "safetyPrivacyImpact",
+      "correctnessRisk",
+      "changeLeverage",
+      "evidenceGap"
+    ],
+    "dimensionRange": "0-5",
+    "normalizedPriorityFormula": "sum(dimensions) / 25",
+    "tieBreak": "lower rank, then lexical id"
+  },
+  "items": [
+    {
+      "rank": 1,
+      "id": "DGM-001",
+      "title": "Define probability calibration and uncertainty contract",
+      "scores": [
+        5,
+        5,
+        5,
+        5,
+        5
+      ],
+      "normalizedPriority": 1.0,
+      "wave": 1,
+      "evidenceLabel": "INFERRED",
+      "disposition": "RECOMMENDED"
+    },
+    {
+      "rank": 2,
+      "id": "DGM-002",
+      "title": "Threat-model location, storage, debug, and third-party data flows",
+      "scores": [
+        5,
+        5,
+        5,
+        4,
+        5
+      ],
+      "normalizedPriority": 0.96,
+      "wave": 1,
+      "evidenceLabel": "INFERRED",
+      "disposition": "RECOMMENDED"
+    },
+    {
+      "rank": 3,
+      "id": "DGM-003",
+      "title": "Specify external-service freshness and degraded-mode contracts",
+      "scores": [
+        5,
+        4,
+        5,
+        5,
+        5
+      ],
+      "normalizedPriority": 0.96,
+      "wave": 1,
+      "evidenceLabel": "INFERRED",
+      "disposition": "RECOMMENDED"
+    },
+    {
+      "rank": 4,
+      "id": "DGM-004",
+      "title": "Reconcile governance and active entrypoint traceability",
+      "scores": [
+        4,
+        4,
+        5,
+        5,
+        5
+      ],
+      "normalizedPriority": 0.92,
+      "wave": 0,
+      "evidenceLabel": "VERIFIED IN REPOSITORY",
+      "disposition": "RECOMMENDED"
+    },
+    {
+      "rank": 5,
+      "id": "DGM-005",
+      "title": "Prove cancellation and last-write-wins behavior",
+      "scores": [
+        5,
+        4,
+        5,
+        4,
+        5
+      ],
+      "normalizedPriority": 0.92,
+      "wave": 1,
+      "evidenceLabel": "UNVERIFIED HYPOTHESIS",
+      "disposition": "RECOMMENDED"
+    },
+    {
+      "rank": 6,
+      "id": "DGM-006",
+      "title": "Validate optimizer and fallback semantic equivalence",
+      "scores": [
+        5,
+        3,
+        5,
+        5,
+        5
+      ],
+      "normalizedPriority": 0.92,
+      "wave": 2,
+      "evidenceLabel": "UNVERIFIED HYPOTHESIS",
+      "disposition": "RECOMMENDED"
+    },
+    {
+      "rank": 7,
+      "id": "DGM-007",
+      "title": "Create reproducible performance budgets and benchmarks",
+      "scores": [
+        5,
+        3,
+        4,
+        5,
+        5
+      ],
+      "normalizedPriority": 0.88,
+      "wave": 1,
+      "evidenceLabel": "INFERRED",
+      "disposition": "RECOMMENDED"
+    },
+    {
+      "rank": 8,
+      "id": "DGM-008",
+      "title": "Provide accessible non-map result equivalents",
+      "scores": [
+        5,
+        4,
+        4,
+        4,
+        5
+      ],
+      "normalizedPriority": 0.88,
+      "wave": 1,
+      "evidenceLabel": "UNVERIFIED HYPOTHESIS",
+      "disposition": "RECOMMENDED"
+    },
+    {
+      "rank": 9,
+      "id": "DGM-009",
+      "title": "Build synthetic geospatial and malformed-input test matrix",
+      "scores": [
+        4,
+        3,
+        5,
+        5,
+        5
+      ],
+      "normalizedPriority": 0.88,
+      "wave": 2,
+      "evidenceLabel": "INFERRED",
+      "disposition": "RECOMMENDED"
+    },
+    {
+      "rank": 10,
+      "id": "DGM-010",
+      "title": "Document token restrictions, CSP, and CDN integrity strategy",
+      "scores": [
+        4,
+        5,
+        4,
+        4,
+        5
+      ],
+      "normalizedPriority": 0.88,
+      "wave": 1,
+      "evidenceLabel": "INFERRED",
+      "disposition": "RECOMMENDED"
+    },
+    {
+      "rank": 11,
+      "id": "DGM-011",
+      "title": "Establish model provenance and out-of-sample evaluation",
+      "scores": [
+        4,
+        3,
+        5,
+        4,
+        5
+      ],
+      "normalizedPriority": 0.84,
+      "wave": 2,
+      "evidenceLabel": "UNKNOWN",
+      "disposition": "RECOMMENDED"
+    },
+    {
+      "rank": 12,
+      "id": "DGM-012",
+      "title": "Audit moving-user safety and parked-only interaction",
+      "scores": [
+        5,
+        5,
+        4,
+        3,
+        4
+      ],
+      "normalizedPriority": 0.84,
+      "wave": 1,
+      "evidenceLabel": "INFERRED",
+      "disposition": "RECOMMENDED"
+    },
+    {
+      "rank": 13,
+      "id": "DGM-013",
+      "title": "Test storage lifecycle, retention, migration, and clear controls",
+      "scores": [
+        4,
+        5,
+        4,
+        4,
+        4
+      ],
+      "normalizedPriority": 0.84,
+      "wave": 2,
+      "evidenceLabel": "INFERRED",
+      "disposition": "RECOMMENDED"
+    },
+    {
+      "rank": 14,
+      "id": "DGM-014",
+      "title": "Measure regional and regime sensitivity",
+      "scores": [
+        4,
+        3,
+        4,
+        4,
+        5
+      ],
+      "normalizedPriority": 0.8,
+      "wave": 2,
+      "evidenceLabel": "INFERRED",
+      "disposition": "RECOMMENDED"
+    },
+    {
+      "rank": 15,
+      "id": "DGM-015",
+      "title": "Validate multi-agent congestion and information feedback",
+      "scores": [
+        4,
+        3,
+        4,
+        3,
+        5
+      ],
+      "normalizedPriority": 0.76,
+      "wave": 3,
+      "evidenceLabel": "UNVERIFIED HYPOTHESIS",
+      "disposition": "RECOMMENDED"
+    },
+    {
+      "rank": 16,
+      "id": "DGM-016",
+      "title": "Define observability schema without precise-location leakage",
+      "scores": [
+        4,
+        5,
+        3,
+        3,
+        4
+      ],
+      "normalizedPriority": 0.76,
+      "wave": 2,
+      "evidenceLabel": "INFERRED",
+      "disposition": "RECOMMENDED"
+    },
+    {
+      "rank": 17,
+      "id": "DGM-017",
+      "title": "Assess PWA offline and installability product need",
+      "scores": [
+        3,
+        3,
+        3,
+        3,
+        4
+      ],
+      "normalizedPriority": 0.64,
+      "wave": 3,
+      "evidenceLabel": "UNKNOWN",
+      "disposition": "DEFERRED"
+    },
+    {
+      "rank": 18,
+      "id": "DGM-018",
+      "title": "Run Capacitor and Android permission/WebView spike",
+      "scores": [
+        3,
+        4,
+        3,
+        2,
+        4
+      ],
+      "normalizedPriority": 0.64,
+      "wave": 3,
+      "evidenceLabel": "UNKNOWN",
+      "disposition": "DEFERRED"
+    },
+    {
+      "rank": 19,
+      "id": "DGM-019",
+      "title": "Design consent-first OCR and screenshot ingestion",
+      "scores": [
+        2,
+        5,
+        4,
+        2,
+        5
+      ],
+      "normalizedPriority": 0.72,
+      "wave": 4,
+      "evidenceLabel": "UNKNOWN",
+      "disposition": "DEFERRED"
+    },
+    {
+      "rank": 20,
+      "id": "DGM-020",
+      "title": "Evaluate evidence-grounded AI chat only after source controls",
+      "scores": [
+        2,
+        4,
+        3,
+        2,
+        5
+      ],
+      "normalizedPriority": 0.64,
+      "wave": 4,
+      "evidenceLabel": "UNKNOWN",
+      "disposition": "DEFERRED"
+    }
+  ]
+}
