@@ -122,19 +122,19 @@ constraint violation, or a failure mode that presents stale output as current.
 
 `VERIFIED BY EXECUTION` — every inventoried `tests/**/*.test.js` and root
 `tests/*.test.js` module was invoked directly with the repository's existing
-Node runtime in deterministic lexical order. All twenty-five test files exited
+Node runtime in deterministic lexical order. All 25 test files exited
 successfully. The browser smoke harness remains a separate browser/WebGL check;
 this Node result does not verify the deployed UI, remote services, permissions,
 or Mapbox rendering.
 
 ## Final deterministic execution record
 
-- `VERIFIED BY EXECUTION` — all twenty-five exported test runners were invoked;
+- `VERIFIED BY EXECUTION` — all 25 exported test runners were invoked;
   three hundred eighty-eight assertions passed and none failed.
 - `VERIFIED BY EXECUTION` — the geospatial subset contributed sixty passing
   assertions across coordinates, heading, location/routing, map configuration,
   manifest, style restoration, and traffic visibility.
-- `VERIFIED BY EXECUTION` — Node's test command accepted all twenty-five test
+- `VERIFIED BY EXECUTION` — Node's test command accepted all 25 test
   modules without a process failure. This is weaker than explicit runner
   invocation because most files are browser-compatible exported runners rather
   than native Node test registrations.

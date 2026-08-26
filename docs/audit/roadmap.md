@@ -56,7 +56,7 @@ These are planning ranges, not commitments:
 | PWA/Android feasibility spike | 2–4 | browser/device matrix, medium-high |
 | OCR/chat governance and prototype evaluation | 4–8 | model inference, high |
 
-Expected documentation commits for the audit: roughly eight to fourteen.
+Expected documentation commits for the audit: roughly 8 to 14.
 Implementation commits are intentionally not estimated until a named wave is
 approved and decomposed.
 

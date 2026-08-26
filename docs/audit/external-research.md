@@ -1,6 +1,6 @@
 # External Research Dossier
 
-**Retrieval date:** August 24, 2026
+**Retrieval date:** 2026-08-24
 External evidence supports evaluation criteria; it does not prove that DGM
 meets them.
 
@@ -137,7 +137,7 @@ data can verify DGM behavior and calibration.
 
 ## Citation verification record
 
-**Verification date:** August 24, 2026
+**Verification date:** 2026-08-24
 **Method:** `VERIFIED EXTERNALLY` through externally indexed primary-source and
 publisher records. Direct fetches from the sandbox failed because outbound DNS
 was unavailable; no citation is represented as directly fetched from the
