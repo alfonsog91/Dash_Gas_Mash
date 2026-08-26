@@ -11,7 +11,7 @@ classification; it does not mean every runtime path was executed.
 
 | Measure | Count |
 |---|---:|
-| Current tracked files, including audit artifacts | 111 |
+| Tracked files at audit cutoff, including audit artifacts | 111 |
 | Pre-audit target files | 101 |
 | `docs/audit/` artifact files | 10 |
 | Relevant source files | 81 |

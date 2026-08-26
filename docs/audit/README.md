@@ -60,10 +60,10 @@ Severity describes risk level for a finding.
 
 | Value | Meaning |
 |---|---|
-| Critical | Immediate risk requiring urgent remediation |
-| High | Significant risk requiring remediation before the relevant wave |
-| Medium | Moderate risk; address before production |
-| Low | Minor risk; address when convenient |
+| CRITICAL | Immediate risk requiring urgent remediation |
+| HIGH | Significant risk requiring remediation before the relevant wave |
+| MEDIUM | Moderate risk; address before production |
+| LOW | Minor risk; address when convenient |
 
 ### Other structured fields
 

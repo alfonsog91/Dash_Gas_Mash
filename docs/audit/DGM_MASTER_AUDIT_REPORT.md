@@ -206,7 +206,7 @@ No confirmed Critical finding was recorded; this was not a penetration test.
 
 Key failures are **F-SEARCH-001 — VERIFIED BY EXECUTION, High** (unsettled Promise/unhandled rejection), **F-NET-001 — VERIFIED BY EXECUTION, Medium** (malformed successful JSON accepted), **F-NET-002 — VERIFIED IN REPOSITORY, Medium** (abort/retry inconsistency), and repository-verified duplicate-watch, guarded-storage, stale-thumbnail, and style-reload risks.
 
-**UNKNOWN** — reproducible budgets, low-end mobile results, latency, memory, network, frames, and combined-fault behavior. **VERIFIED EXTERNALLY** — good Core Web Vitals thresholds are LCP no more than two point five seconds, INP no more than two hundred milliseconds, and CLS no more than zero point one at the seventy-fifth percentile.
+**UNKNOWN** — reproducible budgets, low-end mobile results, latency, memory, network, frames, and combined-fault behavior. **VERIFIED EXTERNALLY** — good Core Web Vitals thresholds are LCP no more than 2.5 seconds, INP no more than 200 milliseconds, and CLS no more than 0.1 at the 75th percentile.
 
 ## 17. PWA and Offline Review
 
@@ -294,26 +294,26 @@ The audit did not perform penetration testing, deployed-site assessment, legal r
 
 | Rank | ID | Priority | Evidence | Disposition | Wave | Summary |
 |---:|---|---:|---|---|---|---|
-| 1 | DGM-001 | 1.0 | INFERRED | RECOMMENDED | WAVE-1 | Calibration and uncertainty contract |
-| 2 | DGM-002 | 0.96 | INFERRED | RECOMMENDED | WAVE-1 | Location/storage/third-party threat model |
-| 3 | DGM-003 | 0.96 | INFERRED | RECOMMENDED | WAVE-1 | Freshness and degraded-mode contracts |
-| 4 | DGM-004 | 0.92 | VERIFIED IN REPOSITORY | RECOMMENDED | WAVE-0 | Governance/entrypoint traceability |
-| 5 | DGM-005 | 0.92 | UNVERIFIED HYPOTHESIS | RECOMMENDED | WAVE-1 | Cancellation and last-write-wins |
-| 6 | DGM-006 | 0.92 | UNVERIFIED HYPOTHESIS | RECOMMENDED | WAVE-2 | Optimizer/fallback equivalence |
-| 7 | DGM-007 | 0.88 | INFERRED | RECOMMENDED | WAVE-1 | Performance budgets |
-| 8 | DGM-008 | 0.88 | UNVERIFIED HYPOTHESIS | RECOMMENDED | WAVE-1 | Accessible non-map equivalents |
-| 9 | DGM-009 | 0.88 | INFERRED | RECOMMENDED | WAVE-2 | Geospatial/malformed-input matrix |
-| 10 | DGM-010 | 0.88 | INFERRED | RECOMMENDED | WAVE-1 | Token, CSP, CDN strategy |
-| 11 | DGM-011 | 0.84 | UNKNOWN | RECOMMENDED | WAVE-2 | Model provenance/evaluation |
-| 12 | DGM-012 | 0.84 | INFERRED | RECOMMENDED | WAVE-1 | Moving-user safety |
-| 13 | DGM-013 | 0.84 | INFERRED | RECOMMENDED | WAVE-2 | Storage lifecycle |
-| 14 | DGM-014 | 0.80 | INFERRED | RECOMMENDED | WAVE-2 | Regional/regime sensitivity |
-| 15 | DGM-015 | 0.76 | UNVERIFIED HYPOTHESIS | RECOMMENDED | WAVE-3 | Multi-agent feedback |
-| 16 | DGM-016 | 0.76 | INFERRED | RECOMMENDED | WAVE-2 | Privacy-preserving observability |
-| 17 | DGM-017 | 0.64 | UNKNOWN | DEFERRED | WAVE-3 | PWA need |
-| 18 | DGM-018 | 0.64 | UNKNOWN | DEFERRED | WAVE-3 | Capacitor/Android spike |
-| 19 | DGM-019 | 0.72 | UNKNOWN | DEFERRED | WAVE-4 | Consent-first OCR |
-| 20 | DGM-020 | 0.64 | UNKNOWN | DEFERRED | WAVE-4 | Grounded chat |
+| 1 | DGM-001 | 1.0 | INFERRED | RECOMMENDED | 1 | Calibration and uncertainty contract |
+| 2 | DGM-002 | 0.96 | INFERRED | RECOMMENDED | 1 | Location/storage/third-party threat model |
+| 3 | DGM-003 | 0.96 | INFERRED | RECOMMENDED | 1 | Freshness and degraded-mode contracts |
+| 4 | DGM-004 | 0.92 | VERIFIED IN REPOSITORY | RECOMMENDED | 0 | Governance/entrypoint traceability |
+| 5 | DGM-005 | 0.92 | UNVERIFIED HYPOTHESIS | RECOMMENDED | 1 | Cancellation and last-write-wins |
+| 6 | DGM-006 | 0.92 | UNVERIFIED HYPOTHESIS | RECOMMENDED | 2 | Optimizer/fallback equivalence |
+| 7 | DGM-007 | 0.88 | INFERRED | RECOMMENDED | 1 | Performance budgets |
+| 8 | DGM-008 | 0.88 | UNVERIFIED HYPOTHESIS | RECOMMENDED | 1 | Accessible non-map equivalents |
+| 9 | DGM-009 | 0.88 | INFERRED | RECOMMENDED | 2 | Geospatial/malformed-input matrix |
+| 10 | DGM-010 | 0.88 | INFERRED | RECOMMENDED | 1 | Token, CSP, CDN strategy |
+| 11 | DGM-011 | 0.84 | UNKNOWN | RECOMMENDED | 2 | Model provenance/evaluation |
+| 12 | DGM-012 | 0.84 | INFERRED | RECOMMENDED | 1 | Moving-user safety |
+| 13 | DGM-013 | 0.84 | INFERRED | RECOMMENDED | 2 | Storage lifecycle |
+| 14 | DGM-014 | 0.80 | INFERRED | RECOMMENDED | 2 | Regional/regime sensitivity |
+| 15 | DGM-015 | 0.76 | UNVERIFIED HYPOTHESIS | RECOMMENDED | 3 | Multi-agent feedback |
+| 16 | DGM-016 | 0.76 | INFERRED | RECOMMENDED | 2 | Privacy-preserving observability |
+| 17 | DGM-017 | 0.64 | UNKNOWN | DEFERRED | 3 | PWA need |
+| 18 | DGM-018 | 0.64 | UNKNOWN | DEFERRED | 3 | Capacitor/Android spike |
+| 19 | DGM-019 | 0.72 | UNKNOWN | DEFERRED | 4 | Consent-first OCR |
+| 20 | DGM-020 | 0.64 | UNKNOWN | DEFERRED | 4 | Grounded chat |
 
 The declared rank is authoritative even where item 19 has a higher normalized score than some preceding items.
 
