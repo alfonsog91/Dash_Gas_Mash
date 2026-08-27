@@ -63,7 +63,10 @@ function createRoutingRuntime({
   microCorridorMinDistanceMeters,
   microCorridorMaxDistanceMeters,
   getProgrammaticCameraOptions,
+  onNavigationContextChange,
 } = {}) {
+  let navigationWatchGeneration = 0;
+
   function getState() {
     return typeof getRoutingState === "function" ? getRoutingState() : {};
   }
@@ -184,6 +187,7 @@ function createRoutingRuntime({
   }
 
   function setNavigationCameraMode(mode, { auto = false } = {}) {
+    const previousMode = getState().navigationCameraMode;
     patchState({
       navigationCameraMode: mode,
       navigationCameraModeAutoArrival: Boolean(auto && mode === "arrival"),
@@ -191,6 +195,15 @@ function createRoutingRuntime({
 
     if (mode !== "arrival") {
       patchState({ navigationCameraModeAutoArrival: false });
+    }
+
+    if (previousMode !== mode) {
+      onNavigationContextChange?.({
+        type: "mode-change",
+        previousMode,
+        mode,
+        auto: Boolean(auto),
+      });
     }
   }
 
@@ -346,11 +359,8 @@ function createRoutingRuntime({
   }
 
   function resetNavigationCamera() {
-    patchState({
-      navigationCameraMode: "browse",
-      navigationCameraModeAutoArrival: false,
-      lastNavigationCameraSyncAt: 0,
-    });
+    setNavigationCameraMode("browse");
+    patchState({ lastNavigationCameraSyncAt: 0 });
 
     const map = getMap?.();
     if (map) {
@@ -1033,7 +1043,54 @@ function createRoutingRuntime({
     };
   }
 
+  function cancelInFlightRouteRequest({ clearPendingStatus = false } = {}) {
+    const { activeRouteAbort } = getState();
+    if (!activeRouteAbort) {
+      return false;
+    }
+    activeRouteAbort.abort();
+    patchState({ activeRouteAbort: null });
+    if (
+      clearPendingStatus
+      && ["Locating you…", "Calculating route…", "Updating route…"].includes(getState().lastNavigationStatusMessage)
+    ) {
+      setNavigationStatus("", "info");
+    }
+    return true;
+  }
+
+  function getRouteAbortError(controller) {
+    return controller?.signal?.reason?.name === "AbortError"
+      ? controller.signal.reason
+      : new DOMException("Aborted", "AbortError");
+  }
+
+  async function runOwnedRouteRequest(operation) {
+    cancelInFlightRouteRequest();
+    const controller = new AbortController();
+    patchState({ activeRouteAbort: controller });
+
+    try {
+      const result = await operation(controller.signal);
+      if (controller.signal.aborted || getState().activeRouteAbort !== controller) {
+        throw getRouteAbortError(controller);
+      }
+      patchState({ activeRouteAbort: null });
+      return result;
+    } catch (error) {
+      const wasCancelled = controller.signal.aborted || getState().activeRouteAbort !== controller;
+      if (getState().activeRouteAbort === controller) {
+        patchState({ activeRouteAbort: null });
+      }
+      if (wasCancelled) {
+        throw getRouteAbortError(controller);
+      }
+      throw error;
+    }
+  }
+
   function stopNavigationWatch() {
+    navigationWatchGeneration += 1;
     const { activeNavigationWatchId } = getState();
     if (activeNavigationWatchId === null) return;
     if (navigator.geolocation?.clearWatch) {
@@ -1045,13 +1102,14 @@ function createRoutingRuntime({
   async function refreshActiveRouteFromOrigin(origin, options = {}) {
     const {
       activeRoute,
+      activeRouteAbort,
       lastRouteOriginForRefresh,
       lastRouteRefreshAt,
-      activeRouteAbort,
       navigationCameraMode,
     } = getState();
 
     if (!activeRoute?.destination) return null;
+  if (!options.force && activeRouteAbort) return activeRoute;
 
     const now = Date.now();
     const previousRoute = activeRoute;
@@ -1072,19 +1130,11 @@ function createRoutingRuntime({
       if (now - lastRouteRefreshAt < navRerouteMinIntervalMs) return activeRoute;
     }
 
-    patchState({
-      lastRouteOriginForRefresh: origin,
-      lastRouteRefreshAt: now,
-    });
     setNavigationStatus("Updating route…", "info");
 
-    if (activeRouteAbort) {
-      activeRouteAbort.abort();
-    }
-
-    const nextActiveRouteAbort = new AbortController();
-    patchState({ activeRouteAbort: nextActiveRouteAbort });
-    const routeResult = await fetchDrivingRoute(origin, activeRoute.destination, { signal: nextActiveRouteAbort.signal });
+    const routeResult = await runOwnedRouteRequest((signal) => (
+      fetchDrivingRoute(origin, activeRoute.destination, { signal })
+    ));
 
     const nextRoute = {
       ...routeResult,
@@ -1097,7 +1147,11 @@ function createRoutingRuntime({
     nextRoute.destinationState = nextSnapshot.destinationState;
     nextRoute.rerouteDelta = buildNavigationRerouteDelta(previousRoute, nextRoute, previousSnapshot, nextSnapshot);
 
-    patchState({ activeRoute: nextRoute });
+    patchState({
+      activeRoute: nextRoute,
+      lastRouteOriginForRefresh: origin,
+      lastRouteRefreshAt: now,
+    });
 
     setSourceData(routeSourceId, featureCollection([{
       type: "Feature",
@@ -1127,8 +1181,10 @@ function createRoutingRuntime({
     const { activeNavigationWatchId, activeRoute } = getState();
     if (!navigator.geolocation || activeNavigationWatchId !== null || !activeRoute?.destination) return;
 
+    const watchGeneration = ++navigationWatchGeneration;
     const watchId = navigator.geolocation.watchPosition(
       (position) => {
+        if (watchGeneration !== navigationWatchGeneration) return;
         const currentLocation = getCurrentLocation?.();
         const previousLocation = currentLocation ? { ...currentLocation } : null;
         const origin = setCurrentLocationState(
@@ -1145,6 +1201,7 @@ function createRoutingRuntime({
         });
       },
       (error) => {
+        if (watchGeneration !== navigationWatchGeneration) return;
         setNavigationStatus(describeGeolocationError(error), "error");
       },
       {
@@ -1157,7 +1214,10 @@ function createRoutingRuntime({
     patchState({ activeNavigationWatchId: watchId });
   }
 
-  async function ensureNavigationOrigin() {
+  async function ensureNavigationOrigin({ signal } = {}) {
+    if (signal?.aborted) {
+      throw getRouteAbortError({ signal });
+    }
     const currentLocation = getCurrentLocation?.();
     if (currentLocation) return currentLocation;
     if (!navigator.geolocation) {
@@ -1165,6 +1225,9 @@ function createRoutingRuntime({
     }
 
     const position = await getCurrentPosition();
+    if (signal?.aborted) {
+      throw getRouteAbortError({ signal });
+    }
     return setCurrentLocationState(
       { lat: position.coords.latitude, lng: position.coords.longitude },
       position.coords.accuracy,
@@ -1184,22 +1247,30 @@ function createRoutingRuntime({
       throw new Error("Destination coordinates are invalid.");
     }
 
+    const previousRoute = getState().activeRoute;
+    onNavigationContextChange?.({ type: "navigation-start" });
+    stopNavigationWatch();
     closePlaceSheet?.();
     closeActivePopup?.();
     setNavigationCameraMode("driver");
     setShouldOpenRoutePopupOnNextRender?.(true);
     setNavigationStatus(getCurrentLocation?.() ? "Calculating route…" : "Locating you…", "info");
 
-    const origin = await ensureNavigationOrigin();
-    const { activeRouteAbort } = getState();
-
-    if (activeRouteAbort) {
-      activeRouteAbort.abort();
+    let origin;
+    let routeResult;
+    try {
+      ({ origin, routeResult } = await runOwnedRouteRequest(async (signal) => {
+        const ownedOrigin = await ensureNavigationOrigin({ signal });
+        const ownedRouteResult = await fetchDrivingRoute(ownedOrigin, resolvedDestination, { signal });
+        return { origin: ownedOrigin, routeResult: ownedRouteResult };
+      }));
+    } catch (error) {
+      const currentState = getState();
+      if (previousRoute && currentState.activeRoute === previousRoute && !currentState.activeRouteAbort) {
+        ensureNavigationWatch();
+      }
+      throw error;
     }
-
-    const nextActiveRouteAbort = new AbortController();
-    patchState({ activeRouteAbort: nextActiveRouteAbort });
-    const routeResult = await fetchDrivingRoute(origin, resolvedDestination, { signal: nextActiveRouteAbort.signal });
 
     const nextRoute = {
       ...routeResult,
@@ -1238,12 +1309,8 @@ function createRoutingRuntime({
   }
 
   function clearInAppNavigation() {
-    const { activeRouteAbort } = getState();
-
-    if (activeRouteAbort) {
-      activeRouteAbort.abort();
-      patchState({ activeRouteAbort: null });
-    }
+    onNavigationContextChange?.({ type: "navigation-clear" });
+    cancelInFlightRouteRequest();
 
     stopNavigationWatch();
     stopNavigationSpeech();
@@ -1269,6 +1336,7 @@ function createRoutingRuntime({
     buildRouteApproachProfile,
     buildRouteBounds,
     buildRouteStepInstruction,
+    cancelInFlightRouteRequest,
     clearInAppNavigation,
     clearRouteOverlay,
     ensureNavigationOrigin,
