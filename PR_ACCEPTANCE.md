@@ -27,9 +27,9 @@ Stack base: `agent/task-1787807004-wo4` (WO-4 draft PR #24)
 - [x] The intentional break was restored and has no test-file diff.
 - [x] Restored exact workflow step observed 233 PASS lines, 0 FAIL lines, and
   exit 0.
-- [ ] Remote draft-PR check must complete successfully after this commit is
-  pushed. A remote red run is intentionally not created because the required
-  break may never appear in a commit or PR diff.
+- [x] Draft PR #25 ran `Exported Node runners` successfully on GitHub Actions.
+  A remote red run is intentionally not created because the required break may
+  never appear in a commit or PR diff.
 
 ## Risk and rollback
 

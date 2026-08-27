@@ -49,7 +49,9 @@ output, and the exact workflow body returned to the 233 PASS baseline with exit
 
 ## Remote limitation
 
-The draft PR can demonstrate the green check after push. Producing an actual
-remote red check would require committing or pushing the intentional break,
-which the execution rules prohibit. The same command, output artifact, and exit
-propagation were exercised locally instead.
+Draft PR #25 ran `Exported Node runners` successfully in GitHub Actions run
+`33047259964`, job `98434068497`.
+
+Producing an actual remote red check would require committing or pushing the
+intentional break, which the execution rules prohibit. The same command, output
+artifact, and exit propagation were exercised locally instead.
