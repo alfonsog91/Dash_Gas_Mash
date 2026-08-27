@@ -1,0 +1,40 @@
+name: Tests
+
+on:
+  pull_request:
+    branches:
+      - main-agent
+      - "agent/**"
+
+permissions:
+  contents: read
+
+jobs:
+  exported-node-runners:
+    name: Exported Node runners
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Run test aggregator
+        shell: pwsh
+        run: |
+          $output = node eng/run_all_tests.mjs 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath test-results.txt
+          exit $exitCode
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ github.run_id }}
+          path: test-results.txt
+          if-no-files-found: error
+          retention-days: 14
