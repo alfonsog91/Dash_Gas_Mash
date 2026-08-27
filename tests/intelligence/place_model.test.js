@@ -184,6 +184,11 @@ export function runPlaceModelTests() {
     }, "named days and HH:MM times normalize to the canonical period form");
   });
 
+  runTest("normalizeHours rejects numeric HHMM values with invalid minutes", () => {
+    const hours = normalizeHours({ hours: [{ day: "Tue", open: 1260, close: 1730 }] });
+    assertEqual(hours, null, "numeric minute values must stay within 00 through 59");
+  });
+
   const result = { passed, failed };
   log.write(`Results: ${passed} passed, ${failed} failed`);
   if (typeof document !== "undefined") {

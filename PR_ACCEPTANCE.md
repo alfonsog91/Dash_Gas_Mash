@@ -1,31 +1,33 @@
-# Work Order 1 Acceptance
+# Work Order 2 Acceptance
 
-Branch: `agent/task-1787807004`
+Branch: `agent/task-1787807004-wo2`
+
+Stack base: `agent/task-1787807004` (WO-1 draft PR #21)
 
 ## Scope
 
-- Record the empirically observed Node execution mode.
-- Discover and await all exported `run*Tests` functions under
-  `tests/**/*.test.js`.
-- Count captured `PASS` and `FAIL` prefixed output lines and enforce the recorded
-  clean baseline.
-- Pin the Node version used for local and CI execution.
+The authoritative `origin/main` audit backlog and ledger identify DGM-009 as
+the malformed geospatial input matrix. This Node-only slice fixes:
+
+- `F-GEO-002`: boolean and blank coordinates were coerced to zero.
+- `F-TIME-002`: numeric HHMM values accepted minutes above 59.
+- `F-NET-001`: successful malformed Overpass JSON bypassed validation.
 
 ## Acceptance evidence
 
-- [x] Clean probe discovered 25 exported runners.
-- [x] Node `v24.13.0` ran the ESM sources through dynamic `import()` without
-  module flags or `NODE_OPTIONS`.
-- [x] Clean aggregator run observed 215 PASS lines, 0 FAIL lines, and exit 0.
-- [x] One temporary assertion failure produced 214 PASS lines, 1 FAIL line,
-  and exit 1.
-- [x] The temporary assertion change was restored before commit.
-- [x] Restored aggregator run observed 215 PASS lines, 0 FAIL lines, and exit
-  0.
-- [x] No existing test file is modified by this work order.
+- [x] Each defect had a failing characterization before its fix.
+- [x] Characterizations use exported Node runners and no browser or network.
+- [x] Coordinate normalization accepts finite numbers and numeric strings while
+  rejecting booleans, blanks, arrays, and objects.
+- [x] Numeric HHMM normalization rejects invalid hours and minutes.
+- [x] Overpass requires an `elements` array before extraction or caching.
+- [x] Aggregator baseline increased visibly from 215 to 218 PASS lines.
+- [x] Clean aggregator run observed 218 PASS lines, 0 FAIL lines, and exit 0.
+- [x] A temporary `F-GEO-002` reintroduction produced 217 PASS lines, 1 FAIL
+  line, and exit 1; the probe was restored before commit.
 
 ## Risk and rollback
 
-The aggregator changes no runtime application path. Rollback is the removal of
-the WO-1 files (`.nvmrc`, `eng/`, this acceptance record, and its validation
-artifact).
+Risk is limited to stricter rejection of malformed provider values. Existing
+valid numeric strings, coordinates, HHMM values, and Overpass responses retain
+their prior shape. Rollback is a revert of the focused WO-2 commit.

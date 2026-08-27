@@ -198,7 +198,10 @@ function normalizeTime(value) {
     if (minutesOfDay < 0 || minutesOfDay > 2359) {
       return null;
     }
-    return String(minutesOfDay).padStart(4, "0");
+    const padded = String(minutesOfDay).padStart(4, "0");
+    const hours = Number(padded.slice(0, 2));
+    const minutes = Number(padded.slice(2));
+    return hours <= 23 && minutes <= 59 ? padded : null;
   }
 
   if (typeof value !== "string") {
