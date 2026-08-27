@@ -158,6 +158,9 @@ function createMapInteractionRuntime({
         lng: Number(routeButton.dataset.routeLng),
         title: routeButton.dataset.routeTitle || "Destination",
       }).catch((error) => {
+        if (error?.name === "AbortError") {
+          return;
+        }
         console.error(error);
         setNavigationStatus?.(error?.message ?? String(error), "error");
         openPopupAtLngLat(
@@ -202,6 +205,28 @@ function createMapInteractionRuntime({
     }
   }
 
+  function cancelInFlightPlaceRouteSummaries() {
+    const cancelledActive = Boolean(activePlaceSheetRouteAbort);
+    const cancelledCompare = Boolean(comparePlaceSheetRouteAbort);
+    abortActivePlaceSheetRouteSummary();
+    abortComparePlaceSheetRouteSummary();
+
+    let stateChanged = false;
+    if (cancelledActive && activePlaceSheetState?.routeStatus === "loading") {
+      activePlaceSheetState = { ...activePlaceSheetState, routeStatus: "cancelled", routeError: "" };
+      stateChanged = true;
+    }
+    if (cancelledCompare && placeSheetCompareBaseline?.routeStatus === "loading") {
+      placeSheetCompareBaseline = { ...placeSheetCompareBaseline, routeStatus: "cancelled", routeError: "" };
+      stateChanged = true;
+    }
+    if (stateChanged) {
+      renderActivePlaceSheet();
+    }
+
+    return { active: cancelledActive, compare: cancelledCompare };
+  }
+
   function renderActivePlaceSheet() {
     if (!placeSheetBody || !activePlaceSheetState) {
       return;
@@ -242,9 +267,10 @@ function createMapInteractionRuntime({
 
     fetchDrivingRoute?.(getLastCurrentLocation(), destination, { signal: controller.signal })
       .then((route) => {
-        if (activePlaceSheetRouteAbort === controller) {
-          activePlaceSheetRouteAbort = null;
+        if (activePlaceSheetRouteAbort !== controller) {
+          return;
         }
+        activePlaceSheetRouteAbort = null;
 
         updatePlaceSheetRouteSummary(stateKey, {
           routeStatus: "ready",
@@ -256,10 +282,10 @@ function createMapInteractionRuntime({
         });
       })
       .catch((error) => {
-        if (activePlaceSheetRouteAbort === controller) {
-          activePlaceSheetRouteAbort = null;
+        if (activePlaceSheetRouteAbort !== controller) {
+          return;
         }
-
+        activePlaceSheetRouteAbort = null;
         if (error?.name === "AbortError") {
           return;
         }
@@ -286,9 +312,10 @@ function createMapInteractionRuntime({
 
     fetchDrivingRoute?.(getLastCurrentLocation(), destination, { signal: controller.signal })
       .then((route) => {
-        if (comparePlaceSheetRouteAbort === controller) {
-          comparePlaceSheetRouteAbort = null;
+        if (comparePlaceSheetRouteAbort !== controller) {
+          return;
         }
+        comparePlaceSheetRouteAbort = null;
 
         updatePlaceSheetRouteSummary(stateKey, {
           routeStatus: "ready",
@@ -300,10 +327,10 @@ function createMapInteractionRuntime({
         });
       })
       .catch((error) => {
-        if (comparePlaceSheetRouteAbort === controller) {
-          comparePlaceSheetRouteAbort = null;
+        if (comparePlaceSheetRouteAbort !== controller) {
+          return;
         }
-
+        comparePlaceSheetRouteAbort = null;
         if (error?.name === "AbortError") {
           return;
         }
@@ -359,6 +386,9 @@ function createMapInteractionRuntime({
           title: routeButton.dataset.routeTitle || "Destination",
           placeState: activePlaceSheetState ? { ...activePlaceSheetState } : null,
         }).catch((error) => {
+          if (error?.name === "AbortError") {
+            return;
+          }
           console.error(error);
           setNavigationStatus?.(error?.message ?? String(error), "error");
         });
@@ -442,7 +472,7 @@ function createMapInteractionRuntime({
   }
 
   function closePlaceSheet() {
-    abortActivePlaceSheetRouteSummary();
+    cancelInFlightPlaceRouteSummaries();
     activePlaceSheetState = null;
     if (!placeSheetRoot || !placeSheetBody) {
       return;
@@ -708,6 +738,7 @@ function createMapInteractionRuntime({
 
   return {
     bindLayerInteractionEvents,
+    cancelInFlightPlaceRouteSummaries,
     closeActivePopup,
     closePanelIfOpen,
     closePlaceSheet,

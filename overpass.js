@@ -40,19 +40,28 @@ function bboxCacheKey(bbox) {
   return `${r(bbox.getSouth())},${r(bbox.getWest())},${r(bbox.getNorth())},${r(bbox.getEast())}`;
 }
 
+function getAbortError(signal) {
+  return signal?.reason instanceof Error
+    ? signal.reason
+    : new DOMException("Aborted", "AbortError");
+}
+
 function sleep(ms, signal) {
   return new Promise((resolve, reject) => {
-    const t = setTimeout(resolve, ms);
-    if (signal) {
-      signal.addEventListener(
-        "abort",
-        () => {
-          clearTimeout(t);
-          reject(new DOMException("Aborted", "AbortError"));
-        },
-        { once: true }
-      );
+    if (signal?.aborted) {
+      reject(getAbortError(signal));
+      return;
     }
+
+    const onAbort = () => {
+      clearTimeout(timeoutId);
+      reject(getAbortError(signal));
+    };
+    const timeoutId = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -67,6 +76,9 @@ async function overpassQuery(query, signal) {
   // Try each endpoint, with up to 2 attempts (backoff) per endpoint.
   for (const url of OVERPASS_URLS) {
     for (let attempt = 0; attempt < 2; attempt++) {
+      if (signal?.aborted) {
+        throw getAbortError(signal);
+      }
       try {
         const res = await fetch(url, {
           method: "POST",
@@ -86,6 +98,10 @@ async function overpassQuery(query, signal) {
                 `Overpass ${new URL(url).host} returned invalid JSON: ${error?.message ?? String(error)}`
               );
               break;
+            }
+
+            if (signal?.aborted) {
+              throw getAbortError(signal);
             }
 
             if (!json || !Array.isArray(json.elements)) {
@@ -111,6 +127,9 @@ async function overpassQuery(query, signal) {
         // Exponential-ish backoff: 500ms then 1500ms.
         await sleep(attempt === 0 ? 500 : 1500, signal);
       } catch (e) {
+        if (e?.name === "AbortError" || signal?.aborted) {
+          throw e?.name === "AbortError" ? e : getAbortError(signal);
+        }
         // Network/CORS errors are retriable on the next endpoint.
         errors.push(`Overpass ${new URL(url).host} failed: ${e?.message ?? String(e)}`);
         await sleep(attempt === 0 ? 300 : 900, signal);
@@ -168,6 +187,7 @@ export async function fetchFoodPlaces(bbox, signal) {
   `;
 
   const json = await overpassQuery(query, signal);
+  if (signal?.aborted) throw getAbortError(signal);
   const result = extractPointElements(json);
   _overpassCache.food = { key: ck, data: result };
   return result;
@@ -194,6 +214,7 @@ export async function fetchParkingCandidates(bbox, signal) {
   `;
 
   const json = await overpassQuery(query, signal);
+  if (signal?.aborted) throw getAbortError(signal);
   const result = extractPointElements(json);
   _overpassCache.parking = { key: ck, data: result };
   return result;
@@ -221,6 +242,7 @@ export async function fetchResidentialAnchors(bbox, signal) {
   `;
 
   const json = await overpassQuery(query, signal);
+  if (signal?.aborted) throw getAbortError(signal);
   const result = extractPointElements(json);
   _overpassCache.residential = { key: ck, data: result };
   return result;

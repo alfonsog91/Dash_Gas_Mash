@@ -1,33 +1,56 @@
-# Work Order 2 Acceptance
+# Work Order 3 Acceptance
 
-Branch: `agent/task-1787807004-wo2`
+Branch: `agent/task-1787807004-wo3`
 
-Stack base: `agent/task-1787807004` (WO-1 draft PR #21)
+Stack base: `agent/task-1787807004-wo2` (WO-2 draft PR #22)
 
 ## Scope
 
-The authoritative `origin/main` audit backlog and ledger identify DGM-009 as
-the malformed geospatial input matrix. This Node-only slice fixes:
-
-- `F-GEO-002`: boolean and blank coordinates were coerced to zero.
-- `F-TIME-002`: numeric HHMM values accepted minutes above 59.
-- `F-NET-001`: successful malformed Overpass JSON bypassed validation.
+- Cancel fetch owners when navigation or map appearance context changes.
+- Cancel map-data fetches when the map moves.
+- Reject late map-data and route results by generation or request token.
+- Preserve last known-good map data while replacement work is pending or stale.
+- Document provider ownership and lifecycle contracts.
 
 ## Acceptance evidence
 
-- [x] Each defect had a failing characterization before its fix.
-- [x] Characterizations use exported Node runners and no browser or network.
-- [x] Coordinate normalization accepts finite numbers and numeric strings while
-  rejecting booleans, blanks, arrays, and objects.
-- [x] Numeric HHMM normalization rejects invalid hours and minutes.
-- [x] Overpass requires an `elements` array before extraction or caching.
-- [x] Aggregator baseline increased visibly from 215 to 218 PASS lines.
-- [x] Clean aggregator run observed 218 PASS lines, 0 FAIL lines, and exit 0.
-- [x] A temporary `F-GEO-002` reintroduction produced 217 PASS lines, 1 FAIL
-  line, and exit 1; the probe was restored before commit.
+- [x] A late Overpass response after map movement is discarded by generation.
+- [x] The tested stale response cannot replace state, parameters, statistics, or
+  map-source features.
+- [x] Overpass abort is terminal and does not retry fallback endpoints.
+- [x] Navigation mode changes notify the lifecycle owner only on transitions.
+- [x] Route cancellation aborts and releases its controller.
+- [x] A late route response cannot apply after its request token is cancelled.
+- [x] A late geolocation result cannot resurrect a superseded navigation start.
+- [x] Superseded geolocation cannot overwrite newer location state.
+- [x] Cancelled generic route failures normalize to `AbortError`.
+- [x] Cancelled Overpass JSON cannot replace a newer cache entry.
+- [x] A provider failure aborts pending siblings in the shared data load.
+- [x] Map-data invalidation begins on `movestart`, before stale data can apply
+  during an active camera move.
+- [x] Results are rejected while `map.isMoving()` and generation advances again
+  at `moveend`, covering loads started mid-motion.
+- [x] Cancelled place-sheet route summaries leave loading state and reject late
+  completions.
+- [x] Cancelled reroutes preserve the last successful throttle markers and clear
+  transient status.
+- [x] Replacement navigation stops the old location watch and queued callbacks
+  are rejected by watch generation.
+- [x] A failed replacement restores a fresh watch for the retained prior route.
+- [x] A slow non-forced reroute is not replaced by each location update.
+- [x] Search-started navigation ignores expected `AbortError` cancellation.
+- [x] Submitted address search shares the abort and sequence owner used by
+  suggestions.
+- [x] Submitted search clears pending autocomplete debounce before fetching.
+- [x] Data, search, route, and place-summary fetch owners cancel on navigation
+  or map appearance mode changes.
+- [x] Runtime syntax checks pass.
+- [x] Aggregator baseline increased visibly from 218 to 233 PASS lines.
+- [x] Clean aggregator run observed 233 PASS lines, 0 FAIL lines, and exit 0.
 
 ## Risk and rollback
 
-Risk is limited to stricter rejection of malformed provider values. Existing
-valid numeric strings, coordinates, HHMM values, and Overpass responses retain
-their prior shape. Rollback is a revert of the focused WO-2 commit.
+Risk is cancellation timing around rapid map and navigation transitions. The
+generation/token checks are independent of provider abort compliance. Rollback
+is a revert of the focused WO-3 commit, restoring the prior controller-only
+behavior.

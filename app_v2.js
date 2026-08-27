@@ -1973,7 +1973,11 @@ function syncMapModeControls() {
 }
 
 function setMapMode(nextMode, { persist = true } = {}) {
-  currentBaseStyle = normalizeMapMode(nextMode);
+  const normalizedMode = normalizeMapMode(nextMode);
+  if (normalizedMode !== currentBaseStyle) {
+    cancelFetchesForContextChange("map-mode-change");
+  }
+  currentBaseStyle = normalizedMode;
   if (persist) {
     writeStoredMapMode(currentBaseStyle);
   }
@@ -1981,7 +1985,11 @@ function setMapMode(nextMode, { persist = true } = {}) {
 }
 
 function setStandardMapTheme(nextTheme, { persist = true } = {}) {
-  currentStandardMapTheme = normalizeStandardMapTheme(nextTheme);
+  const normalizedTheme = normalizeStandardMapTheme(nextTheme);
+  if (normalizedTheme !== currentStandardMapTheme) {
+    cancelFetchesForContextChange("map-theme-change");
+  }
+  currentStandardMapTheme = normalizedTheme;
   if (persist) {
     writeStoredStandardMapTheme(currentStandardMapTheme);
   }
@@ -3381,6 +3389,7 @@ function setSearchOverlayOpen(isOpen, { focusInput = false, restoreFocus = false
       activeSearchAbort.abort();
       activeSearchAbort = null;
     }
+    searchSequence += 1;
     clearSearchResults();
     if (document.activeElement === elSearchInput) {
       elSearchInput.blur();
@@ -4303,23 +4312,34 @@ async function fetchSearchMatches(query, { limit = 5, signal } = {}) {
 async function updateSearchSuggestions(query) {
   const trimmed = String(query || "").trim();
   if (trimmed.length < 3) {
-    if (activeSearchAbort) activeSearchAbort.abort();
+    if (activeSearchAbort) {
+      activeSearchAbort.abort();
+      activeSearchAbort = null;
+    }
+    searchSequence += 1;
     clearSearchResults();
     return;
   }
 
   if (activeSearchAbort) activeSearchAbort.abort();
-  activeSearchAbort = new AbortController();
+  const controller = new AbortController();
+  activeSearchAbort = controller;
   const requestId = ++searchSequence;
 
   try {
-    const matches = await fetchSearchMatches(trimmed, { limit: 5, signal: activeSearchAbort.signal });
-    if (requestId !== searchSequence) return;
+    const matches = await fetchSearchMatches(trimmed, { limit: 5, signal: controller.signal });
+    if (controller.signal.aborted || requestId !== searchSequence) return;
     renderSearchResults(matches);
   } catch (error) {
     if (error?.name === "AbortError") return;
     console.error(error);
-    clearSearchResults();
+    if (requestId === searchSequence) {
+      clearSearchResults();
+    }
+  } finally {
+    if (activeSearchAbort === controller) {
+      activeSearchAbort = null;
+    }
   }
 }
 
@@ -4328,6 +4348,7 @@ function scheduleSearchSuggestions(query) {
     clearTimeout(searchDebounceTimer);
   }
   searchDebounceTimer = setTimeout(() => {
+    searchDebounceTimer = null;
     updateSearchSuggestions(query).catch((error) => console.error(error));
   }, 180);
 }
@@ -4370,6 +4391,7 @@ function focusSearchMatch(match) {
 
   if (lastCurrentLocation) {
     startInAppNavigation({ lat, lng, title: match.title }).catch((error) => {
+      if (error?.name === "AbortError") return;
       console.error(error);
       setNavigationStatus(error?.message ?? String(error), "error");
     });
@@ -4379,15 +4401,34 @@ function focusSearchMatch(match) {
 async function searchAddress(query) {
   const trimmed = String(query || "").trim();
   if (!trimmed) return;
-  const [match] = await fetchSearchMatches(trimmed, { limit: 1 });
-  if (!match) {
-    throw new Error("No matching address found.");
+
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = null;
   }
-  clearSearchResults();
-  if (elSearchInput) {
-    elSearchInput.value = match.label || match.title;
+  if (activeSearchAbort) activeSearchAbort.abort();
+  const controller = new AbortController();
+  const requestId = ++searchSequence;
+  activeSearchAbort = controller;
+
+  try {
+    const [match] = await fetchSearchMatches(trimmed, { limit: 1, signal: controller.signal });
+    if (controller.signal.aborted || requestId !== searchSequence) {
+      throw controller.signal.reason ?? new DOMException("Aborted", "AbortError");
+    }
+    if (!match) {
+      throw new Error("No matching address found.");
+    }
+    clearSearchResults();
+    if (elSearchInput) {
+      elSearchInput.value = match.label || match.title;
+    }
+    focusSearchMatch(match);
+  } finally {
+    if (activeSearchAbort === controller) {
+      activeSearchAbort = null;
+    }
   }
-  focusSearchMatch(match);
 }
 
 function selectRenderedSearchResult(index) {
@@ -5073,6 +5114,7 @@ routingRuntime = createRoutingRuntime({
   microCorridorMinDistanceMeters: MICRO_CORRIDOR_MIN_DISTANCE_METERS,
   microCorridorMaxDistanceMeters: MICRO_CORRIDOR_MAX_DISTANCE_METERS,
   getProgrammaticCameraOptions,
+  onNavigationContextChange: ({ type }) => cancelFetchesForContextChange(type),
 });
 
 function updateCensusUi() {
@@ -5118,6 +5160,21 @@ elShowParking.addEventListener("change", () => {
 
 function checkDataFreshness() {
   return dataScoringRuntime.checkDataFreshness();
+}
+
+function invalidatePendingDataLoad(reason) {
+  return dataScoringRuntime?.invalidatePendingLoad(reason) ?? null;
+}
+
+function cancelFetchesForContextChange(reason) {
+  invalidatePendingDataLoad(reason);
+  if (activeSearchAbort) {
+    activeSearchAbort.abort();
+    activeSearchAbort = null;
+    searchSequence += 1;
+  }
+  routingRuntime?.cancelInFlightRouteRequest({ clearPendingStatus: true });
+  mapInteractionRuntime?.cancelInFlightPlaceRouteSummaries();
 }
 
 function syncPanelState(isOpen) {
@@ -5442,6 +5499,7 @@ function getPhaseGPlaceCardController() {
           return;
         }
         startInAppNavigation({ lat: place.lat, lng: place.lon, title: place.name }).catch((error) => {
+          if (error?.name === "AbortError") return;
           console.error(error);
           setNavigationStatus(error?.message ?? String(error), "error");
         });
@@ -6518,6 +6576,7 @@ function describeSupportDepthCard(score) {
 
 function formatRouteSummaryValue(routeSummary, routeStatus) {
   if (routeStatus === "loading") return "Calculating";
+  if (routeStatus === "cancelled") return "Refresh needed";
   if (routeStatus === "unavailable") return "Need location";
   if (routeStatus === "error") return "Unavailable";
   if (!routeSummary) return "Unavailable";
@@ -6526,6 +6585,7 @@ function formatRouteSummaryValue(routeSummary, routeStatus) {
 
 function formatRouteSummaryDetail(routeSummary, routeStatus, routeError = "") {
   if (routeStatus === "loading") return "Fetching drive time from your current location.";
+  if (routeStatus === "cancelled") return "Map or navigation context changed. Reopen this place to refresh drive time.";
   if (routeStatus === "unavailable") return "Turn on location to estimate drive time.";
   if (routeStatus === "error") return routeError || "No drivable route was returned for this place.";
   if (!routeSummary) return "Route summary unavailable.";
@@ -7122,7 +7182,9 @@ function escapeHtml(s) {
 
 async function loadForView() {
   const result = await dataScoringRuntime.loadForView();
-  scheduleOpportunityFieldRecompute();
+  if (result?.status === "applied") {
+    scheduleOpportunityFieldRecompute();
+  }
   return result;
 }
 
@@ -7182,6 +7244,7 @@ if (elSearchForm && elSearchInput && elSearchButton) {
       await searchAddress(query);
       closeSearchOverlay();
     } catch (error) {
+      if (error?.name === "AbortError") return;
       console.error(error);
       alert(error?.message ?? String(error));
     } finally {
@@ -7231,7 +7294,11 @@ if (elSearchResults) {
 
 document.addEventListener("input", handleStatPingWeightInput);
 
-map.on("moveend", checkDataFreshness);
+map.on("movestart", () => invalidatePendingDataLoad("map-move"));
+map.on("moveend", () => {
+  invalidatePendingDataLoad("map-move-end");
+  checkDataFreshness();
+});
 map.on("moveend", () => {
   refreshPhaseGVegetationSamples();
   syncPhaseGVegetationVisibility();

@@ -77,6 +77,37 @@ function createDataScoringRuntime({
   parkingLayerId,
 } = {}) {
   let activeAbort = null;
+  let loadGeneration = 0;
+
+  function setLoadButtonIdle() {
+    if (!loadButton) {
+      return;
+    }
+    loadButton.disabled = false;
+    loadButton.textContent = "Load / Refresh for current view";
+  }
+
+  function getLoadGeneration() {
+    return loadGeneration;
+  }
+
+  function invalidatePendingLoad() {
+    loadGeneration += 1;
+    if (activeAbort) {
+      activeAbort.abort();
+      activeAbort = null;
+      setLoadButtonIdle();
+    }
+    return loadGeneration;
+  }
+
+  function discardedLoadResult(generation) {
+    return {
+      status: "discarded",
+      generation,
+      currentGeneration: loadGeneration,
+    };
+  }
 
   function getState() {
     return typeof getDataState === "function" ? getDataState() : {};
@@ -114,6 +145,11 @@ function createDataScoringRuntime({
 
   function isFiniteLngLat(point) {
     return Boolean(normalizeCoord(point));
+  }
+
+  function isMapMoving() {
+    const map = getMap?.();
+    return typeof map?.isMoving === "function" && map.isMoving();
   }
 
   function clampQueryBounds(originalBounds) {
@@ -431,14 +467,15 @@ function createDataScoringRuntime({
       activeAbort.abort();
     }
 
-    activeAbort = new AbortController();
+    const generation = ++loadGeneration;
+    const controller = new AbortController();
+    const { signal } = controller;
+    activeAbort = controller;
 
     loadButton.disabled = true;
     loadButton.textContent = "Loading OSM data…";
 
     try {
-      clearLayers();
-
       const hour = Number(hourElement.value);
       const tauMeters = Number(tauElement.value);
       const gridStepMeters = Number(gridElement.value);
@@ -453,6 +490,34 @@ function createDataScoringRuntime({
       const mlBeta = Number(mlBetaElement.value);
       const kSpots = Number(kSpotsElement.value);
 
+      const bbox = mapBoundsToAdapter(getMap?.().getBounds());
+      const queryBounds = clampQueryBounds(bbox);
+      const weatherPoint = lngLatToObject(getLastCurrentLocation?.() || getMap?.().getCenter());
+      const canFetchLiveWeather = useLiveWeather && isFiniteLngLat(weatherPoint);
+      const censusPromise = useCensusData
+        ? fetchCensusResidentialAnchors(queryBounds, signal)
+          .then((result) => ({ ok: true, ...result }))
+          .catch((error) => ({ ok: false, error }))
+        : Promise.resolve({ ok: false, skipped: true, anchors: [] });
+      const weatherPromise = canFetchLiveWeather
+        ? fetchCurrentWeatherSignal(weatherPoint, signal)
+          .then((weatherSignal) => ({ ok: true, weatherSignal }))
+          .catch((error) => ({ ok: false, error }))
+        : Promise.resolve({ ok: false, skipped: true, reason: useLiveWeather ? "invalid-weather-point" : "disabled" });
+
+      const [allRestaurants, parking, residentialAnchors, censusResult, weatherResult] = await Promise.all([
+        fetchFoodPlaces(queryBounds, signal),
+        fetchParkingCandidates(queryBounds, signal),
+        fetchResidentialAnchors(queryBounds, signal),
+        censusPromise,
+        weatherPromise,
+      ]);
+
+      if (signal.aborted || generation !== loadGeneration || isMapMoving()) {
+        return discardedLoadResult(generation);
+      }
+
+      clearLayers();
       patchState({
         lastParams: {
           hour,
@@ -470,29 +535,6 @@ function createDataScoringRuntime({
           kSpots,
         },
       });
-
-      const bbox = mapBoundsToAdapter(getMap?.().getBounds());
-      const queryBounds = clampQueryBounds(bbox);
-      const weatherPoint = lngLatToObject(getLastCurrentLocation?.() || getMap?.().getCenter());
-      const canFetchLiveWeather = useLiveWeather && isFiniteLngLat(weatherPoint);
-      const censusPromise = useCensusData
-        ? fetchCensusResidentialAnchors(queryBounds, activeAbort.signal)
-          .then((result) => ({ ok: true, ...result }))
-          .catch((error) => ({ ok: false, error }))
-        : Promise.resolve({ ok: false, skipped: true, anchors: [] });
-      const weatherPromise = canFetchLiveWeather
-        ? fetchCurrentWeatherSignal(weatherPoint, activeAbort.signal)
-          .then((weatherSignal) => ({ ok: true, weatherSignal }))
-          .catch((error) => ({ ok: false, error }))
-        : Promise.resolve({ ok: false, skipped: true, reason: useLiveWeather ? "invalid-weather-point" : "disabled" });
-
-      const [allRestaurants, parking, residentialAnchors, censusResult, weatherResult] = await Promise.all([
-        fetchFoodPlaces(queryBounds, activeAbort.signal),
-        fetchParkingCandidates(queryBounds, activeAbort.signal),
-        fetchResidentialAnchors(queryBounds, activeAbort.signal),
-        censusPromise,
-        weatherPromise,
-      ]);
 
       const censusResidentialAnchors = censusResult?.ok && Array.isArray(censusResult.anchors)
         ? censusResult.anchors
@@ -654,14 +696,25 @@ function createDataScoringRuntime({
 
       setLayerVisibility(restaurantLayerId, getShowRestaurantsChecked?.());
       setLayerVisibility(parkingLayerId, getShowParkingChecked?.());
+      return { status: "applied", generation };
+    } catch (error) {
+      if (signal.aborted || generation !== loadGeneration || error?.name === "AbortError") {
+        return discardedLoadResult(generation);
+      }
+      controller.abort();
+      throw error;
     } finally {
-      loadButton.disabled = false;
-      loadButton.textContent = "Load / Refresh for current view";
+      if (activeAbort === controller) {
+        activeAbort = null;
+        setLoadButtonIdle();
+      }
     }
   }
 
   return {
     checkDataFreshness,
+    getLoadGeneration,
+    invalidatePendingLoad,
     loadForView,
     restoreMapDataSources,
     updateCensusUi,
