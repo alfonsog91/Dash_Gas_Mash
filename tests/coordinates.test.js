@@ -62,6 +62,13 @@ export function runCoordinateTests() {
     assert(normalizeCoord({ lat: 34.1064, lng: Infinity }) === null, "infinite longitude rejected");
   });
 
+  runTest("rejects booleans and blank coordinate strings", () => {
+    assert(normalizeCoord({ lat: false, lng: -117.5931 }) === null, "boolean latitude rejected");
+    assert(normalizeCoord({ lat: 34.1064, lng: true }) === null, "boolean longitude rejected");
+    assert(normalizeCoord({ lat: "", lng: -117.5931 }) === null, "empty latitude rejected");
+    assert(normalizeCoord({ lat: 34.1064, lng: "  " }) === null, "blank longitude rejected");
+  });
+
   runTest("rejects out-of-range coordinates", () => {
     assert(normalizeCoord({ lat: 91, lng: -117.5931 }) === null, "latitude above range rejected");
     assert(normalizeCoord({ lat: 34.1064, lng: -181 }) === null, "longitude below range rejected");

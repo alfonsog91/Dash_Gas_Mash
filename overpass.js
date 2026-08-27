@@ -78,7 +78,21 @@ async function overpassQuery(query, signal) {
         if (res.ok) {
           const ct = res.headers.get("content-type") || "";
           if (ct.includes("application/json")) {
-            return res.json();
+            let json;
+            try {
+              json = await res.json();
+            } catch (error) {
+              errors.push(
+                `Overpass ${new URL(url).host} returned invalid JSON: ${error?.message ?? String(error)}`
+              );
+              break;
+            }
+
+            if (!json || !Array.isArray(json.elements)) {
+              errors.push(`Overpass ${new URL(url).host} JSON missing elements array`);
+              break;
+            }
+            return json;
           }
 
           const text = await res.text();
@@ -86,10 +100,6 @@ async function overpassQuery(query, signal) {
             `Overpass ${new URL(url).host} returned non-JSON (${ct}): ${text.slice(0, 200)}`
           );
           break; // try next endpoint
-
-          if (!json || !Array.isArray(json.elements)) {
-            throw new Error("Overpass JSON missing elements array");
-          }
         }
 
         const text = await res.text().catch(() => "");

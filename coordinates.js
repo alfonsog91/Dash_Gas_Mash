@@ -1,4 +1,10 @@
 function toFiniteNumber(value) {
+  if (
+    (typeof value !== "number" && typeof value !== "string")
+    || (typeof value === "string" && value.trim() === "")
+  ) {
+    return null;
+  }
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
