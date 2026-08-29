@@ -9,7 +9,7 @@ Branch: `agent/task-1787807004`
   `tests/**/*.test.js`.
 - Count captured `PASS` and `FAIL` prefixed output lines and enforce the recorded
   clean baseline.
-- Pin the Node version used for local and CI execution.
+- Pin the Node version used for local execution.
 
 ## Acceptance evidence
 
